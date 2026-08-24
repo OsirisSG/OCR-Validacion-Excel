@@ -1,0 +1,5 @@
+# Dependencias de la capa web. Para procesar desde la Fase 4b, inicia el
+# dashboard desde el mismo entorno Python de las Fases 0–3 (OpenCV + motor OCR).
+fastapi>=0.110,<1
+PyYAML>=6,<7
+uvicorn>=0.29,<1

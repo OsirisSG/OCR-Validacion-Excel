@@ -1,0 +1,25 @@
+# =============================================================================
+# reglas_cumplimiento.yaml — Motor de reglas del semáforo (Fase 3 y dashboard).
+# El código NUNCA fija rangos: todo se lee de aquí dinámicamente.
+#
+# Sintaxis soportada por valor:
+#   Numérico continuo:  ">= 90" | "<= 5" | "> 0" | "70-89" (rango inclusivo)
+#   Categórico:         lista de valores separados por coma, p.ej.
+#                       "coincidencia_total" o "discrepancia,sin_referencia"
+#
+# PARÁMETRO ABIERTO (doc §10.1): los rangos exactos se calibrarán con datos
+# reales; estos son los valores iniciales de referencia.
+# =============================================================================
+
+criterios:
+  confianza_ocr:
+    # Se evalúa sobre la confianza media del OCR de la etiqueta en % (0-100).
+    verde: ">= 90"
+    amarillo: "70-89"
+    rojo: "< 70"
+
+  coincidencia_texto:
+    # Se evalúa sobre el resultado de la comparación etiqueta vs referencia.
+    verde: "coincidencia_total"
+    amarillo: "coincidencia_parcial"
+    rojo: "discrepancia,sin_referencia"

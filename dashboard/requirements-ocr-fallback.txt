@@ -1,0 +1,6 @@
+# Entorno local completo para dashboard + Fase 4b con EasyOCR de respaldo.
+-r requirements.txt
+easyocr>=1.7,<2
+numpy>=2,<3
+opencv-python-headless>=4.10,<6
+openpyxl>=3.1,<4

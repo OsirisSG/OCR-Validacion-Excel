@@ -1,0 +1,98 @@
+# =============================================================================
+# config.yaml — Parámetros configurables del pipeline (Fases 0-3) y del dashboard.
+# Fuente única de parámetros: nada de estos valores está hardcodeado en el código.
+# Los valores "por defecto" de cada parámetro abierto del Documento Maestro
+# (sección 10) se registran aquí y en docs/ de cada fase.
+# =============================================================================
+
+fase0:
+  # Extensiones reconocidas por categoría (minúsculas, con punto).
+  extensiones_imagen: [.jpg, .jpeg, .png, .bmp, .tif, .tiff, .webp]
+  extensiones_video: [.mp4, .avi, .mov, .mkv, .wmv]
+  # Mínimo de carpetas que deben compartir un patrón para declararlo dominante.
+  min_carpetas_para_patron: 2
+  # Nombre del artefacto de salida (relativo a la raíz del proyecto).
+  archivo_salida: estructura_detectada.json
+
+fase1:
+  # Motor de OCR: "paddle" (principal) o "easyocr" (fallback).
+  # Si el motor principal no está instalado, ocr_engine cae automáticamente al
+  # secundario y lo reporta en el campo "motor" del resultado.
+  motor: paddle
+  motor_fallback: easyocr
+  lang: en                # el texto es nomenclatura alfanumérica, no lenguaje natural
+  umbral_confianza: 0.50  # tokens por debajo se descartan
+  umbral_confianza_segunda_pasada: 0.60  # dispara el respaldo de 180° si la media baja de aquí
+  umbral_espacio_px: 40   # PARÁMETRO ABIERTO (doc §10.3): separación mínima en px
+                          # entre cajas para considerar tokens distintos en una fila.
+  preprocesamiento:
+    activar: true
+    deskew: true                    # corrige rotación fina (±15°)
+    angulo_minimo_correccion: 2.0   # grados; por debajo no rota (evita ruido)
+    # La inversión 180° la corrige el clasificador de orientación de documento
+    # del motor (0/90/180/270); este doble pase adaptativo es el respaldo.
+    detectar_invertida_180: true
+    binarizacion_adaptativa: true
+    binarizacion_blocksize: 51      # debe ser impar
+    binarizacion_c: 15
+  qr:
+    # Detector de ancla: "cv2" (sin dependencias extra) o "pyzbar" (si está
+    # instalado junto a las DLL de zbar). Solo se usa para GEOMETRÍA (bbox),
+    # nunca se decodifica el contenido del QR.
+    detector: cv2
+    # Validación de candidatos a QR: cuadratura y tamaño relativo a la imagen.
+    ratio_cuadrado_min: 0.70
+    ratio_cuadrado_max: 1.30
+    tamano_min_px: 40
+    tamano_max_frac: 0.60   # fracción del lado mayor de la imagen
+    # Factor de expansión del ROI alrededor del QR (1.0 = solo el QR).
+    # El texto no tiene posición fija respecto al QR: margen amplio + política
+    # conservadora (roi_frac_minima) + reintento anti-truncamiento. Con 0.90 el
+    # ROI solo recorta márgenes vacíos evidentes, nunca contenido potencial.
+    margen_roi_factor: 3.0
+    roi_frac_minima: 0.90            # el ROI nunca deja <90% del ancho/alto de la imagen
+    reintentar_imagen_completa: true  # texto tocando borde del ROI o ROI vacío → imagen completa
+
+fase2:
+  # Densidad de texto (área de bboxes / área de imagen) mínima para que una
+  # imagen sea considerada "candidato a imagen de referencia".
+  # PARÁMETRO ABIERTO (doc §10.2): la heurística de densidad es la regla v1;
+  # sustituible por regla de nombre de archivo sin tocar el resto del código.
+  umbral_densidad_texto: 0.010
+  # La candidata por densidad debe superar por este factor a la segunda mejor;
+  # si no hay ganador claro (dos fotos igual de "textosas"), se declara
+  # sin_referencia en vez de adivinar. Además se exigen >= 2 imágenes.
+  ventaja_minima_referencia: 1.5
+  # Comparar solo tokens tipo código (con dígitos): 'ETQ-2024-A1-V2' sí,
+  # 'PRUEBA DE ETIQUETA' no (lenguaje natural, no forma parte del contrato).
+  comparar_solo_tokens_codigo: true
+  # Palabras en el nombre de archivo que marcan referencia directamente
+  # (si se activa, tiene prioridad sobre la densidad de texto).
+  usar_pista_nombre: true
+  palabras_pista_referencia: [ref, referencia, info, info_referencia]
+  # Estrategia para elegir la foto de etiqueta cuando hay varias:
+  # "mejor_confianza" (la foto con OCR más confiable) o "primera" (orden alfabético).
+  estrategia_etiqueta: mejor_confianza
+  # Ratio de coincidencia (tokens de etiqueta presentes en referencia):
+  # 1.0 -> coincidencia_total; >0 y <1 -> parcial; 0 -> discrepancia.
+  umbral_coincidencia_total: 1.0
+  # Comparación insensible a mayúsculas y a separadores (-, _, espacios).
+  normalizar_tokens: true
+
+fase3:
+  archivo_salida: resultado_maestro.xlsx
+  hoja_estructura: "Estructura completa"
+  hoja_matriz: "Matriz de cumplimiento"
+
+# Paleta del semáforo: MISMO hex en Excel y dashboard (doc §6, requisito visual).
+# El backend la expone en GET /api/config para que el frontend no la duplique.
+colores:
+  verde: "#22c55e"
+  amarillo: "#f59e0b"
+  rojo: "#ef4444"
+
+dashboard:
+  # Raíz permitida para servir imágenes originales en el detalle (seguridad:
+  # el backend rechaza rutas fuera de esta raíz).
+  raiz_datos_permitida: null   # null -> se toma del último pipeline ejecutado
+  puerto: 8000

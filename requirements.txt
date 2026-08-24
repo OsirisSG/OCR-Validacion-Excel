@@ -1,0 +1,3 @@
+# Instalación portable base: pipeline completo + dashboard + EasyOCR fallback.
+-r dashboard/requirements-ocr-fallback.txt
+

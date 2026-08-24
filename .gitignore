@@ -1,0 +1,75 @@
+# -----------------------------------------------------------------------------
+# Entornos y cachés Python (nunca se versionan; se reconstruyen con pip)
+# -----------------------------------------------------------------------------
+.venv/
+.venv_dashboard/
+venv/
+env/
+ENV/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# -----------------------------------------------------------------------------
+# Credenciales y configuración privada
+# -----------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+credentials*.json
+secrets*.json
+
+# -----------------------------------------------------------------------------
+# IDE / sistema operativo
+# -----------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# -----------------------------------------------------------------------------
+# Modelos, checkpoints y ejecuciones de entrenamiento
+# -----------------------------------------------------------------------------
+models/
+checkpoints/
+runs/
+wandb/
+*.pth
+*.pt
+*.onnx
+*.pdparams
+*.pdopt
+
+# -----------------------------------------------------------------------------
+# Datos empresariales: mantener fuera del repositorio.
+# datos_prueba/ NO se ignora porque contiene únicamente fixtures sintéticos.
+# -----------------------------------------------------------------------------
+datos_reales/
+lotes_reales/
+cargas/
+uploads/
+
+# -----------------------------------------------------------------------------
+# Artefactos locales regenerables (contienen rutas absolutas del equipo)
+# -----------------------------------------------------------------------------
+estructura_detectada.json
+validacion_resultados.json
+resultado_maestro.xlsx
+errores/*_dashboard_pipeline.md
+
+# Temporales y logs
+*.log
+*.tmp
+*.temp
+~$*.xlsx
+

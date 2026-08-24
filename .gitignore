@@ -68,8 +68,8 @@ resultado_maestro.xlsx
 errores/*_dashboard_pipeline.md
 
 # Temporales y logs
+.presentacion_tmp/
 *.log
 *.tmp
 *.temp
 ~$*.xlsx
-

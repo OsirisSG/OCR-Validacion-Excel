@@ -1,0 +1,6 @@
+# Análisis opcional de calidad de imagen y similitud difusa.
+scikit-image>=0.23,<1      # Nitidez, contraste y métricas de imagen
+rapidfuzz>=3.8,<4          # Similitud difusa de nomenclaturas
+scipy>=1.13,<2             # Procesamiento científico y de señales
+pandas>=2.2,<4             # Análisis tabular
+matplotlib>=3.8,<4         # Histogramas y gráficas de evaluación

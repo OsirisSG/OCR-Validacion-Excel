@@ -1,4 +1,4 @@
-# Entorno local completo para dashboard + Fase 4b con EasyOCR de respaldo.
+# Entorno local completo para dashboard + Fase 4b con EasyOCR.
 -r requirements.txt
 easyocr>=1.7,<2
 numpy>=2,<3

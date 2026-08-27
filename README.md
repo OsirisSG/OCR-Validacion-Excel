@@ -5,8 +5,8 @@ OCR, comparar etiquetas contra imágenes de referencia, generar un Excel maestro
 y consultar los resultados desde un dashboard responsivo.
 
 El procesamiento no utiliza APIs de OCR ni servicios en la nube. EasyOCR es el
-motor portable incluido por defecto como respaldo; PaddleOCR puede instalarse
-por separado y seleccionarse en `config.yaml`.
+motor portable instalado y seleccionado por defecto; PaddleOCR puede instalarse
+por separado y seleccionarse en `config.yaml` cuando la plataforma lo soporte.
 
 ## Funciones principales
 
@@ -78,9 +78,10 @@ reconocimiento al caché del usuario. Esa descarga ocurre una sola vez.
 
 ### PaddleOCR opcional
 
-El Documento Maestro recomienda PaddleOCR como motor principal cuando la
-plataforma lo soporte. Instala PaddlePaddle/PaddleOCR siguiendo las instrucciones
-oficiales correspondientes a tu sistema, CPU o GPU. Después configura:
+EasyOCR permite una instalación base por CPU sin exigir PaddlePaddle, CUDA o una
+GPU concreta. Si deseas evaluar PaddleOCR, instala PaddlePaddle y PaddleOCR
+siguiendo las instrucciones oficiales correspondientes a tu sistema, CPU o GPU.
+Después configura:
 
 ```yaml
 fase1:
@@ -88,7 +89,51 @@ fase1:
   motor_fallback: easyocr
 ```
 
-Si PaddleOCR no está instalado, el sistema continúa con EasyOCR.
+Si PaddleOCR falla al inicializar, el sistema vuelve a EasyOCR. En Windows, el
+adaptador ya desactiva MKLDNN para evitar el fallo de oneDNN registrado en
+`errores/2026-08-23_paddle_onednn_windows.md`.
+
+### Dependencias opcionales
+
+La instalación base contiene únicamente lo necesario para ejecutar el pipeline,
+generar el Excel y abrir el dashboard. Las mejoras futuras están separadas para
+no convertir cada instalación en un entorno pesado:
+
+| Archivo | Capacidades preparadas |
+| --- | --- |
+| `requirements-formats.txt` | HEIC/HEIF, RAW, secuencias, video y PDF |
+| `requirements-quality.txt` | calidad de imagen, similitud difusa y análisis |
+| `requirements-training.txt` | aumentación, métricas y seguimiento de entrenamiento |
+| `requirements-production.txt` | telemetría, CLI, rendimiento y ejecutables |
+
+Instala solamente los grupos que necesites:
+
+```bash
+python -m pip install -r requirements-formats.txt
+python -m pip install -r requirements-quality.txt
+python -m pip install -r requirements-training.txt
+python -m pip install -r requirements-production.txt
+python -m pip check
+```
+
+Estas dependencias preparan el entorno, pero no habilitan automáticamente una
+función: cada mejora debe integrarse en el código, probarse y documentarse.
+
+### Bloqueo de versiones por plataforma
+
+Los archivos `requirements*.txt` usan rangos para conservar compatibilidad entre
+Windows, macOS y Linux. Cuando necesites congelar un entorno ya verificado,
+genera el lock desde esa misma máquina:
+
+```bash
+python -m pip check
+python -m pip freeze > requirements-lock.txt
+```
+
+Registra junto al lock el sistema operativo, la arquitectura, la versión de
+Python y, si aplica, CUDA. Un lock generado en macOS ARM64 o en Windows con GPU
+no debe presentarse como universal; las ruedas de PyTorch, PaddlePaddle y varios
+paquetes de imagen dependen de la plataforma.
 
 ## Inicio rápido con los datos sintéticos
 
@@ -201,6 +246,8 @@ Instala las dependencias de desarrollo:
 python -m pip install -r requirements-dev.txt
 ```
 
+Este grupo incluye `pytest`, cobertura, `ruff`, `mypy` y `pre-commit`.
+
 Contratos del dashboard:
 
 ```bash
@@ -231,6 +278,12 @@ OCR-Validacion-Excel/
 ├── configuracion.py              # Configuración y reglas compartidas
 ├── config.yaml
 ├── reglas_cumplimiento.yaml
+├── requirements.txt              # Ejecución portable
+├── requirements-dev.txt          # Pruebas y calidad de código
+├── requirements-formats.txt      # Formatos extendidos opcionales
+├── requirements-quality.txt      # Calidad y similitud opcionales
+├── requirements-training.txt     # Entrenamiento opcional
+├── requirements-production.txt   # Operación y empaquetado opcionales
 ├── dashboard/
 │   ├── backend/app.py
 │   └── frontend/
@@ -250,6 +303,8 @@ OCR-Validacion-Excel/
 - Texto manuscrito complejo, superficies curvas, reflejos y desenfoque pueden
   requerir datos propios y fine-tuning.
 - Solo se permite una ejecución simultánea del pipeline desde el dashboard.
+- Instalar un grupo opcional no implica que su integración funcional ya esté
+  implementada.
 
 ## Documentación para mantenimiento
 
@@ -266,6 +321,34 @@ Markdown de su fase y registrar en `errores/` cualquier enfoque fallido antes de
 cambiar de estrategia.
 
 ## Solución de problemas
+
+### PowerShell bloquea la activación del entorno virtual
+
+Primero intenta activar el entorno normalmente:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
+Si PowerShell indica que la ejecución de scripts está deshabilitada, puedes
+permitirla únicamente durante la sesión actual:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\.venv\Scripts\Activate.ps1
+```
+
+El alcance `Process` es temporal: el cambio desaparece al cerrar esa ventana de
+PowerShell. Si administras tu propio equipo y prefieres habilitar de forma
+persistente los scripts locales y los scripts remotos firmados, puedes usar:
+
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+```
+
+Este último comando modifica la política del usuario actual. No lo ejecutes en
+un equipo administrado por una organización sin consultar antes sus políticas
+de seguridad.
 
 ### “Ningún motor de OCR disponible”
 

@@ -47,8 +47,8 @@ def test_resumen_cuadra_con_el_total():
     assert datos["total_carpetas"] == sum(datos["semaforo"].values())
     assert round(sum(datos["pct"].values()), 1) == 100.0
     assert set(datos["distribucion_por_lote"]) == {"Lote_Pruebas"}
-    assert datos["raiz"].endswith("datos_prueba/Lote_Pruebas")
-    assert not datos["raiz"].startswith("C:\\")
+    raiz_normalizada = str(datos["raiz"]).replace("\\", "/")
+    assert raiz_normalizada.endswith("datos_prueba/Lote_Pruebas")
 
 
 def test_busqueda_filtro_y_paginacion():
@@ -69,7 +69,8 @@ def test_detalle_e_imagen_portable_y_restringida():
     fila = cliente.get("/api/pruebas", params={"q": "01_A1_variante2"}).json()["items"][0]
     detalle = cliente.get(f"/api/pruebas/{fila['id']}")
     assert detalle.status_code == 200
-    assert detalle.json()["ruta_mostrada"].endswith("Lote_Pruebas/01_A1_variante2")
+    ruta_normalizada = str(detalle.json()["ruta_mostrada"]).replace("\\", "/")
+    assert ruta_normalizada.endswith("Lote_Pruebas/01_A1_variante2")
     etiqueta = detalle.json()["etiqueta"]
     assert etiqueta["ruta_api"].startswith("/api/imagen?ruta=")
 

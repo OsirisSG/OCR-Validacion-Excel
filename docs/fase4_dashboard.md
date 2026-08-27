@@ -60,7 +60,7 @@ Para utilizar **Procesar carpeta**, el dashboard debe iniciarse desde el mismo
 entorno Python funcional usado por el pipeline OCR; `dashboard/requirements.txt`
 instala solamente la capa web y no los motores pesados de visión.
 
-En macOS se dejó disponible un entorno reproducible con EasyOCR de respaldo:
+Para cualquier plataforma se ofrece un entorno completo con EasyOCR:
 
 ```bash
 python -m pip install -r dashboard/requirements-ocr-fallback.txt

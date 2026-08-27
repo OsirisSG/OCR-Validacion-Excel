@@ -22,9 +22,9 @@ Reglas duras implementadas:
   imagen completa sin error ni degradación (qr_bbox = None).
 - El texto NO tiene posición fija: se OCR-ea toda la imagen (o el ROI amplio
   cuando hay QR) y se devuelven cajas por bloque detectado.
-- El motor es intercambiable: PaddleOCR (principal) / EasyOCR (fallback),
-  elegido por config.yaml; si el principal no está instalado se usa el
-  secundario y se reporta en el campo "motor".
+- El motor es intercambiable: EasyOCR es el valor portable predeterminado y
+  PaddleOCR permanece disponible como alternativa, ambos elegidos desde
+  config.yaml. Si el principal falla se usa el secundario y se reporta cuál fue.
 
 Preprocesamiento (orden): carga unicode-safe → detección 180° (por doble pasada
 adaptativa, solo si la primera lectura falla) → deskew → binarización adaptativa
@@ -95,7 +95,7 @@ class MotorPaddle:
 
 
 class MotorEasyOCR:
-    """Adaptador de EasyOCR (motor de respaldo). Requiere easyocr instalado."""
+    """Adaptador del motor EasyOCR portable instalado por defecto."""
 
     nombre = "easyocr"
 
@@ -119,7 +119,7 @@ class MotorEasyOCR:
 
 
 def obtener_motor(config: dict | None = None):
-    """Retorna (instancia de motor, config_fase1). Paddle primero, fallback fácil."""
+    """Retorna el primer motor configurado que pueda inicializarse."""
     config = config or cargar_config()
     f1 = config.get("fase1", {})
     for clave in ("motor", "motor_fallback"):

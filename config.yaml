@@ -15,11 +15,11 @@ fase0:
   archivo_salida: estructura_detectada.json
 
 fase1:
-  # Motor de OCR: "paddle" (principal) o "easyocr" (fallback).
-  # Si el motor principal no está instalado, ocr_engine cae automáticamente al
-  # secundario y lo reporta en el campo "motor" del resultado.
-  motor: paddle
-  motor_fallback: easyocr
+  # EasyOCR es el motor portable instalado por defecto. PaddleOCR permanece
+  # disponible como alternativa opcional y debe instalarse por plataforma.
+  # Si el principal falla, ocr_engine prueba el secundario y reporta cuál usó.
+  motor: easyocr
+  motor_fallback: paddle
   lang: en                # el texto es nomenclatura alfanumérica, no lenguaje natural
   umbral_confianza: 0.50  # tokens por debajo se descartan
   umbral_confianza_segunda_pasada: 0.60  # dispara el respaldo de 180° si la media baja de aquí

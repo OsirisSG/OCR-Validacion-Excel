@@ -27,9 +27,9 @@ CLI: `python ocr_engine.py imagen1.jpg [imagen2.png ...] [--compacto]`
 
 1. **Carga unicode-safe** (`np.fromfile` + `cv2.imdecode`): rutas con acentos no
    rompen en Windows es-ES (fallo clásico de `cv2.imread`).
-2. **Orientación de documento (0/90/180/270)**: clasificador interno de
-   PaddleOCR (`use_doc_orientation_classify=True`). Corrige fotos boca abajo o
-   giradas antes de detectar texto.
+2. **Orientación de documento**: cuando se selecciona PaddleOCR, su clasificador
+   interno corrige 0/90/180/270 (`use_doc_orientation_classify=True`). Con
+   EasyOCR, el respaldo adaptativo del paso 8 cubre imágenes invertidas 180°.
 3. **Deskew** (±15°): umbral adaptativo → dilatación horizontal → `minAreaRect`
    → mediana de ángulos. Solo rota si supera `angulo_minimo_correccion` (2°).
 4. **Binarización adaptativa** (Gauss, blockSize 51, C 15) tras el deskew.
@@ -38,8 +38,8 @@ CLI: `python ocr_engine.py imagen1.jpg [imagen2.png ...] [--compacto]`
    defecto; `pyzbar` opcional por config. Valida cuadratura (0.7–1.3) y tamaño.
 6. **ROI conservador**: expansión `3.0×` el tamaño del QR, rechazado si dejara
    < 90% del ancho/alto. Sin QR → imagen completa, sin error ni degradación.
-7. **OCR** (Paddle principal / EasyOCR fallback, caché por proceso) con filtro
-   de confianza por línea.
+7. **OCR** (EasyOCR portable por defecto / PaddleOCR alternativo, caché por
+   proceso) con filtro de confianza por línea.
 8. **Respaldo 180° adaptativo**: solo si la lectura salió vacía o con confianza
    < 0.60, se prueba rotada 180° y gana la mejor pasada (el clasificador del
    paso 2 cubre el caso normal; esto es red de seguridad).
@@ -91,7 +91,7 @@ comportamiento: el código se extrae completo en los cuatro casos.
 
 | Parámetro | Default | Efecto |
 | --- | --- | --- |
-| `motor` / `motor_fallback` | paddle / easyocr | motor principal y de respaldo |
+| `motor` / `motor_fallback` | easyocr / paddle | motor principal y alternativo |
 | `lang` | en | alfabeto del reconocedor (nomenclaturas alfanuméricas) |
 | `umbral_confianza` | 0.50 | descarta líneas por debajo |
 | `umbral_confianza_segunda_pasada` | 0.60 | dispara el respaldo 180° |

@@ -1,0 +1,7 @@
+# Preparación opcional de datasets, entrenamiento y evaluación.
+albumentations>=1.4,<3     # Aumentación de imágenes
+scikit-learn>=1.4,<2       # Precisión, recall, F1 y matrices de confusión
+pandas>=2.2,<4             # Procesamiento de datasets
+matplotlib>=3.8,<4         # Curvas de entrenamiento
+tensorboard>=2.16,<3       # Seguimiento de experimentos
+tqdm>=4.66,<5              # Barras de progreso

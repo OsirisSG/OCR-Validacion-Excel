@@ -1,0 +1,7 @@
+# Mejoras operativas, rendimiento, CLI y empaquetado.
+psutil>=5.9,<8             # Telemetría de RAM y CPU
+orjson>=3.10,<4            # Serialización JSON rápida
+python-multipart>=0.0.9,<1 # Carga de archivos para futuras APIs
+rich>=13.7,<16             # Salida estructurada en terminal
+typer>=0.12,<1             # CLI tipada
+pyinstaller>=6.6,<7        # Generación de ejecutables

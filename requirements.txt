@@ -1,3 +1,12 @@
-# Instalación portable base: pipeline completo + dashboard + EasyOCR fallback.
--r dashboard/requirements-ocr-fallback.txt
+# Instalación portable base: pipeline completo + dashboard + EasyOCR.
 
+# Capa web del dashboard (FastAPI + servidor ASGI + configuración YAML)
+fastapi>=0.110,<1
+PyYAML>=6,<7
+uvicorn>=0.29,<1
+
+# Pipeline OCR, visión por computadora y generación de reportes Excel
+easyocr>=1.7,<2
+numpy>=2,<3
+opencv-python-headless>=4.10,<6
+openpyxl>=3.1,<4

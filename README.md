@@ -17,6 +17,7 @@ por separado y seleccionarse en `config.yaml` cuando la plataforma lo soporte.
 - Semáforo configurable desde YAML.
 - Excel maestro con estructura completa y matriz de cumplimiento.
 - Dashboard local con resumen, listado, detalle y procesamiento de carpetas.
+- Analizador general de libros Excel, hojas, columnas y categorías.
 - Tema claro/oscuro y diseño para escritorio, tablet y móvil.
 
 ## Requisitos
@@ -209,6 +210,26 @@ También puedes iniciar el dashboard, abrir **Procesar carpeta** y pegar esa rut
 No publiques fotografías, Excel generados o JSON de resultados sin revisar si
 contienen rutas locales o información confidencial.
 
+## Analizar la estructura de cualquier Excel
+
+Para inventariar todas las hojas y columnas de un libro desconocido:
+
+```bash
+python analizar_excel.py "/ruta/al/archivo.xlsx"
+```
+
+El comando no modifica el Excel. Genera `<archivo>_analisis_excel.json` con la
+fila probable de encabezados, tipos de datos, vacíos, fórmulas, categorías
+observadas, muestras y posibles nombres canónicos de cada columna.
+
+Si el archivo contiene información sensible, omite las muestras:
+
+```bash
+python analizar_excel.py archivo.xlsx --sin-muestras
+```
+
+Consulta el contrato completo en `docs/analizador_excel.md`.
+
 ## Reglas del semáforo
 
 Se configuran en `reglas_cumplimiento.yaml`:
@@ -274,6 +295,7 @@ OCR-Validacion-Excel/
 ├── ocr_engine.py                 # Fase 1
 ├── validacion.py                 # Fase 2
 ├── generar_excel.py              # Fase 3
+├── analizar_excel.py             # Inventario de libros Excel
 ├── pipeline.py                   # Orquestador Fases 0–3
 ├── configuracion.py              # Configuración y reglas compartidas
 ├── config.yaml

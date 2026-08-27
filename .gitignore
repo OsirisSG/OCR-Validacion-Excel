@@ -65,6 +65,7 @@ uploads/
 estructura_detectada.json
 validacion_resultados.json
 resultado_maestro.xlsx
+*_analisis_excel.json
 errores/*_dashboard_pipeline.md
 
 # Temporales y logs

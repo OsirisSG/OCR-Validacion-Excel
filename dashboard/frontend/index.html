@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Dashboard · Validación de pruebas (OCR)</title>
   <meta name="description" content="Panel interno de revisión de etiquetas procesadas por OCR." />
-  <link rel="stylesheet" href="estilos.css?v=20260823-3" />
+  <link rel="stylesheet" href="estilos.css?v=20260831-7" />
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔎</text></svg>" />
   <script src="vendor/react.production.min.js"></script>
   <script src="vendor/react-dom.production.min.js"></script>
@@ -13,6 +13,14 @@
 </head>
 <body>
   <div id="raiz"></div>
-  <script src="app.js?v=20260823-3"></script>
+  <script>
+    window.addEventListener("error", (evento) => {
+      const raiz = document.getElementById("raiz");
+      if (raiz && !raiz.textContent.trim()) {
+        raiz.innerHTML = `<main class="contenedor"><div class="estado-vacio estado-error"><h2>No se pudo iniciar la interfaz</h2><p>${evento.message}</p></div></main>`;
+      }
+    });
+  </script>
+  <script src="app.js?v=20260831-9"></script>
 </body>
 </html>

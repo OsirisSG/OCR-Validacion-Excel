@@ -3,8 +3,10 @@
 ## Propósito
 
 Lee `validacion_resultados.json` (Fase 2) y genera `resultado_maestro.xlsx`
-con **dos hojas**: "Estructura completa" (evidencia por carpeta) y "Matriz de
-cumplimiento" (semáforo). El motor de reglas lee `reglas_cumplimiento.yaml`
+con **cuatro hojas**: "Estructura completa" (evidencia por carpeta), "Matriz de
+cumplimiento" (semáforo), "Textos por imagen" (carpeta → imagen → región) y
+"Bandeja de revisión" (carpetas y pruebas complejas unificadas). El motor de
+reglas lee `reglas_cumplimiento.yaml`
 dinámicamente: **ningún rango está fijo en el código**; cambiar el YAML cambia
 el Excel (y el dashboard usa el mismo motor vía `configuracion.clasificar`).
 
@@ -15,9 +17,16 @@ python generar_excel.py [--validacion ruta.json] [--salida ruta.xlsx]
 ## Hoja "Estructura completa" (una fila por carpeta procesada)
 
 Columnas (las exigidas por el Documento Maestro §5): Ruta · Identificador ·
-Variante · Tipos de archivo · Texto etiqueta (OCR) · Texto referencia (OCR) ·
-Resultado comparación · Confianza OCR (%) · QR detectado · Anomalías Fase 0 ·
-Observaciones. Con encabezado fijo (freeze panes) y autofiltro.
+Variante · Tipos de archivo · Imágenes procesadas · Texto etiqueta (OCR) ·
+Texto referencia (OCR) · Texto de todas las imágenes (OCR) · Resultado
+comparación · Confianza OCR (%) · QR detectado · Anomalías Fase 0 ·
+Observaciones. El texto completo conserva renglones dentro de la celda. La hoja
+usa encabezado fijo (freeze panes) y autofiltro.
+
+Las regiones confirmadas manualmente se añaden con origen `Manual`, coordenadas
+y confianza humana. Las pruebas externas usan el grupo `Pruebas complejas`.
+Todas las filas incluyen `Completada` o `Por revisar`; los elementos quitados
+siguen en la bandeja con la marca `Quitado del listado = Sí`.
 
 ## Hoja "Matriz de cumplimiento" (semáforo)
 

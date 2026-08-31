@@ -23,29 +23,63 @@ from validacion import validar_lote
 
 
 def ejecutar_pipeline(ruta_raiz: str | Path, config: dict | None = None,
-                      al_progreso: Callable[[str, str], None] | None = None) -> dict:
+                      al_progreso: Callable[[str, str, dict | None], None] | None = None) -> dict:
     """Corre las Fases 0-3 y retorna un dict con artefactos y resumen por fase."""
     config = config or cargar_config()
     resumen: dict = {"raiz": str(ruta_raiz), "fases": {}}
 
-    def progreso(fase: str, mensaje: str) -> None:
+    def progreso(fase: str, mensaje: str, detalle: dict | None = None) -> None:
         if al_progreso:
-            al_progreso(fase, mensaje)
+            al_progreso(fase, mensaje, detalle)
 
     t0 = time.time()
-    progreso("fase0", "Analizando la estructura de carpetas")
+    progreso("fase0", "Analizando la estructura de carpetas", {"porcentaje": 2})
     estructura = mapear_estructura(ruta_raiz, config)
     ruta_estructura = guardar_estructura(estructura)
+    total_hojas = len(carpetas_hoja(estructura))
     resumen["fases"]["fase0"] = {
         "artifacto": str(ruta_estructura),
         "total_carpetas": estructura["total_carpetas"],
         "patron_dominante": estructura["patron_dominante"],
         "anomalias": len(estructura["anomalias"]),
-        "hojas": len(carpetas_hoja(estructura)),
+        "hojas": total_hojas,
     }
 
-    progreso("fase2", "Ejecutando OCR y validación cruzada")
-    validacion = validar_lote(ruta_estructura, config)
+    progreso("fase2", "Ejecutando OCR y validación cruzada", {
+        "porcentaje": 8, "procesadas": 0, "total": total_hojas,
+        "restantes": total_hojas,
+    })
+
+    def resultado_listo(procesadas: int, total: int, fila: dict,
+                        eta_segundos: float | None) -> None:
+        progreso(
+            "fase2",
+            f"Carpeta {procesadas} de {total} terminada",
+            {
+                "procesadas": procesadas,
+                "total": total,
+                "restantes": max(total - procesadas, 0),
+                "resultado": fila,
+            },
+        )
+
+    def imagen_lista(procesadas: int, total: int, ruta_imagen: str,
+                     eta_segundos: float | None) -> None:
+        avance = procesadas / total if total else 1.0
+        progreso(
+            "fase2", f"Imagen {procesadas} de {total}: {Path(ruta_imagen).name}",
+            {
+                "porcentaje": round(8 + avance * 84, 1),
+                "imagenes_procesadas": procesadas,
+                "imagenes_total": total,
+                "imagenes_restantes": max(total - procesadas, 0),
+                "eta_segundos": eta_segundos,
+                "imagen_actual": Path(ruta_imagen).name,
+            },
+        )
+
+    validacion = validar_lote(
+        ruta_estructura, config, al_resultado=resultado_listo, al_imagen=imagen_lista)
     conteo: dict[str, int] = {}
     for fila in validacion["resultados"]:
         conteo[fila["comparacion"]["resultado"]] = conteo.get(fila["comparacion"]["resultado"], 0) + 1
@@ -53,15 +87,18 @@ def ejecutar_pipeline(ruta_raiz: str | Path, config: dict | None = None,
         "artifacto": validacion["archivo_salida"],
         "carpetas_procesadas": validacion["carpetas_procesadas"],
         "resultados": conteo,
+        "aprendizaje": validacion.get("aprendizaje"),
     }
 
-    progreso("fase3", "Generando el Excel maestro")
+    progreso("fase3", "Generando el Excel maestro", {"porcentaje": 95, "eta_segundos": None})
     ruta_excel = generar_excel(
         None, RAIZ_PROYECTO / config.get("fase3", {}).get(
             "archivo_salida", "resultado_maestro.xlsx"), config)
     resumen["fases"]["fase3"] = {"artifacto": str(ruta_excel)}
     resumen["duracion_segundos"] = round(time.time() - t0, 1)
-    progreso("completado", "Resultados y Excel actualizados")
+    progreso("completado", "Resultados y Excel actualizados", {
+        "porcentaje": 100, "eta_segundos": 0, "restantes": 0,
+    })
     return resumen
 
 

@@ -78,6 +78,15 @@ function usarTema() {
 }
 
 const fmtPct = (v) => (v === null || v === undefined) ? "—" : `${v.toFixed(1)}%`;
+const fmtDuracion = (segundos) => {
+  if (segundos === null || segundos === undefined) return "Calculando…";
+  const total = Math.max(0, Math.round(segundos));
+  if (total < 60) return `${total} s`;
+  const minutos = Math.floor(total / 60);
+  const resto = total % 60;
+  return `${minutos} min ${resto} s`;
+};
+const normalizarCodigoVista = (texto) => (texto || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
 const fmtFecha = (v) => {
   if (!v) return "—";
   const fecha = new Date(v);
@@ -238,6 +247,7 @@ function VistaCarga() {
   const [errorEstado, setErrorEstado] = useState(null);
   const [enviando, setEnviando] = useState(false);
   const [errorEnvio, setErrorEnvio] = useState(null);
+  const [reloj, setReloj] = useState(Date.now());
   const [capacidad, , errorCapacidad] = useApi("/api/pipeline/capacidad");
 
   const refrescar = useCallback(() => {
@@ -251,6 +261,12 @@ function VistaCarga() {
     const id = setInterval(refrescar, 1200);
     return () => clearInterval(id);
   }, [refrescar]);
+
+  useEffect(() => {
+    if (estado?.estado !== "procesando") return undefined;
+    const id = setInterval(() => setReloj(Date.now()), 250);
+    return () => clearInterval(id);
+  }, [estado?.estado]);
 
   const usarActual = async () => {
     setErrorEnvio(null);
@@ -278,6 +294,15 @@ function VistaCarga() {
   };
 
   const procesando = estado?.estado === "procesando";
+  const porcentaje = Math.min(100, Math.max(0, Number(estado?.porcentaje) || 0));
+  const parciales = estado?.resultados_parciales || [];
+  const transcurridoVivo = procesando && estado.iniciado_en
+    ? Math.max(0, (reloj - new Date(estado.iniciado_en).getTime()) / 1000)
+    : estado?.transcurrido_segundos;
+  const segundosDesdeActualizacion = estado?.actualizado_en
+    ? Math.max(0, (reloj - new Date(estado.actualizado_en).getTime()) / 1000) : 0;
+  const etaViva = procesando && estado?.eta_segundos !== null && estado?.eta_segundos !== undefined
+    ? Math.max(0, estado.eta_segundos - segundosDesdeActualizacion) : estado?.eta_segundos;
   const noLista = capacidad && !capacidad.listo;
   if (capacidad === undefined || estado === undefined) {
     return html`<div class="tarjeta" style=${{ marginTop: 20 }}><div class="esqueleto"></div></div>`;
@@ -329,12 +354,22 @@ function VistaCarga() {
         <h3>Estado del procesamiento</h3>
         <span class=${`estado-ejecucion estado-${estado.estado}`}>${estado.estado}</span>
       </div>
-      ${procesando && html`<div class="progreso-indeterminado"><span></span></div>`}
+      <div class="progreso-resumen">
+        <strong>${porcentaje.toFixed(1)}%</strong>
+        <span>${estado.procesadas || 0} de ${estado.total || "—"} carpetas listas</span>
+        <span>${estado.imagenes_procesadas || 0} de ${estado.imagenes_total || "—"} imágenes</span>
+        <span>Tiempo restante estimado: ${etaViva === 0 && procesando ? "Recalculando…" : fmtDuracion(etaViva)}</span>
+      </div>
+      <div class="progreso-determinado" role="progressbar" aria-label="Avance total"
+        aria-valuemin="0" aria-valuemax="100" aria-valuenow=${porcentaje}>
+        <span style=${{ width: `${porcentaje}%` }}></span>
+      </div>
       <dl class="ficha">
         <dt>Fase actual</dt><dd>${estado.fase || "—"}</dd>
         <dt>Mensaje</dt><dd>${estado.mensaje || "Aún no se ha iniciado una ejecución."}</dd>
         <dt>Carpeta</dt><dd class="mono">${estado.ruta || "—"}</dd>
         <dt>Inicio</dt><dd>${fmtFecha(estado.iniciado_en)}</dd>
+        <dt>Tiempo transcurrido</dt><dd class="reloj-vivo">${fmtDuracion(transcurridoVivo)}</dd>
         ${estado.finalizado_en && html`<dt>Finalización</dt><dd>${fmtFecha(estado.finalizado_en)}</dd>`}
       </dl>
       ${estado.error && html`<div class="mensaje-error" role="alert">
@@ -344,6 +379,210 @@ function VistaCarga() {
       ${estado.estado === "completado" && html`<a class="boton boton-primario" href="#/resumen">
         Ver resultados actualizados →</a>`}
     </div>
+
+    ${parciales.length > 0 && html`<section class="resultados-en-vivo">
+      <div class="progreso-titulo">
+        <div>
+          <h3>Resultados listos</h3>
+          <p class="subtitulo-seccion">Aparecen aquí en cuanto termina cada carpeta.</p>
+        </div>
+        <span class="chip neutro"><span class="punto"></span>${parciales.length} visibles</span>
+      </div>
+      <div class="contenedor-tabla">
+        <table aria-label="Resultados completados durante el procesamiento">
+          <thead><tr><th>Identificador</th><th>Lote</th><th>Resultado</th><th>Revisión</th><th>Estado</th></tr></thead>
+          <tbody>${parciales.map((fila) => html`<tr key=${fila.id}>
+            <td data-etiqueta="Identificador"><strong>${fila.identificador || fila.nombre}</strong></td>
+            <td data-etiqueta="Lote">${fila.lote}</td>
+            <td data-etiqueta="Resultado">${fila.resultado}</td>
+            <td data-etiqueta="Revisión">${fila.semaforo === "verde" ? "Completada" : "Por revisar"}</td>
+            <td data-etiqueta="Estado">${fila.semaforo || "sin clasificar"}</td>
+          </tr>`)}</tbody>
+        </table>
+      </div>
+    </section>`}
+  `;
+}
+
+function TarjetaExterna({ prueba, alActualizarRevision }) {
+  const tokens = prueba.tokens || [];
+  const unidades = (prueba.lineas_texto || []).length ? prueba.lineas_texto : tokens;
+  const lecturaSugerida = () => {
+    const mejor = unidades.find((t) => normalizarCodigoVista(t.texto_original || t.texto)
+      === prueba.mejor_candidato);
+    const primero = mejor || unidades.find((t) => /\d/.test(t.texto_original || t.texto)) || unidades[0];
+    return primero ? (primero.texto_original || primero.texto) : "";
+  };
+  const [textoOcr, setTextoOcr] = useState(lecturaSugerida);
+  const [textoCorrecto, setTextoCorrecto] = useState(
+    prueba.tipo === "codigo" ? (prueba.esperado || "") : lecturaSugerida);
+  const [guardando, setGuardando] = useState(false);
+  const [respuesta, setRespuesta] = useState(null);
+  useEffect(() => {
+    setTextoOcr(lecturaSugerida());
+    setTextoCorrecto(prueba.tipo === "codigo" ? (prueba.esperado || "") : lecturaSugerida());
+    setRespuesta(null);
+  }, [prueba.mejor_candidato, prueba.esperado]);
+
+  async function corregir(e) {
+    e.preventDefault();
+    setGuardando(true);
+    setRespuesta(null);
+    try {
+      const resultado = await enviarJSON("/api/externas/correcciones", {
+        prueba_id: prueba.id, texto_ocr: textoOcr, texto_correcto: textoCorrecto,
+      });
+      setRespuesta({ ok: true, resultado });
+    } catch (error) {
+      setRespuesta({ ok: false, mensaje: error.message });
+    } finally {
+      setGuardando(false);
+    }
+  }
+  async function cambiarRevision(cambios) {
+    setGuardando(true);
+    setRespuesta(null);
+    try {
+      await enviarJSON("/api/revisiones", { tipo: "externa", item_id: prueba.id, ...cambios });
+      setRespuesta({ ok: true, revision: true });
+      await alActualizarRevision();
+    } catch (error) {
+      setRespuesta({ ok: false, mensaje: error.message });
+    } finally {
+      setGuardando(false);
+    }
+  }
+
+  return html`<article class="tarjeta tarjeta-externa">
+    <div class="externa-cabecera">
+      <div><p class="sobrelinea">${prueba.imagen} · ${prueba.tipo}</p>
+        <h3>${prueba.tipo === "codigo" ? prueba.esperado : "Texto de escena"}</h3></div>
+      <span class=${`chip revision-${prueba.revision?.estado || "por_revisar"}`}>
+        <span class="punto"></span>${prueba.revision?.estado === "completada" ? "Completada" : "Por revisar"}
+      </span>
+    </div>
+    <div class="imagen-marco externa-imagen">
+      <img src=${prueba.ruta_api} alt=${`Placa grabada ${prueba.imagen}`} loading="lazy" />
+    </div>
+    <dl class="ficha ficha-externa">
+      <dt>Esperado</dt><dd class="mono"><strong>${prueba.tipo === "codigo" ? prueba.esperado
+        : `${(prueba.encontrados || []).length} de ${(prueba.esperados || []).length} fragmentos`}</strong></dd>
+      <dt>Resultado</dt><dd>${prueba.tipo === "codigo" ? fmtPct(prueba.similitud_caracteres * 100)
+        : `${fmtPct((prueba.cobertura || 0) * 100)} de cobertura`}</dd>
+      <dt>Detección</dt><dd>${prueba.variante || "—"} · ${prueba.orientacion_grados || 0}° · ${prueba.intentos} intentos</dd>
+      <dt>Tiempo</dt><dd>${fmtDuracion(prueba.segundos)}</dd>
+    </dl>
+    ${prueba.tipo === "texto" && html`<div class="texto-detectado">
+      <strong>Texto completo OCR</strong><pre>${prueba.texto_completo || "Sin texto legible"}</pre>
+    </div>
+    <ul class="fragmentos-esperados">
+      ${(prueba.esperados || []).map((fragmento) => {
+        const ok = (prueba.encontrados || []).includes(fragmento);
+        return html`<li key=${fragmento} class=${ok ? "encontrado" : "faltante"}>
+          <span aria-hidden="true">${ok ? "✓" : "○"}</span><span>${fragmento}</span>
+        </li>`;
+      })}
+    </ul>`}
+    <div class="tokens-externos">${unidades.length ? unidades.map((token, i) => html`
+      <span key=${i} class="mono">${token.texto_original || token.texto}</span>`)
+      : html`<span class="subtitulo-seccion">No se detectaron tokens.</span>`}</div>
+    ${!prueba.coincidencia_exacta && unidades.length > 0 && html`
+      <form class="formulario-correccion formulario-externo" onSubmit=${corregir}>
+        <label>Lectura OCR
+          <select class="campo" value=${textoOcr} onChange=${(e) => {
+            setTextoOcr(e.target.value); setTextoCorrecto(e.target.value);
+          }}>
+            ${unidades.map((token, i) => {
+              const valor = token.texto_original || token.texto;
+              return html`<option key=${i} value=${valor}>${valor}</option>`;
+            })}
+          </select>
+        </label>
+        <label>Corrección confirmada
+          <textarea class="campo mono campo-texto" value=${textoCorrecto} required maxLength=${4096}
+            rows=${3} onInput=${(e) => setTextoCorrecto(e.target.value)}></textarea>
+        </label>
+        <button class="boton boton-primario" disabled=${guardando || !textoCorrecto.trim()}>
+          ${guardando ? "Entrenando…" : "Confirmar y entrenar"}
+        </button>
+      </form>`}
+    ${respuesta?.ok && html`<div class="aviso">${respuesta.revision
+      ? "Estado de revisión actualizado."
+      : "Corrección guardada para aprendizaje supervisado."}</div>`}
+    ${respuesta && !respuesta.ok && html`<div class="mensaje-error">${respuesta.mensaje}</div>`}
+    <div class="acciones-revision">
+      <button class="boton" disabled=${guardando} onClick=${() => cambiarRevision({
+        estado: prueba.revision?.estado === "completada" ? "por_revisar" : "completada" })}>
+        ${prueba.revision?.estado === "completada" ? "Marcar por revisar" : "Marcar completada"}
+      </button>
+      <button class="boton boton-peligro" disabled=${guardando}
+        onClick=${() => cambiarRevision({ oculto: !prueba.revision?.oculto })}>
+        ${prueba.revision?.oculto ? "Restaurar en listado" : "Quitar del listado"}
+      </button>
+    </div>
+  </article>`;
+}
+
+function VistaExternas() {
+  const [mostrarOcultas, setMostrarOcultas] = useState(false);
+  const rutaExternas = `/api/externas?incluir_ocultos=${mostrarOcultas}`;
+  const [datos, setDatos, errorCarga] = useApi(rutaExternas, [mostrarOcultas]);
+  const [evaluando, setEvaluando] = useState(false);
+  const [errorEvaluacion, setErrorEvaluacion] = useState(null);
+
+  async function reevaluar() {
+    setEvaluando(true);
+    setErrorEvaluacion(null);
+    try {
+      setDatos(await enviarJSON("/api/externas/evaluar", {}));
+    } catch (error) {
+      setErrorEvaluacion(error.message);
+    } finally {
+      setEvaluando(false);
+    }
+  }
+  const refrescarExternas = useCallback(async () => {
+    setDatos(await pedirJSON(rutaExternas));
+  }, [rutaExternas]);
+
+  if (datos === undefined) return html`<div class="tarjeta" style=${{ marginTop: 20 }}><div class="esqueleto"></div></div>`;
+  if (errorCarga) return html`<${EstadoError} mensaje="No fue posible cargar las pruebas complejas." />`;
+  const resultados = datos?.resultados || [];
+  return html`
+    <section class="carga-cabecera">
+      <div>
+        <p class="sobrelinea">BANCO DE ESTRÉS OCR</p>
+        <h2>Pruebas complejas y externas</h2>
+        <p>Placas grabadas, bajo contraste y caracteres ambiguos para inspeccionar y corregir el reconocimiento.</p>
+      </div>
+      <button class="boton boton-primario" disabled=${evaluando} onClick=${reevaluar}>
+        ${evaluando ? "Evaluando imágenes…" : "Volver a ejecutar las pruebas"}
+      </button>
+    </section>
+    <label class="control-ocultos"><input type="checkbox" checked=${mostrarOcultas}
+      onChange=${(e) => setMostrarOcultas(e.target.checked)} /> Mostrar elementos quitados</label>
+    ${errorEvaluacion && html`<div class="mensaje-error">${errorEvaluacion}</div>`}
+    <div class="rejilla-kpi">
+      <${Kpi} etiqueta="Códigos exactos" valor=${datos.exactitud === null ? "—" : fmtPct(datos.exactitud * 100)}
+        sub=${`${datos.exactos || 0} de ${datos.casos_codigo || 0} placas`} />
+      <${Kpi} etiqueta="Similitud de códigos" valor=${datos.similitud_media_caracteres === null
+        ? "—" : fmtPct(datos.similitud_media_caracteres * 100)} sub="promedio por carácter" />
+      <${Kpi} etiqueta="Cobertura de texto completo" valor=${datos.cobertura_texto === null
+        ? "—" : fmtPct(datos.cobertura_texto * 100)}
+        sub=${`${datos.fragmentos_texto_detectados || 0} de ${datos.fragmentos_texto || 0} fragmentos`} />
+      <${Kpi} etiqueta="Última evaluación" valor=${resultados.length ? `${resultados.length} imágenes` : "Pendiente"}
+        sub=${fmtFecha(datos.generado_en)} />
+    </div>
+    ${resultados.length ? html`<div class="rejilla-externas">
+      ${resultados.map((prueba) => html`<${TarjetaExterna} key=${prueba.id} prueba=${prueba}
+        alActualizarRevision=${refrescarExternas} />`)}
+    </div>` : html`<div class="estado-vacio">
+      <div class="icono">🧪</div><h2>Las imágenes están listas para evaluarse</h2>
+      <p>Usa “Volver a ejecutar las pruebas” para generar sus lecturas y métricas.</p>
+    </div>`}
+    <p class="subtitulo-seccion pie-datos">Fuentes: ${(datos.fuentes || []).map((fuente, i) => html`
+      <span key=${fuente.url}>${i ? " · " : ""}<a href=${fuente.url} target="_blank" rel="noreferrer">
+        ${fuente.nombre}</a> (${fuente.licencia})</span>`)}</p>
   `;
 }
 
@@ -351,18 +590,19 @@ function VistaTabla() {
   const [consulta, setConsulta] = useState("");
   const [estado, setEstado] = useState("");
   const [pagina, setPagina] = useState(0);
+  const [mostrarOcultos, setMostrarOcultos] = useState(false);
   const consultaEstable = useDebounce(consulta);
   const limite = 100;
   const [config, , errorConfig] = useApi("/api/config");
-  const [filas, , errorFilas] = useApi(
-    `/api/pruebas?q=${encodeURIComponent(consultaEstable)}&estado=${encodeURIComponent(estado)}&limit=${limite}&offset=${pagina * limite}`,
-    [consultaEstable, estado, pagina]);
+  const rutaFilas = `/api/pruebas?q=${encodeURIComponent(consultaEstable)}&estado=${encodeURIComponent(estado)}&limit=${limite}&offset=${pagina * limite}&incluir_ocultos=${mostrarOcultos}`;
+  const [filas, setFilas, errorFilas] = useApi(rutaFilas,
+    [consultaEstable, estado, pagina, mostrarOcultos]);
   const colores = (config && config.colores) || {};
   const refTabla = useRef(null);
 
   const alPulsarTecla = useCallback((ev) => {
     if (ev.key !== "ArrowDown" && ev.key !== "ArrowUp" && ev.key !== "Enter") return;
-    if (ev.target.tagName === "SELECT") return;
+    if (["SELECT", "BUTTON", "INPUT"].includes(ev.target.tagName)) return;
     const filasDOM = [...refTabla.current.querySelectorAll("tbody tr")];
     const idx = filasDOM.indexOf(document.activeElement);
     if (ev.key === "Enter" && idx >= 0) { filasDOM[idx].click(); return; }
@@ -380,6 +620,19 @@ function VistaTabla() {
   const celda = (valor, clase) =>
     valor === null || valor === undefined || valor === "" ? "—" : valor;
 
+  async function cambiarRevision(evento, fila, cambios) {
+    evento.stopPropagation();
+    try {
+      await enviarJSON("/api/revisiones", {
+        tipo: fila.origen === "externa" ? "externa" : "carpeta",
+        item_id: fila.id, ...cambios,
+      });
+      setFilas(await pedirJSON(rutaFilas));
+    } catch (error) {
+      alert(`No fue posible actualizar la revisión: ${error.message}`);
+    }
+  }
+
   return html`
     <div ref=${refTabla} onKeyDown=${alPulsarTecla}>
     <div class="barra-filtros">
@@ -388,33 +641,43 @@ function VistaTabla() {
         value=${consulta} onInput=${(e) => { setConsulta(e.target.value); setPagina(0); }} />
       <select class="campo" aria-label="Filtrar por estado" value=${estado}
         onChange=${(e) => { setEstado(e.target.value); setPagina(0); }}>
-        <option value="">Todos los estados</option>
-        <option value="verde">Verde</option>
-        <option value="amarillo">Amarillo</option>
-        <option value="rojo">Rojo</option>
-        <option value="sin_clasificar">Sin clasificar</option>
+        <option value="">Todas las revisiones</option>
+        <option value="por_revisar">Por revisar</option>
+        <option value="completada">Completadas</option>
       </select>
+      <label class="control-ocultos"><input type="checkbox" checked=${mostrarOcultos}
+        onChange=${(e) => { setMostrarOcultos(e.target.checked); setPagina(0); }} /> Mostrar quitados</label>
       <span class="subtitulo-seccion" style=${{ margin: "auto 0 auto auto" }}>
-        ${filas.total} ${filas.total === 1 ? "carpeta" : "carpetas"}</span>
+        ${filas.total} ${filas.total === 1 ? "elemento" : "elementos"}</span>
     </div>
 
     <div class="contenedor-tabla">
-      <table aria-label="Resultados de validación por carpeta">
+      <table aria-label="Bandeja unificada de revisión">
         <thead><tr>
-          <th>Identificador</th><th>Lote</th><th>Resultado</th><th>Confianza OCR</th>
-          <th>QR</th><th>Estado</th>
+          <th>Identificador</th><th>Grupo</th><th>Origen</th><th>Resultado</th>
+          <th>QR</th><th>Estado</th><th>Revisión</th><th>Acciones</th>
         </tr></thead>
         <tbody>
           ${filas.items.map((f) => html`<tr key=${f.nombre} tabIndex=${0}
             aria-label=${`Abrir detalle de ${f.identificador || f.nombre}`}
-            onClick=${() => { location.hash = `#/detalle/${encodeURIComponent(f.id)}`; }}>
+            onClick=${() => { location.hash = f.enlace || `#/detalle/${encodeURIComponent(f.id)}`; }}>
             <td data-etiqueta="Identificador"><strong>${f.identificador || f.nombre}</strong></td>
-            <td data-etiqueta="Lote">${celda(f.lote)}</td>
+            <td data-etiqueta="Grupo">${celda(f.lote)}</td>
+            <td data-etiqueta="Origen">${f.origen === "externa" ? "Prueba compleja" : "Carpeta"}</td>
             <td data-etiqueta="Resultado">${f.resultado}</td>
-            <td data-etiqueta="Confianza" class="numero">${fmtPct(f.confianza_ocr_pct)}</td>
             <td data-etiqueta="QR">${f.qr_detectado ? "Sí" : "No"}</td>
             <td data-etiqueta="Estado"><${ChipSemaforo} color=${f.semaforo} colores=${colores}>
               ${f.semaforo || "sin clasificar"}</${ChipSemaforo}></td>
+            <td data-etiqueta="Revisión"><span class=${`revision-chip revision-${f.revision.estado}`}>
+              ${f.revision.estado === "completada" ? "Completada" : "Por revisar"}</span></td>
+            <td data-etiqueta="Acciones"><div class="acciones-tabla">
+              <button class="boton boton-compacto" onClick=${(e) => cambiarRevision(e, f, {
+                estado: f.revision.estado === "completada" ? "por_revisar" : "completada" })}>
+                ${f.revision.estado === "completada" ? "Reabrir" : "Completar"}</button>
+              <button class="boton boton-compacto boton-peligro" onClick=${(e) => cambiarRevision(e, f, {
+                oculto: !f.revision.oculto })}>
+                ${f.revision.oculto ? "Restaurar" : "Quitar"}</button>
+            </div></td>
           </tr>`)}
         </tbody>
       </table>
@@ -434,26 +697,135 @@ function VistaTabla() {
   `;
 }
 
+function SelectorRegion({ item, valor, onChange }) {
+  const marcoRef = useRef(null);
+  const inicioRef = useRef(null);
+  const [vistaPrevia, setVistaPrevia] = useState(null);
+  const dimensiones = item?.resultado_ocr?.dimensiones || [1, 1];
+  const [anchoImagen, altoImagen] = dimensiones;
+  const limitar = (v, minimo, maximo) => Math.max(minimo, Math.min(maximo, v));
+  function punto(evento) {
+    const rect = marcoRef.current.getBoundingClientRect();
+    return {
+      x: limitar((evento.clientX - rect.left) / rect.width * anchoImagen, 0, anchoImagen),
+      y: limitar((evento.clientY - rect.top) / rect.height * altoImagen, 0, altoImagen),
+    };
+  }
+  function caja(desde, hasta) {
+    const x = Math.round(Math.min(desde.x, hasta.x));
+    const y = Math.round(Math.min(desde.y, hasta.y));
+    return [x, y, Math.round(Math.abs(hasta.x - desde.x)), Math.round(Math.abs(hasta.y - desde.y))];
+  }
+  function iniciar(evento) {
+    if (!item) return;
+    evento.preventDefault();
+    evento.currentTarget.setPointerCapture(evento.pointerId);
+    inicioRef.current = punto(evento);
+    setVistaPrevia([inicioRef.current.x, inicioRef.current.y, 0, 0]);
+  }
+  function mover(evento) {
+    if (!inicioRef.current) return;
+    setVistaPrevia(caja(inicioRef.current, punto(evento)));
+  }
+  function terminar(evento) {
+    if (!inicioRef.current) return;
+    const seleccion = caja(inicioRef.current, punto(evento));
+    inicioRef.current = null;
+    setVistaPrevia(null);
+    if (seleccion[2] >= 2 && seleccion[3] >= 2) onChange(seleccion);
+  }
+  function estiloCaja(bbox) {
+    return {
+      left: `${bbox[0] / anchoImagen * 100}%`, top: `${bbox[1] / altoImagen * 100}%`,
+      width: `${bbox[2] / anchoImagen * 100}%`, height: `${bbox[3] / altoImagen * 100}%`,
+    };
+  }
+  const ocr = item?.resultado_ocr || {};
+  const detectadas = ocr.lineas_texto || ocr.tokens || [];
+  return html`<div>
+    <div class="selector-region" ref=${marcoRef} onPointerDown=${iniciar}
+      onPointerMove=${mover} onPointerUp=${terminar} onPointerCancel=${terminar}
+      role="img" aria-label="Arrastra para seleccionar la zona que contiene texto">
+      <img src=${item?.ruta_api} alt=${`Seleccionar texto en ${item?.nombre || "imagen"}`} draggable="false" />
+      ${detectadas.filter((linea) => linea.bbox).map((linea, i) => html`
+        <span key=${`ocr-${i}`} class="caja-region caja-ocr" style=${estiloCaja(linea.bbox)}
+          title=${`OCR: ${linea.texto}`} />`)}
+      ${(item?.anotaciones || []).map((anotacion) => html`
+        <span key=${`manual-${anotacion.id}`} class="caja-region caja-manual"
+          style=${estiloCaja(anotacion.bbox)} title=${`Manual: ${anotacion.texto_correcto}`} />`)}
+      ${(vistaPrevia || valor) && html`<span class="caja-region caja-seleccion"
+        style=${estiloCaja(vistaPrevia || valor)} />`}
+    </div>
+    <div class="leyenda-regiones">
+      <span><i class="leyenda-caja ocr"></i>Detectado por OCR</span>
+      <span><i class="leyenda-caja manual"></i>Confirmado manualmente</span>
+      <span><i class="leyenda-caja seleccion"></i>Selección actual</span>
+    </div>
+  </div>`;
+}
+
 function PanelImagen({ titulo, item, vacio }) {
+  const ocr = item?.resultado_ocr || {};
   return html`<div class="tarjeta">
     <h3 class="titulo-seccion" style=${{ marginTop: 0 }}>${titulo}</h3>
     ${item
       ? html`<div class="imagen-marco">
           <img src=${item.ruta_api} alt=${`Imagen: ${item.ruta}`} loading="lazy" />
         </div>
+        <div class="texto-detectado">
+          <div class="progreso-titulo"><strong>Texto completo detectado</strong>
+            <span class="subtitulo-seccion">${(ocr.lineas_texto || []).length} renglones</span></div>
+          <pre>${ocr.texto_completo || "Sin texto legible"}</pre>
+        </div>
         <ul class="tokens-lista">
-          ${((item.resultado_ocr || {}).tokens || []).map((t, i) => html`<li key=${i} class="token-fila">
+          ${(ocr.lineas_texto || ocr.tokens || []).map((t, i) => html`<li key=${i} class="token-fila">
             <span class="mono">${t.texto}</span>
             <span class="conf">${(t.confianza * 100).toFixed(1)}%</span>
           </li>`)}
-        </ul>`
+        </ul>
+        ${(item.anotaciones || []).length > 0 && html`<div class="anotaciones-manuales">
+          <strong>Texto añadido manualmente</strong>
+          ${(item.anotaciones || []).map((a) => html`<div key=${a.id} class="anotacion-manual">
+            <span class="mono">${a.texto_correcto}</span>
+            <small class="mono">región ${a.bbox.join(", ")}</small>
+          </div>`)}
+        </div>`}`
       : html`<p style=${{ color: "var(--texto-3)" }}>${vacio}</p>`}
   </div>`;
 }
 
 function VistaDetalle({ nombre }) {
-  const [detalle, , errorDetalle] = useApi(`/api/pruebas/${encodeURIComponent(nombre)}`, [nombre]);
+  const [detalle, setDetalle, errorDetalle] = useApi(`/api/pruebas/${encodeURIComponent(nombre)}`, [nombre]);
   const [config, , errorConfig] = useApi("/api/config");
+  const [aprendizaje] = useApi("/api/aprendizaje", [nombre]);
+  const [textoOcr, setTextoOcr] = useState("");
+  const [textoCorrecto, setTextoCorrecto] = useState("");
+  const [imagenId, setImagenId] = useState("");
+  const [guardandoCorreccion, setGuardandoCorreccion] = useState(false);
+  const [resultadoCorreccion, setResultadoCorreccion] = useState(null);
+  const [region, setRegion] = useState(null);
+  const [textoRegion, setTextoRegion] = useState("");
+  const [guardandoRegion, setGuardandoRegion] = useState(false);
+  const [resultadoRegion, setResultadoRegion] = useState(null);
+  useEffect(() => {
+    const imagenes = detalle?.imagenes?.length ? detalle.imagenes
+      : [detalle?.etiqueta, detalle?.referencia].filter(Boolean);
+    const primeraImagen = imagenes[0];
+    const ocr = primeraImagen?.resultado_ocr || {};
+    const unidades = [
+      ...(ocr.lineas_texto || []), ...(ocr.tokens || []),
+      ...(ocr.texto_completo ? [{ texto: ocr.texto_completo }] : []),
+    ];
+    const primero = unidades[0];
+    const valor = primero ? (primero.texto_original || primero.texto) : "";
+    setImagenId(primeraImagen?.id || "");
+    setTextoOcr(valor);
+    setTextoCorrecto(valor);
+    setResultadoCorreccion(null);
+    setRegion(null);
+    setTextoRegion("");
+    setResultadoRegion(null);
+  }, [detalle?.id]);
   const colores = (config && config.colores) || {};
   if (detalle === undefined || config === undefined) {
     return html`<div class="tarjeta" style=${{ marginTop: 16 }}><div class="esqueleto"></div></div>`;
@@ -461,6 +833,74 @@ function VistaDetalle({ nombre }) {
   if (errorDetalle || errorConfig) return html`<${EstadoError} mensaje="No fue posible abrir este detalle." />`;
   if (!detalle) return html`<${EstadoVacio} />`;
   const comp = detalle.comparacion;
+  const imagenesDetalle = detalle.imagenes?.length ? detalle.imagenes
+    : [detalle.etiqueta, detalle.referencia].filter(Boolean);
+  const imagenSeleccionada = imagenesDetalle.find((imagen) => imagen.id === imagenId)
+    || imagenesDetalle[0];
+  const ocrSeleccionado = imagenSeleccionada?.resultado_ocr || {};
+  const unidadesCorregibles = [
+    ...(ocrSeleccionado.lineas_texto || []),
+    ...(ocrSeleccionado.tokens || []),
+    ...(ocrSeleccionado.texto_completo ? [{ texto: ocrSeleccionado.texto_completo }] : []),
+  ].filter((unidad, indice, todas) => {
+    const valor = unidad.texto_original || unidad.texto;
+    return valor && todas.findIndex((otra) =>
+      (otra.texto_original || otra.texto) === valor) === indice;
+  });
+
+  function cambiarImagen(nuevoId) {
+    setImagenId(nuevoId);
+    const imagen = imagenesDetalle.find((item) => item.id === nuevoId);
+    const ocr = imagen?.resultado_ocr || {};
+    const primera = (ocr.lineas_texto || [])[0] || (ocr.tokens || [])[0]
+      || (ocr.texto_completo ? { texto: ocr.texto_completo } : null);
+    const valor = primera ? (primera.texto_original || primera.texto) : "";
+    setTextoOcr(valor);
+    setTextoCorrecto(valor);
+    setResultadoCorreccion(null);
+    setRegion(null);
+    setTextoRegion("");
+    setResultadoRegion(null);
+  }
+  async function confirmarCorreccion(e) {
+    e.preventDefault();
+    setGuardandoCorreccion(true);
+    setResultadoCorreccion(null);
+    try {
+      const resultado = await enviarJSON("/api/aprendizaje/correcciones", {
+        prueba_id: detalle.id, campo: "etiqueta", imagen_id: imagenSeleccionada?.id,
+        texto_ocr: textoOcr,
+        texto_correcto: textoCorrecto,
+      });
+      setResultadoCorreccion({ ok: true, resultado });
+      setTextoCorrecto(textoOcr);
+    } catch (error) {
+      setResultadoCorreccion({ ok: false, mensaje: error.message });
+    } finally {
+      setGuardandoCorreccion(false);
+    }
+  }
+  async function confirmarRegion(e) {
+    e.preventDefault();
+    if (!region) return;
+    setGuardandoRegion(true);
+    setResultadoRegion(null);
+    try {
+      const resultado = await enviarJSON("/api/aprendizaje/regiones", {
+        prueba_id: detalle.id, imagen_id: imagenSeleccionada?.id,
+        bbox: region, texto_correcto: textoRegion,
+      });
+      setResultadoRegion({ ok: true, resultado });
+      const actualizado = await pedirJSON(`/api/pruebas/${encodeURIComponent(nombre)}`);
+      setDetalle(actualizado);
+      setRegion(null);
+      setTextoRegion("");
+    } catch (error) {
+      setResultadoRegion({ ok: false, mensaje: error.message });
+    } finally {
+      setGuardandoRegion(false);
+    }
+  }
   return html`
     <div style=${{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginTop: 18 }}>
       <h2 style=${{ margin: 0, fontSize: 20 }}>${detalle.identificador || detalle.nombre}</h2>
@@ -486,11 +926,95 @@ function VistaDetalle({ nombre }) {
       <div class="aviso">Tokens de la etiqueta NO encontrados en la referencia:
         ${comp.faltantes.map((t) => html`<code key=${t} class="mono">${t}</code>`)} — revisar.</div>`}
 
-    <div class="detalle-grid">
-      <${PanelImagen} titulo="Etiqueta (imagen original + tokens OCR)"
-        item=${detalle.etiqueta} vacio="Sin fotografía de etiqueta en esta carpeta." />
-      <${PanelImagen} titulo="Referencia (imagen original + tokens OCR)"
-        item=${detalle.referencia} vacio="Sin imagen de referencia en esta carpeta." />
+    <div class="tarjeta aprendizaje-panel">
+      <div>
+        <p class="sobrelinea">APRENDIZAJE SUPERVISADO</p>
+        <h3 class="titulo-seccion">Corregir una lectura</h3>
+        <p class="subtitulo-seccion">La corrección se guarda como verdad confirmada. Una nueva versión
+          solo se activa si mejora la evaluación sin introducir regresiones.</p>
+      </div>
+      ${unidadesCorregibles.length ? html`
+        <form class="formulario-correccion" onSubmit=${confirmarCorreccion}>
+          <label>Imagen
+            <select class="campo" value=${imagenSeleccionada?.id || ""}
+              onChange=${(e) => cambiarImagen(e.target.value)}>
+              ${imagenesDetalle.map((imagen) => html`<option key=${imagen.id} value=${imagen.id}>
+                ${imagen.nombre || imagen.ruta.split(/[\\/]/).pop()} · ${(imagen.rol || "imagen").replaceAll("_", " ")}
+              </option>`)}
+            </select>
+          </label>
+          <label>Renglón o bloque OCR
+            <select class="campo" value=${textoOcr} onChange=${(e) => {
+              setTextoOcr(e.target.value); setTextoCorrecto(e.target.value);
+            }}>
+              ${unidadesCorregibles.map((t, i) => {
+                const valor = t.texto_original || t.texto;
+                return html`<option key=${`${valor}-${i}`} value=${valor}>${valor.replaceAll("\n", " ↵ ")}</option>`;
+              })}
+            </select>
+          </label>
+          <label>Texto correcto (con espacios y saltos)
+            <textarea class="campo mono campo-texto" value=${textoCorrecto} required maxLength=${4096}
+              rows=${Math.min(8, Math.max(2, textoCorrecto.split("\n").length + 1))}
+              onChange=${(e) => setTextoCorrecto(e.target.value)} placeholder="Escribe el texto correcto" />
+          </label>
+          <button class="boton boton-primario" disabled=${guardandoCorreccion || !textoCorrecto.trim()}>
+            ${guardandoCorreccion ? "Evaluando…" : "Confirmar y entrenar"}
+          </button>
+        </form>`
+        : html`<p class="subtitulo-seccion">No hay texto OCR que corregir en esta imagen.</p>`}
+      ${aprendizaje && html`<p class="subtitulo-seccion estado-modelo">
+        Correcciones confirmadas: <strong>${aprendizaje.correcciones}</strong> · Modelo activo:
+        <span class="mono">${aprendizaje.modelo_activo?.version || "aún sin evidencia suficiente"}</span>
+      </p>`}
+      ${resultadoCorreccion?.ok && html`<div class="aviso">
+        Corrección guardada. ${resultadoCorreccion.resultado.entrenamiento?.promovido
+          ? `Se activó el modelo ${resultadoCorreccion.resultado.entrenamiento.version}.`
+          : "El candidato no se promovió todavía; necesita más evidencia o no mejoró la versión activa."}
+      </div>`}
+      ${resultadoCorreccion && !resultadoCorreccion.ok && html`
+        <div class="mensaje-error">${resultadoCorreccion.mensaje}</div>`}
+
+      <div class="separador-panel"></div>
+      <div>
+        <p class="sobrelinea">TEXTO OMITIDO</p>
+        <h3 class="titulo-seccion">Marcar una zona que el OCR no encontró</h3>
+        <p class="subtitulo-seccion">Arrastra sobre la imagen, encierra el texto y escribe exactamente
+          lo que dice. La región queda asociada a esta carpeta e imagen y se agrega al Excel.</p>
+      </div>
+      <form class="formulario-region" onSubmit=${confirmarRegion}>
+        <${SelectorRegion} item=${imagenSeleccionada} valor=${region} onChange=${setRegion} />
+        <div class="campos-region">
+          <label>Región seleccionada
+            <input class="campo mono" value=${region ? region.join(", ") : ""} readOnly
+              placeholder="Arrastra sobre la imagen" />
+          </label>
+          <label>Texto real de esa zona
+            <textarea class="campo mono campo-texto" value=${textoRegion} required maxLength=${8192}
+              rows=${Math.min(10, Math.max(3, textoRegion.split("\n").length + 1))}
+              onChange=${(e) => setTextoRegion(e.target.value)}
+              placeholder="Escribe todo el texto, respetando espacios y saltos" />
+          </label>
+          <button class="boton boton-primario"
+            disabled=${guardandoRegion || !region || !textoRegion.trim()}>
+            ${guardandoRegion ? "Guardando…" : "Guardar región y actualizar Excel"}
+          </button>
+        </div>
+      </form>
+      ${resultadoRegion?.ok && html`<div class="aviso">
+        Región guardada y agrupada en ${detalle.nombre}.
+        ${resultadoRegion.resultado.excel_actualizado
+          ? " El Excel maestro fue actualizado."
+          : ` La anotación está segura, pero el Excel no pudo actualizarse: ${resultadoRegion.resultado.advertencia_excel || "error desconocido"}.`}
+      </div>`}
+      ${resultadoRegion && !resultadoRegion.ok && html`
+        <div class="mensaje-error">${resultadoRegion.mensaje}</div>`}
+    </div>
+
+    <div class="detalle-grid detalle-todas-imagenes">
+      ${imagenesDetalle.map((imagen) => html`<${PanelImagen} key=${imagen.id || imagen.ruta}
+        titulo=${`${(imagen.rol || "imagen").replaceAll("_", " ")} · ${imagen.nombre || imagen.ruta.split(/[\\/]/).pop()}`}
+        item=${imagen} vacio="Imagen no disponible." />`)}
     </div>
 
     <a class="volver" href="#/tabla">← Volver al listado</a>
@@ -509,6 +1033,7 @@ function App() {
   }, []);
   const [vista, arg] = ruta.replace(/^#\//, "").split("/");
   const actual = vista === "tabla" ? "tabla" : vista === "carga" ? "carga"
+    : vista === "externas" ? "externas"
     : vista === "detalle" ? "" : "resumen";
 
   return html`
@@ -522,12 +1047,14 @@ function App() {
           <a class="tab" href="#/resumen" aria-current=${actual === "resumen" ? "page" : undefined}>Resumen</a>
           <a class="tab" href="#/tabla" aria-current=${actual === "tabla" ? "page" : undefined}>Listado</a>
           <a class="tab" href="#/carga" aria-current=${actual === "carga" ? "page" : undefined}>Procesar carpeta</a>
+          <a class="tab" href="#/externas" aria-current=${actual === "externas" ? "page" : undefined}>Pruebas complejas</a>
         </nav>
       </div>
     </header>
     <main class="contenedor">
       ${vista === "tabla" ? html`<${VistaTabla} />`
         : vista === "carga" ? html`<${VistaCarga} />`
+        : vista === "externas" ? html`<${VistaExternas} />`
         : vista === "detalle" ? html`<${VistaDetalle} nombre=${decodeURIComponent(arg || "")} />`
         : html`<${VistaResumen} />`}
     </main>

@@ -21,20 +21,46 @@ fase1:
   motor: easyocr
   motor_fallback: paddle
   lang: en                # el texto es nomenclatura alfanumérica, no lenguaje natural
+  # Restringe EasyOCR al dominio de códigos y reduce confusiones con símbolos.
+  caracteres_permitidos: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_/"
   umbral_confianza: 0.50  # tokens por debajo se descartan
-  umbral_confianza_segunda_pasada: 0.60  # dispara el respaldo de 180° si la media baja de aquí
+  # Para transcripción completa se conserva más texto; los códigos usados en
+  # decisiones mantienen el umbral estricto anterior.
+  umbral_confianza_texto_completo: 0.25
+  extraer_texto_completo: true
   umbral_espacio_px: 40   # PARÁMETRO ABIERTO (doc §10.3): separación mínima en px
                           # entre cajas para considerar tokens distintos en una fila.
   preprocesamiento:
     activar: true
     deskew: true                    # corrige rotación fina (±15°)
     angulo_minimo_correccion: 2.0   # grados; por debajo no rota (evita ruido)
-    # La inversión 180° la corrige el clasificador de orientación de documento
-    # del motor (0/90/180/270); este doble pase adaptativo es el respaldo.
-    detectar_invertida_180: true
+    variante_principal: original    # mejor para fotos reales; adaptativa queda como respaldo
     binarizacion_adaptativa: true
     binarizacion_blocksize: 51      # debe ser impar
     binarizacion_c: 15
+    # Realce para texto con poco contraste o grabado/moldeado sobre plástico.
+    clahe_clip_limit: 3.0
+    clahe_grid_size: 8
+    relieve_kernel: 9
+    regiones_texto:
+      activar: true
+      max_regiones: 6
+      umbral_confianza: 0.20
+      altura_objetivo_px: 220
+      escala_max: 3.0
+      agrupacion_horizontal_divisor: 25
+      agrupacion_vertical_divisor: 200
+      margen_horizontal_factor: 0.80
+      margen_vertical_factor: 0.80
+      bono_puntuacion: 0.35
+    busqueda_adaptativa:
+      # "adaptativo": una pasada normal; solo amplía la búsqueda cuando no
+      # encuentra un código alfanumérico con confianza suficiente.
+      # "exhaustivo": prueba todas las combinaciones (más lento).
+      modo: adaptativo
+      orientaciones: [0, 90, 180, 270]
+      variantes_respaldo: [adaptativa, clahe, relieve]
+      confianza_codigo_suficiente: 0.70
   qr:
     # Detector de ancla: "cv2" (sin dependencias extra) o "pyzbar" (si está
     # instalado junto a las DLL de zbar). Solo se usa para GEOMETRÍA (bbox),
@@ -83,6 +109,31 @@ fase3:
   archivo_salida: resultado_maestro.xlsx
   hoja_estructura: "Estructura completa"
   hoja_matriz: "Matriz de cumplimiento"
+  hoja_textos: "Textos por imagen"
+  hoja_revision: "Bandeja de revisión"
+
+# Aprendizaje local y auditable. Las ejecuciones registran observaciones, pero
+# solo una corrección humana confirmada puede entrenar una versión candidata.
+aprendizaje:
+  activar: true
+  directorio: .aprendizaje
+  registrar_observaciones: true
+  aplicar_modelo: true
+  promocion_automatica: true
+  # Una lectura exacta debe corregirse igual en imágenes distintas al menos dos
+  # veces antes de convertirse en regla automática.
+  minimo_soporte_exacto: 2
+  minimo_soporte_caracter: 3
+  minimo_soporte_patron: 2
+  dominancia_minima: 0.80
+  # Desde este volumen se reserva automáticamente 20% de imágenes como holdout.
+  minimo_correcciones_validacion: 20
+
+# Banco local de imágenes difíciles. Se mantiene fuera de Git porque las
+# fuentes externas pueden no autorizar su redistribución.
+pruebas_externas:
+  directorio: .pruebas_externas/embossed-text-reader/images
+  archivo_resultados: .pruebas_externas/resultados.json
 
 # Paleta del semáforo: MISMO hex en Excel y dashboard (doc §6, requisito visual).
 # El backend la expone en GET /api/config para que el frontend no la duplique.

@@ -13,6 +13,8 @@ por separado y seleccionarse en `config.yaml` cuando la plataforma lo soporte.
 - Descubrimiento recursivo de carpetas sin asumir profundidad fija.
 - Detección de nombres conformes y carpetas anómalas.
 - OCR sobre imágenes completas con deskew, binarización y QR opcional.
+- Detección de regiones, cuatro orientaciones y realce de texto grabado.
+- Aprendizaje incremental supervisado con versiones, evaluación y rollback.
 - Comparación etiqueta ↔ referencia por tokens alfanuméricos.
 - Semáforo configurable desde YAML.
 - Excel maestro con estructura completa y matriz de cumplimiento.
@@ -174,15 +176,22 @@ Abre en el navegador:
 http://127.0.0.1:8000/
 ```
 
-El dashboard ofrece cuatro vistas:
+El dashboard ofrece cinco vistas:
 
 - **Resumen:** KPIs y distribución del semáforo.
-- **Listado:** búsqueda, filtros y navegación a detalle.
-- **Detalle:** imágenes y tokens OCR de etiqueta/referencia.
+- **Listado:** bandeja única con carpetas y pruebas complejas, búsqueda, estado
+  de revisión, acciones para completar/reabrir y eliminación reversible.
+- **Detalle:** todas las imágenes de la carpeta, texto completo con su layout y
+  corrección de tokens, líneas o bloques multilinea. También permite dibujar una
+  región y transcribir texto que el OCR omitió por completo.
 - **Procesar carpeta:** ejecuta las Fases 0–3 desde una ruta local.
+- **Pruebas complejas:** muestra fotografías externas difíciles, sus métricas y
+  permite confirmar correcciones para el aprendizaje supervisado.
 
 Para un lote grande, usa una ruta local en **Procesar carpeta**. Los archivos no
-se suben ni se duplican en el navegador.
+se suben ni se duplican en el navegador. Durante la ejecución aparecen un reloj
+fluido, porcentaje por imagen, carpetas e imágenes pendientes, tiempo estimado
+recalculado y cada resultado ya terminado.
 
 El puerto se cambia en `config.yaml`:
 
@@ -249,6 +258,23 @@ criterios:
 El estado global es el color más restrictivo de los criterios evaluados. Los
 mismos hex se utilizan en Excel y dashboard.
 
+## Aprendizaje incremental
+
+Cada ejecución registra ejemplos localmente. Desde el detalle del dashboard se
+puede corregir una lectura; el sistema entrena un candidato y solo lo activa si
+mejora los casos confirmados sin regresiones. Las predicciones no confirmadas no
+se usan como verdad de entrenamiento.
+
+La misma corrección supervisada está disponible en **Pruebas complejas**. Las
+imágenes externas se guardan localmente en `.pruebas_externas/`, fuera de Git.
+
+```bash
+python aprendizaje.py estado
+```
+
+Consulta el diseño, los umbrales y el rollback en
+`docs/aprendizaje_incremental.md`.
+
 ## Configuración
 
 Los parámetros viven en:
@@ -296,6 +322,7 @@ OCR-Validacion-Excel/
 ├── validacion.py                 # Fase 2
 ├── generar_excel.py              # Fase 3
 ├── analizar_excel.py             # Inventario de libros Excel
+├── aprendizaje.py                # Modelo incremental, versiones y rollback
 ├── pipeline.py                   # Orquestador Fases 0–3
 ├── configuracion.py              # Configuración y reglas compartidas
 ├── config.yaml
@@ -337,6 +364,7 @@ Antes de modificar una fase, consulta:
 - `docs/fase2_validacion.md`
 - `docs/fase3_excel.md`
 - `docs/fase4_dashboard.md`
+- `docs/aprendizaje_incremental.md`
 
 Cada cambio debe conservar los contratos de entrada/salida, actualizar el
 Markdown de su fase y registrar en `errores/` cualquier enfoque fallido antes de

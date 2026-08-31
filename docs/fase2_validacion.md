@@ -26,9 +26,14 @@ python validacion.py [--estructura ruta.json] [--salida ruta.json]
    ≥ 2 imágenes, densidad ≥ `umbral_densidad_texto` (0.010) y ventaja ≥
    `ventaja_minima_referencia` (1.5×) sobre la segunda mejor. Sin ganador claro
    → `sin_referencia` (no se adivina).
-4. **Etiqueta**: entre las fotografías restantes, la de mayor confianza OCR
-   (`estrategia_etiqueta: mejor_confianza`; alternativa: `primera`).
-5. **Comparación** (`comparar_tokens`): tokens normalizados (mayúsculas, solo
+4. **Imágenes conservadas**: todas las imágenes quedan en `imagenes`, con id,
+   nombre, rol y OCR propio. `etiqueta` y `referencia` se mantienen como campos
+   de compatibilidad, pero ya no descartan las fotografías adicionales.
+5. **Etiqueta principal**: entre las fotografías restantes, la de mayor
+   confianza OCR (`estrategia_etiqueta: mejor_confianza`; alternativa:
+   `primera`).
+6. **Comparación agregada** (`comparar_tokens`): reúne los tokens de todas las
+   fotos de etiqueta y todas las referencias, los normaliza (mayúsculas, solo
    alfanuméricos). Con `comparar_solo_tokens_codigo: true` solo se comparan
    tokens tipo código (los que contienen dígitos), ignorando rótulos de
    lenguaje natural ('PRUEBA DE ETIQUETA') que no forman parte del contrato.
@@ -76,6 +81,12 @@ lateral no. El campo `qr_detectado` reporta el de la etiqueta elegida.
     "es_conforme": true, "anomalia_fase0": null,
     "tipos_archivo": {"fotografia": ["foto_frontal.jpg", "foto_lateral.jpg"],
                        "candidato_referencia": ["info_referencia.jpg"], "video": [...]},
+    "imagenes": [{"id": "...", "nombre": "foto_frontal.jpg",
+                    "rol": "etiqueta_adicional", "resultado_ocr": {"texto_completo": "..."}},
+                  {"id": "...", "nombre": "foto_lateral.jpg",
+                    "rol": "etiqueta_principal", "resultado_ocr": {"texto_completo": "..."}},
+                  {"id": "...", "nombre": "info_referencia.jpg",
+                    "rol": "referencia", "resultado_ocr": {"texto_completo": "..."}}],
     "etiqueta": {"ruta": "...\\foto_frontal.jpg",
                   "resultado_ocr": {"tokens": [...], "qr_bbox": [...], ...}},
     "referencia": {"ruta": "...\\info_referencia.jpg", "resultado_ocr": {...}},
@@ -100,7 +111,8 @@ lateral no. El campo `qr_detectado` reporta el de la etiqueta elegida.
   sustituible por regla de nombre de archivo (PARÁMETRO ABIERTO §10.2) sin
   tocar nada más.
 - **Caché de OCR por lote**: cada imagen se lee una vez aunque la lógica de
-  referencia/etiqueta la evalúe varias veces.
+  referencia/etiqueta la evalúe varias veces. El callback de progreso se emite
+  por imagen, no solamente al terminar una carpeta.
 - Alternativa descartada: identificar la referencia por resolución/aspecto —
   fotos de pantallas vs papel rompen el supuesto; la densidad de texto es la
   señal que el propio Documento Maestro propone.
@@ -122,8 +134,9 @@ lateral no. El campo `qr_detectado` reporta el de la etiqueta elegida.
 - La distinción fotografia/diagrama es una heurística de v1 (colores + ruido);
   con lotes reales puede requerir calibración. No afecta la validación (ambas
   se OCR-ean igual; solo cambia la etiqueta de clasificación en el Excel).
-- Si una carpeta tuviera VARIAS imágenes de referencia válidas, se toma la de
-  mayor densidad; caso no presente en los datos de prueba.
+- Si una carpeta contiene varias imágenes con nombre de referencia, todas se
+  conservan y participan en la comparación; una se expone además en el campo
+  heredado `referencia`.
 - La estrategia `mejor_confianza` asume que la foto "buena" es la más legible;
   si todas las fotos son ilegibles, la comparación saldrá discrepancia/sin
   referencia y queda para revisión humana (comportamiento deseado).

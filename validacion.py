@@ -23,10 +23,13 @@ cambia el costo del pipeline.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
+import time
 from datetime import datetime
 from pathlib import Path
+from typing import Callable
 
 import cv2
 import numpy as np
@@ -195,7 +198,9 @@ def _parsear_identificador(nombre: str, patron_dominante: str | None) -> dict:
 
 def validar_lote(ruta_estructura: str | Path | None = None,
                  config: dict | None = None,
-                 archivo_salida: str | Path | None = None) -> dict:
+                 archivo_salida: str | Path | None = None,
+                 al_resultado: Callable[[int, int, dict, float | None], None] | None = None,
+                 al_imagen: Callable[[int, int, str, float | None], None] | None = None) -> dict:
     """
     Recorre las carpetas hoja de la estructura detectada, valida cada una y
     serializa validacion_resultados.json. Retorna la estructura completa
@@ -211,16 +216,48 @@ def validar_lote(ruta_estructura: str | Path | None = None,
     patron_dominante = estructura.get("patron_dominante")
     cache_ocr: dict[str, dict] = {}
     resultados = []
+    hojas = carpetas_hoja(estructura)
+    inicio = time.monotonic()
+    total_imagenes = sum(len(c.get("archivos", {}).get("imagenes", [])) for c in hojas)
+    imagenes_procesadas = 0
 
-    for carpeta in carpetas_hoja(estructura):
-        fila = _validar_carpeta(carpeta, config, f2, cache_ocr, patron_dominante)
+    def imagen_lista(ruta_imagen: str) -> None:
+        nonlocal imagenes_procesadas
+        imagenes_procesadas += 1
+        if al_imagen:
+            transcurrido = time.monotonic() - inicio
+            eta = ((transcurrido / imagenes_procesadas) *
+                   (total_imagenes - imagenes_procesadas)) if imagenes_procesadas else None
+            al_imagen(imagenes_procesadas, total_imagenes, ruta_imagen,
+                      round(eta, 1) if eta is not None else None)
+
+    for indice, carpeta in enumerate(hojas, start=1):
+        fila = _validar_carpeta(
+            carpeta, config, f2, cache_ocr, patron_dominante, imagen_lista)
         resultados.append(fila)
+        if al_resultado:
+            transcurrido = time.monotonic() - inicio
+            eta = (transcurrido / indice) * (len(hojas) - indice) if indice else None
+            al_resultado(indice, len(hojas), fila,
+                         round(eta, 1) if eta is not None else None)
+
+    aprendizaje = None
+    if config.get("aprendizaje", {}).get("activar", True):
+        try:
+            from aprendizaje import GestorAprendizaje
+            aprendizaje = GestorAprendizaje(config).registrar_ejecucion(
+                list(cache_ocr.values()), raiz=estructura.get("raiz"))
+        except Exception as exc:
+            # El registro de aprendizaje nunca debe invalidar un lote ya
+            # procesado; el error queda explícito en el artefacto de salida.
+            aprendizaje = {"registrada": False, "error": f"{type(exc).__name__}: {exc}"}
 
     salida = {
         "raiz": estructura["raiz"],
         "generado_en": datetime.now().isoformat(timespec="seconds"),
         "estructura_usada": str(ruta_estructura),
         "carpetas_procesadas": len(resultados),
+        "aprendizaje": aprendizaje,
         "resultados": resultados,
     }
     destino = Path(archivo_salida) if archivo_salida else RAIZ_PROYECTO / "validacion_resultados.json"
@@ -231,7 +268,8 @@ def validar_lote(ruta_estructura: str | Path | None = None,
 
 
 def _validar_carpeta(carpeta: dict, config: dict, f2: dict,
-                     cache_ocr: dict, patron_dominante: str | None) -> dict:
+                     cache_ocr: dict, patron_dominante: str | None,
+                     al_imagen: Callable[[str], None] | None = None) -> dict:
     """Procesa una carpeta hoja completa (clasificación + OCR + comparación)."""
     ruta = Path(carpeta["ruta"])
     observaciones: list[str] = []
@@ -258,6 +296,8 @@ def _validar_carpeta(carpeta: dict, config: dict, f2: dict,
                                     "confianza_media": None, "num_lineas_ocr": 0,
                                     "error": str(exc)}
         ocr_por_imagen.append({"ruta": clave, "resultado_ocr": cache_ocr[clave]})
+        if al_imagen:
+            al_imagen(clave)
 
     if not imagenes:
         return {
@@ -266,7 +306,7 @@ def _validar_carpeta(carpeta: dict, config: dict, f2: dict,
             "es_conforme": carpeta["conforme"],
             "anomalia_fase0": carpeta["motivo_anomalia"],
             "tipos_archivo": categorias,
-            "etiqueta": None, "referencia": None,
+            "etiqueta": None, "referencia": None, "imagenes": [],
             "comparacion": {"resultado": "sin_procesar", "ratio": None,
                             "coincidentes": [], "faltantes": []},
             "confianza_ocr_pct": None, "qr_detectado": False,
@@ -274,23 +314,25 @@ def _validar_carpeta(carpeta: dict, config: dict, f2: dict,
         }
 
     # 2. Referencia: pista de nombre primero; si no, heurística de densidad.
-    candidatos_nombre = [c for c in (categorias.get("candidato_referencia", []))]
-    referencia = None
+    candidatos_nombre = [c for c in categorias.get("candidato_referencia", [])]
+    referencias: set[str] = set()
     if candidatos_nombre:
-        referencia = str(ruta / sorted(candidatos_nombre)[0])
+        referencias = {str(ruta / nombre) for nombre in candidatos_nombre}
     else:
-        referencia = identificar_referencia(
+        detectada = identificar_referencia(
             ocr_por_imagen,
             umbral=float(f2.get("umbral_densidad_texto", 0.01)),
             ventaja_minima=float(f2.get("ventaja_minima_referencia", 1.5)))
-        if referencia is not None:
+        if detectada is not None:
+            referencias.add(detectada)
             observaciones.append("referencia detectada por densidad de texto")
 
-    ref_ocr = next((x["resultado_ocr"] for x in ocr_por_imagen
-                    if x["ruta"] == referencia), None) if referencia else None
+    referencia = sorted(referencias)[0] if referencias else None
+    items_referencia = [x for x in ocr_por_imagen if x["ruta"] in referencias]
+    ref_ocr = items_referencia[0]["resultado_ocr"] if items_referencia else None
 
     # 3. Etiqueta: la mejor fotografía (o la primera, según estrategia).
-    fotos = [x for x in ocr_por_imagen if x["ruta"] != referencia]
+    fotos = [x for x in ocr_por_imagen if x["ruta"] not in referencias]
     estrategia = f2.get("estrategia_etiqueta", "mejor_confianza")
     if estrategia == "mejor_confianza" and fotos:
         etiqueta_item = max(fotos, key=lambda x: (x["resultado_ocr"].get("confianza_media") or 0.0))
@@ -298,13 +340,16 @@ def _validar_carpeta(carpeta: dict, config: dict, f2: dict,
         etiqueta_item = sorted(fotos, key=lambda x: x["ruta"])[0] if fotos else None
 
     if etiqueta_item is None:  # solo había imagen(es) de referencia
+        imagenes_salida = [_imagen_salida(x, "referencia") for x in items_referencia]
         return {
             "ruta": str(ruta), "nombre": carpeta["nombre"],
             **_parsear_identificador(carpeta["nombre"], patron_dominante),
             "es_conforme": carpeta["conforme"],
             "anomalia_fase0": carpeta["motivo_anomalia"],
             "tipos_archivo": categorias,
-            "etiqueta": None, "referencia": {"ruta": referencia, "resultado_ocr": _compacto(ref_ocr)},
+            "etiqueta": None,
+            "referencia": {"ruta": referencia, "resultado_ocr": _compacto(ref_ocr)},
+            "imagenes": imagenes_salida,
             "comparacion": {"resultado": "sin_procesar", "ratio": None,
                             "coincidentes": [], "faltantes": []},
             "confianza_ocr_pct": None, "qr_detectado": False,
@@ -312,18 +357,34 @@ def _validar_carpeta(carpeta: dict, config: dict, f2: dict,
         }
 
     et_ocr = etiqueta_item["resultado_ocr"]
+    tokens_etiqueta = [t["texto"] for foto in fotos
+                       for t in foto["resultado_ocr"].get("tokens", [])]
+    tokens_referencia = [t["texto"] for item in items_referencia
+                         for t in item["resultado_ocr"].get("tokens", [])]
     comparacion = comparar_tokens(
-        [t["texto"] for t in et_ocr.get("tokens", [])],
-        [t["texto"] for t in (ref_ocr or {}).get("tokens", [])],
+        tokens_etiqueta,
+        tokens_referencia,
         umbral_total=float(f2.get("umbral_coincidencia_total", 1.0)),
         solo_tokens_codigo=bool(f2.get("comparar_solo_tokens_codigo", True)),
     )
     if referencia is None:
         observaciones.append("sin imagen de referencia en la carpeta")
-    if et_ocr.get("error"):
-        observaciones.append(f"error OCR etiqueta: {et_ocr['error']}")
+    for foto in fotos:
+        if foto["resultado_ocr"].get("error"):
+            observaciones.append(
+                f"error OCR {Path(foto['ruta']).name}: {foto['resultado_ocr']['error']}")
 
     conf_pct = round(et_ocr["confianza_media"] * 100, 2) if et_ocr.get("confianza_media") is not None else None
+
+    imagenes_salida = []
+    for item in ocr_por_imagen:
+        if item["ruta"] in referencias:
+            rol = "referencia"
+        elif item["ruta"] == etiqueta_item["ruta"]:
+            rol = "etiqueta_principal"
+        else:
+            rol = "etiqueta_adicional"
+        imagenes_salida.append(_imagen_salida(item, rol))
 
     return {
         "ruta": str(ruta),
@@ -335,9 +396,10 @@ def _validar_carpeta(carpeta: dict, config: dict, f2: dict,
         "etiqueta": {"ruta": etiqueta_item["ruta"], "resultado_ocr": _compacto(et_ocr)},
         "referencia": ({"ruta": referencia, "resultado_ocr": _compacto(ref_ocr)}
                        if referencia else None),
+        "imagenes": imagenes_salida,
         "comparacion": comparacion,
         "confianza_ocr_pct": conf_pct,
-        "qr_detectado": et_ocr.get("qr_bbox") is not None,
+        "qr_detectado": any(f["resultado_ocr"].get("qr_bbox") is not None for f in fotos),
         "observaciones": observaciones,
     }
 
@@ -347,8 +409,23 @@ def _compacto(resultado_ocr: dict | None) -> dict | None:
     if resultado_ocr is None:
         return None
     return {k: resultado_ocr.get(k) for k in (
-        "tokens", "qr_bbox", "confianza_media", "num_lineas_ocr",
-        "orientacion_corregida_grados", "motor", "dimensiones", "error")}
+        "tokens", "lineas_texto", "texto_completo", "qr_bbox",
+        "confianza_media", "num_lineas_ocr",
+        "orientacion_corregida_grados", "variante_preprocesamiento",
+        "orientacion_texto_grados", "variante_texto_completo",
+        "intentos_ocr", "motor", "dimensiones", "error")}
+
+
+def _imagen_salida(item: dict, rol: str) -> dict:
+    """Serializa cada imagen de la carpeta sin descartar tomas adicionales."""
+    ruta = str(item["ruta"])
+    return {
+        "id": hashlib.sha256(ruta.encode("utf-8")).hexdigest()[:16],
+        "nombre": Path(ruta).name,
+        "ruta": ruta,
+        "rol": rol,
+        "resultado_ocr": _compacto(item["resultado_ocr"]),
+    }
 
 
 if __name__ == "__main__":

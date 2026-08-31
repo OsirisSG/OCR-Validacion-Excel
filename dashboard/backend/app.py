@@ -30,6 +30,7 @@ import importlib.util
 import json
 import sys
 import threading
+import time
 import traceback
 from datetime import datetime
 from pathlib import Path, PureWindowsPath
@@ -44,6 +45,7 @@ from fastapi.responses import FileResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 
 from configuracion import cargar_config, cargar_reglas, clasificar  # noqa: E402
+from aprendizaje import GestorAprendizaje, hash_archivo, normalizar_codigo  # noqa: E402
 
 CONFIG = cargar_config()
 REGLAS = cargar_reglas()
@@ -59,11 +61,47 @@ class SolicitudPipeline(BaseModel):
     ruta: str = Field(min_length=1, max_length=4096)
 
 
+class SolicitudCorreccion(BaseModel):
+    prueba_id: str = Field(min_length=1, max_length=128)
+    campo: str = Field(default="etiqueta", pattern="^(etiqueta|referencia)$")
+    imagen_id: str | None = Field(default=None, max_length=128)
+    texto_ocr: str = Field(min_length=1, max_length=4096)
+    texto_correcto: str = Field(min_length=1, max_length=4096)
+
+
+class SolicitudAnotacionRegion(BaseModel):
+    prueba_id: str = Field(min_length=1, max_length=128)
+    imagen_id: str = Field(min_length=1, max_length=128)
+    bbox: list[int] = Field(min_length=4, max_length=4)
+    texto_correcto: str = Field(min_length=1, max_length=8192)
+
+
+class SolicitudRevision(BaseModel):
+    tipo: str = Field(pattern="^(carpeta|externa)$")
+    item_id: str = Field(min_length=1, max_length=128)
+    estado: str | None = Field(default=None, pattern="^(por_revisar|completada)$")
+    oculto: bool | None = None
+
+
+class SolicitudRollback(BaseModel):
+    version: str | None = Field(default=None, max_length=128)
+
+
+class SolicitudCorreccionExterna(BaseModel):
+    prueba_id: str = Field(min_length=1, max_length=128)
+    texto_ocr: str = Field(min_length=1, max_length=4096)
+    texto_correcto: str = Field(min_length=1, max_length=4096)
+
+
 _pipeline_lock = threading.Lock()
+_externas_lock = threading.Lock()
 _pipeline_estado: dict = {
     "estado": "inactivo", "fase": None, "mensaje": None, "ruta": None,
     "iniciado_en": None, "finalizado_en": None, "error": None, "resumen": None,
-    "bitacora": None,
+    "bitacora": None, "porcentaje": 0, "procesadas": 0, "total": 0,
+    "restantes": 0, "eta_segundos": None, "transcurrido_segundos": 0,
+    "resultados_parciales": [], "imagenes_procesadas": 0, "imagenes_total": 0,
+    "imagenes_restantes": 0, "imagen_actual": None, "actualizado_en": None,
 }
 
 # ---------------------------------------------------------------------------
@@ -142,12 +180,11 @@ def _reubicar_ruta(ruta: str, datos: dict, raiz: Path) -> Path | None:
 
 def _resolver_imagen(ruta: str, datos: dict, raiz: Path) -> Path:
     """Convierte una ruta registrada (incluso de otro SO) a su archivo local."""
-    registradas = {
-        str(item.get("ruta"))
-        for fila in datos.get("resultados", [])
-        for item in (fila.get("etiqueta"), fila.get("referencia"))
-        if item and item.get("ruta")
-    }
+    registradas = set()
+    for fila in datos.get("resultados", []):
+        items = list(fila.get("imagenes") or [])
+        items.extend(item for item in (fila.get("etiqueta"), fila.get("referencia")) if item)
+        registradas.update(str(item["ruta"]) for item in items if item.get("ruta"))
     if ruta not in registradas:
         raise HTTPException(403, "La imagen no forma parte de los resultados procesados.")
 
@@ -206,8 +243,20 @@ def _registrar_error_pipeline(ruta: Path, exc: Exception) -> Path:
 
 
 def _ejecutar_pipeline_fondo(ruta: Path) -> None:
-    def progreso(fase: str, mensaje: str) -> None:
-        _actualizar_pipeline(fase=fase, mensaje=mensaje)
+    inicio = time.monotonic()
+
+    def progreso(fase: str, mensaje: str, detalle: dict | None = None) -> None:
+        detalle = dict(detalle or {})
+        fila = detalle.pop("resultado", None)
+        with _pipeline_lock:
+            _pipeline_estado.update(
+                fase=fase, mensaje=mensaje,
+                transcurrido_segundos=round(time.monotonic() - inicio, 1),
+                actualizado_en=datetime.now().isoformat(timespec="milliseconds"),
+                **detalle,
+            )
+            if fila is not None:
+                _pipeline_estado["resultados_parciales"].append(_fila_publica(fila))
 
     try:
         from pipeline import ejecutar_pipeline
@@ -216,6 +265,8 @@ def _ejecutar_pipeline_fondo(ruta: Path) -> None:
         _actualizar_pipeline(
             estado="completado", fase="completado", mensaje="Procesamiento terminado",
             finalizado_en=datetime.now().isoformat(timespec="seconds"), resumen=resumen,
+            porcentaje=100, restantes=0, eta_segundos=0,
+            transcurrido_segundos=round(time.monotonic() - inicio, 1),
         )
     except Exception as exc:  # el error se expone y también queda en errores/
         bitacora = _registrar_error_pipeline(ruta, exc)
@@ -223,6 +274,8 @@ def _ejecutar_pipeline_fondo(ruta: Path) -> None:
             estado="error", mensaje="El procesamiento no pudo completarse",
             finalizado_en=datetime.now().isoformat(timespec="seconds"),
             error=f"{type(exc).__name__}: {exc}", bitacora=str(bitacora),
+            eta_segundos=None,
+            transcurrido_segundos=round(time.monotonic() - inicio, 1),
         )
 
 
@@ -232,12 +285,17 @@ def _lote_de(fila: dict) -> str:
     return partes[-2] if len(partes) >= 2 else "Sin lote"
 
 
-def _fila_publica(fila: dict) -> dict:
+def _fila_publica(fila: dict, revisiones: dict | None = None) -> dict:
     """Fila para listado/tabla: ligera + semáforo evaluado con el motor de reglas."""
     clasif = clasificar(fila.get("confianza_ocr_pct"),
                         fila["comparacion"]["resultado"], REGLAS)
+    item_id = _id_fila(fila)
+    inicial = "completada" if clasif.get("semaforo_global") == "verde" else "por_revisar"
+    revision = (revisiones or {}).get(("carpeta", item_id)) or {
+        "tipo": "carpeta", "item_id": item_id, "estado": inicial,
+        "oculto": False, "actualizado_en": None}
     return {
-        "id": _id_fila(fila),
+        "id": item_id,
         "nombre": fila["nombre"],
         "identificador": fila.get("identificador"),
         "nomenclatura": fila.get("nomenclatura"),
@@ -251,6 +309,33 @@ def _fila_publica(fila: dict) -> dict:
         "semaforo": clasif.get("semaforo_global"),
         "semaforo_confianza": clasif.get("confianza_ocr"),
         "semaforo_coincidencia": clasif.get("coincidencia_texto"),
+        "origen": "carpeta",
+        "enlace": f"#/detalle/{item_id}",
+        "revision": revision,
+    }
+
+
+def _fila_externa_publica(fila: dict) -> dict:
+    completa = (bool(fila.get("coincidencia_exacta")) if fila.get("tipo") == "codigo"
+                else float(fila.get("cobertura") or 0) >= 1.0)
+    revision = fila.get("revision") or {
+        "tipo": "externa", "item_id": fila["id"],
+        "estado": "completada" if completa else "por_revisar",
+        "oculto": False, "actualizado_en": None}
+    if fila.get("tipo") == "codigo":
+        resultado = "Código exacto" if fila.get("coincidencia_exacta") else "Código por corregir"
+        identificador = fila.get("esperado") or fila.get("imagen")
+    else:
+        encontrados, esperados = len(fila.get("encontrados", [])), len(fila.get("esperados", []))
+        resultado = f"Texto {encontrados}/{esperados} fragmentos"
+        identificador = fila.get("imagen")
+    return {
+        "id": fila["id"], "nombre": fila.get("imagen"),
+        "identificador": identificador, "nomenclatura": None, "variante": None,
+        "lote": "Pruebas complejas", "resultado": resultado,
+        "confianza_ocr_pct": None, "qr_detectado": False, "conforme": completa,
+        "observaciones": [], "semaforo": "verde" if completa else "rojo",
+        "origen": "externa", "enlace": "#/externas", "revision": revision,
     }
 
 
@@ -286,7 +371,226 @@ def capacidad_pipeline():
 @app.get("/api/pipeline/estado")
 def estado_pipeline():
     with _pipeline_lock:
-        return dict(_pipeline_estado)
+        estado = dict(_pipeline_estado)
+        estado["resultados_parciales"] = list(_pipeline_estado["resultados_parciales"])
+        if estado["estado"] == "procesando" and estado.get("iniciado_en"):
+            inicio = datetime.fromisoformat(estado["iniciado_en"])
+            estado["transcurrido_segundos"] = round(
+                (datetime.now() - inicio).total_seconds(), 1)
+        return estado
+
+
+@app.get("/api/aprendizaje")
+def estado_aprendizaje():
+    return GestorAprendizaje(CONFIG).estado()
+
+
+@app.post("/api/aprendizaje/correcciones")
+def corregir_lectura(solicitud: SolicitudCorreccion):
+    datos = _cargar_datos()
+    if not datos:
+        raise HTTPException(404, "Sin datos procesados.")
+    fila = next((f for f in datos["resultados"] if _id_fila(f) == solicitud.prueba_id), None)
+    if fila is None:
+        raise HTTPException(404, "La prueba indicada no existe.")
+    if solicitud.imagen_id:
+        item = next((imagen for imagen in fila.get("imagenes", [])
+                     if imagen.get("id") == solicitud.imagen_id), None)
+    else:
+        item = fila.get(solicitud.campo)
+    if not item or not item.get("resultado_ocr"):
+        raise HTTPException(400, f"La prueba no tiene imagen de {solicitud.campo}.")
+    ocr = item["resultado_ocr"]
+    unidades = list(ocr.get("tokens", [])) + list(ocr.get("lineas_texto", []))
+    if ocr.get("texto_completo"):
+        unidades.append({"texto": ocr["texto_completo"], "bbox": None})
+    buscado = normalizar_codigo(solicitud.texto_ocr)
+    token = next((t for t in unidades if normalizar_codigo(
+        t.get("texto_original") or t.get("texto", "")) == buscado), None)
+    if token is None:
+        raise HTTPException(400, "La lectura OCR ya no coincide con los tokens de la prueba.")
+    raiz = _resolver_raiz_datos(datos)
+    if raiz is None:
+        raise HTTPException(503, "La raíz de imágenes no está disponible en este equipo.")
+    ruta_local = _resolver_imagen(str(item["ruta"]), datos, raiz)
+    try:
+        resultado = GestorAprendizaje(CONFIG).registrar_correccion(
+            solicitud.texto_ocr, solicitud.texto_correcto,
+            ruta_imagen=str(ruta_local), bbox=token.get("bbox"), fuente="dashboard")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    resultado["estado"] = GestorAprendizaje(CONFIG).estado()
+    return resultado
+
+
+@app.post("/api/aprendizaje/regiones")
+def anotar_region_no_detectada(solicitud: SolicitudAnotacionRegion):
+    """Registra verdad humana localizada sin exigir una lectura OCR previa."""
+    datos = _cargar_datos()
+    if not datos:
+        raise HTTPException(404, "Sin datos procesados.")
+    fila = next((f for f in datos["resultados"] if _id_fila(f) == solicitud.prueba_id), None)
+    if fila is None:
+        raise HTTPException(404, "La carpeta indicada no existe.")
+    item = next((imagen for imagen in fila.get("imagenes", [])
+                 if imagen.get("id") == solicitud.imagen_id), None)
+    if item is None:
+        raise HTTPException(404, "La imagen indicada no pertenece a la carpeta.")
+    dimensiones = (item.get("resultado_ocr") or {}).get("dimensiones") or []
+    if len(dimensiones) != 2:
+        raise HTTPException(400, "No están disponibles las dimensiones de la imagen.")
+    ancho_imagen, alto_imagen = (int(dimensiones[0]), int(dimensiones[1]))
+    x, y, ancho, alto = solicitud.bbox
+    if (x < 0 or y < 0 or ancho < 2 or alto < 2 or
+            x + ancho > ancho_imagen or y + alto > alto_imagen):
+        raise HTTPException(400, "La región seleccionada queda fuera de la imagen.")
+    raiz = _resolver_raiz_datos(datos)
+    if raiz is None:
+        raise HTTPException(503, "La raíz de imágenes no está disponible en este equipo.")
+    ruta_local = _resolver_imagen(str(item["ruta"]), datos, raiz)
+    gestor = GestorAprendizaje(CONFIG)
+    try:
+        resultado = gestor.registrar_region(
+            solicitud.texto_correcto, solicitud.bbox,
+            ruta_imagen=str(ruta_local), carpeta_id=_id_fila(fila),
+            carpeta_nombre=fila.get("nombre"),
+            imagen_nombre=item.get("nombre") or ruta_local.name)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    try:
+        from generar_excel import generar_excel
+        resultado["excel_actualizado"] = str(generar_excel())
+    except Exception as exc:  # la anotación queda guardada aunque falle el artefacto
+        resultado["advertencia_excel"] = str(exc)
+    resultado["estado"] = gestor.estado()
+    return resultado
+
+
+@app.post("/api/aprendizaje/rollback")
+def rollback_aprendizaje(solicitud: SolicitudRollback):
+    try:
+        return GestorAprendizaje(CONFIG).rollback(solicitud.version)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+def _externas_publicas(incluir_ocultos: bool = False) -> dict:
+    from pruebas_externas import cargar
+    documento = cargar(CONFIG)
+    publico = dict(documento)
+    publico["resultados"] = []
+    revisiones = GestorAprendizaje(CONFIG).listar_revisiones()
+    for fila in documento.get("resultados", []):
+        item = {k: v for k, v in fila.items() if k != "ruta"}
+        completa = (bool(fila.get("coincidencia_exacta")) if fila.get("tipo") == "codigo"
+                    else float(fila.get("cobertura") or 0) >= 1.0)
+        item["revision"] = revisiones.get(("externa", fila["id"])) or {
+            "tipo": "externa", "item_id": fila["id"],
+            "estado": "completada" if completa else "por_revisar",
+            "oculto": False, "actualizado_en": None}
+        if item["revision"]["oculto"] and not incluir_ocultos:
+            continue
+        item["ruta_api"] = f"/api/externas/imagen/{quote(str(fila['imagen']), safe='')}"
+        publico["resultados"].append(item)
+    publico["visibles"] = len(publico["resultados"])
+    return publico
+
+
+@app.get("/api/externas")
+def pruebas_externas(incluir_ocultos: bool = False):
+    return _externas_publicas(incluir_ocultos)
+
+
+@app.post("/api/externas/evaluar")
+def evaluar_pruebas_externas():
+    from pruebas_externas import evaluar
+    with _pipeline_lock:
+        if _pipeline_estado["estado"] == "procesando":
+            raise HTTPException(409, "Espera a que termine el lote antes de evaluar el banco externo.")
+    if not _externas_lock.acquire(blocking=False):
+        raise HTTPException(409, "El banco externo ya se está evaluando.")
+    try:
+        try:
+            evaluar(CONFIG)
+        except FileNotFoundError as exc:
+            raise HTTPException(404, str(exc)) from exc
+    finally:
+        _externas_lock.release()
+    return _externas_publicas()
+
+
+@app.post("/api/revisiones")
+def actualizar_revision(solicitud: SolicitudRevision):
+    gestor = GestorAprendizaje(CONFIG)
+    estado_inicial = "por_revisar"
+    if solicitud.tipo == "carpeta":
+        datos = _cargar_datos()
+        fila = next((f for f in (datos or {}).get("resultados", [])
+                     if _id_fila(f) == solicitud.item_id), None)
+        if fila is None:
+            raise HTTPException(404, "La carpeta indicada no existe.")
+        estado_inicial = ("completada" if _fila_publica(fila)["semaforo"] == "verde"
+                          else "por_revisar")
+    else:
+        from pruebas_externas import cargar
+        fila = next((f for f in cargar(CONFIG).get("resultados", [])
+                     if f.get("id") == solicitud.item_id), None)
+        if fila is None:
+            raise HTTPException(404, "La prueba compleja indicada no existe.")
+        completa = (bool(fila.get("coincidencia_exacta")) if fila.get("tipo") == "codigo"
+                    else float(fila.get("cobertura") or 0) >= 1.0)
+        estado_inicial = "completada" if completa else "por_revisar"
+    try:
+        resultado = gestor.actualizar_revision(
+            solicitud.tipo, solicitud.item_id, solicitud.estado,
+            solicitud.oculto, estado_inicial)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    try:
+        from generar_excel import generar_excel
+        resultado["excel_actualizado"] = str(generar_excel())
+    except Exception as exc:
+        resultado["advertencia_excel"] = str(exc)
+    return resultado
+
+
+@app.get("/api/externas/imagen/{nombre}")
+def imagen_externa(nombre: str):
+    from pruebas_externas import CASOS, rutas
+    nombre = unquote(nombre)
+    if nombre not in CASOS:
+        raise HTTPException(403, "La imagen no forma parte del banco externo permitido.")
+    directorio, _ = rutas(CONFIG)
+    objetivo = (directorio / nombre).resolve()
+    if not objetivo.is_relative_to(directorio) or not objetivo.is_file():
+        raise HTTPException(404, "La imagen externa no está disponible localmente.")
+    return FileResponse(objetivo)
+
+
+@app.post("/api/externas/correcciones")
+def corregir_prueba_externa(solicitud: SolicitudCorreccionExterna):
+    from pruebas_externas import cargar
+    documento = cargar(CONFIG)
+    fila = next((item for item in documento.get("resultados", [])
+                 if item.get("id") == solicitud.prueba_id), None)
+    if fila is None:
+        raise HTTPException(404, "La prueba externa indicada no existe o aún no fue evaluada.")
+    buscado = normalizar_codigo(solicitud.texto_ocr)
+    unidades = list(fila.get("tokens", [])) + list(fila.get("lineas_texto", []))
+    if fila.get("texto_completo"):
+        unidades.append({"texto": fila["texto_completo"], "bbox": None})
+    token = next((t for t in unidades if normalizar_codigo(
+        t.get("texto_original") or t.get("texto", "")) == buscado), None)
+    if token is None:
+        raise HTTPException(400, "La lectura OCR no coincide con los tokens guardados.")
+    try:
+        resultado = GestorAprendizaje(CONFIG).registrar_correccion(
+            solicitud.texto_ocr, solicitud.texto_correcto,
+            ruta_imagen=fila["ruta"], bbox=token.get("bbox"), fuente="dashboard_externo")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    resultado["estado"] = GestorAprendizaje(CONFIG).estado()
+    return resultado
 
 
 @app.post("/api/pipeline", status_code=202)
@@ -313,6 +617,12 @@ def iniciar_pipeline(solicitud: SolicitudPipeline):
             "mensaje": "Preparando el pipeline", "ruta": str(ruta),
             "iniciado_en": datetime.now().isoformat(timespec="seconds"),
             "finalizado_en": None, "error": None, "resumen": None, "bitacora": None,
+            "porcentaje": 0, "procesadas": 0, "total": 0, "restantes": 0,
+            "eta_segundos": None, "transcurrido_segundos": 0,
+            "resultados_parciales": [], "imagenes_procesadas": 0,
+            "imagenes_total": 0, "imagenes_restantes": 0,
+            "imagen_actual": None,
+            "actualizado_en": datetime.now().isoformat(timespec="milliseconds"),
         })
 
     hilo = threading.Thread(target=_ejecutar_pipeline_fondo, args=(ruta,), daemon=True)
@@ -356,22 +666,32 @@ def resumen():
 
 @app.get("/api/pruebas")
 def pruebas(q: str = "", estado: str = "", limit: int = Query(200, ge=1, le=1000),
-            offset: int = Query(0, ge=0)):
+            offset: int = Query(0, ge=0), incluir_ocultos: bool = False):
     datos = _cargar_datos()
     if not datos:
         raise HTTPException(404, "Sin datos procesados.")
-    filas = [_fila_publica(f) for f in datos["resultados"]]
+    revisiones = GestorAprendizaje(CONFIG).listar_revisiones()
+    filas = [_fila_publica(f, revisiones) for f in datos["resultados"]]
+    externas = _externas_publicas(incluir_ocultos=True)
+    filas.extend(_fila_externa_publica(f) for f in externas.get("resultados", []))
     q_norm = unquote(q).strip().lower()
     filtradas = []
     for f in filas:
-        if estado and (f["semaforo"] or "sin_clasificar") != estado and f["resultado"] != estado:
+        if f["revision"].get("oculto") and not incluir_ocultos:
+            continue
+        if estado in {"por_revisar", "completada"} and f["revision"]["estado"] != estado:
+            continue
+        if (estado and estado not in {"por_revisar", "completada"} and
+                (f["semaforo"] or "sin_clasificar") != estado and f["resultado"] != estado):
             continue
         texto_busqueda = " ".join(str(f.get(k) or "")
-                                   for k in ("nombre", "identificador", "nomenclatura", "variante", "lote"))
+                                   for k in ("nombre", "identificador", "nomenclatura",
+                                             "variante", "lote", "origen", "resultado"))
         if q_norm and q_norm not in texto_busqueda.lower():
             continue
         filtradas.append(f)
-    return {"total": len(filtradas), "items": filtradas[offset:offset + limit]}
+    return {"total": len(filtradas), "items": filtradas[offset:offset + limit],
+            "incluye_externas": True}
 
 
 @app.get("/api/pruebas/{clave}")
@@ -392,6 +712,9 @@ def detalle(clave: str):
     detalle_json["id"] = _id_fila(fila)
     detalle_json["lote"] = _lote_de(fila)
     detalle_json["semaforo"] = _fila_publica(fila)["semaforo"]
+    detalle_json["revision"] = GestorAprendizaje(CONFIG).estado_revision(
+        "carpeta", _id_fila(fila),
+        "completada" if detalle_json["semaforo"] == "verde" else "por_revisar")
     raiz_local = _resolver_raiz_datos(datos)
     ruta_local = _reubicar_ruta(str(fila["ruta"]), datos, raiz_local) if raiz_local else None
     detalle_json["ruta_mostrada"] = str(ruta_local) if ruta_local else str(fila["ruta"])
@@ -399,6 +722,30 @@ def detalle(clave: str):
         if fila.get(campo):
             detalle_json[campo] = dict(fila[campo])
             detalle_json[campo]["ruta_api"] = f"/api/imagen?ruta={quote(str(fila[campo]['ruta']), safe='')}"
+    detalle_json["imagenes"] = []
+    gestor = GestorAprendizaje(CONFIG)
+    rutas_locales = []
+    if raiz_local:
+        for item in fila.get("imagenes", []):
+            try:
+                rutas_locales.append(_resolver_imagen(str(item["ruta"]), datos, raiz_local))
+            except HTTPException:
+                continue
+    anotaciones = gestor.listar_anotaciones(rutas_locales, carpeta_id=_id_fila(fila))
+    por_hash: dict[str, list[dict]] = {}
+    for anotacion in anotaciones:
+        por_hash.setdefault(anotacion["imagen_hash"], []).append(anotacion)
+    for item in fila.get("imagenes", []):
+        publico = dict(item)
+        publico["ruta_api"] = f"/api/imagen?ruta={quote(str(item['ruta']), safe='')}"
+        publico["anotaciones"] = []
+        if raiz_local:
+            try:
+                ruta_item = _resolver_imagen(str(item["ruta"]), datos, raiz_local)
+                publico["anotaciones"] = por_hash.get(hash_archivo(ruta_item), [])
+            except (HTTPException, OSError):
+                pass
+        detalle_json["imagenes"].append(publico)
     return detalle_json
 
 

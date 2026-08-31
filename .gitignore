@@ -44,6 +44,8 @@ models/
 checkpoints/
 runs/
 wandb/
+.aprendizaje/
+.pruebas_externas/
 *.pth
 *.pt
 *.onnx

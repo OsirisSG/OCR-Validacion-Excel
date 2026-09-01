@@ -40,12 +40,14 @@ import os
 import re
 import statistics
 import sys
+import warnings
 from pathlib import Path
 
 import cv2
 import numpy as np
 
 from configuracion import RAIZ_PROYECTO, cargar_config
+from recursos import configurar_cpu, detectar_recursos
 
 # Silencia el chequeo de conectividad de paddlex (modelos ya en caché) ANTES de
 # importar paddleocr: evita segundos de espera por ping en cada arranque.
@@ -105,13 +107,61 @@ class MotorEasyOCR:
 
     def __init__(self, cfg_fase1: dict):
         import easyocr  # import diferido
-        self._reader = easyocr.Reader([cfg_fase1.get("lang", "en")], gpu=False, verbose=False)
+        self._easyocr = easyocr
+        self._lang = cfg_fase1.get("lang", "en")
+        self.recursos = detectar_recursos(cfg_fase1.get("dispositivo", "auto"))
+        rendimiento = cfg_fase1.get("rendimiento", {})
+        self.hilos_cpu = configurar_cpu(rendimiento.get("hilos_cpu"))
+        self.dispositivo = self.recursos["seleccionado"]
+        self.advertencias = [self.recursos["warning"]] if self.recursos.get("warning") else []
+        gpu = False if self.dispositivo == "cpu" else self.dispositivo
+        try:
+            self._reader = easyocr.Reader(
+                [self._lang], gpu=gpu, verbose=False,
+                quantize=self.dispositivo == "cpu")
+        except Exception as exc:
+            if self.dispositivo == "cpu":
+                raise
+            self.advertencias.append(
+                f"EasyOCR no pudo iniciar en {self.dispositivo.upper()} "
+                f"({type(exc).__name__}); se inició en CPU.")
+            self.dispositivo = "cpu"
+            self._reader = easyocr.Reader(
+                [self._lang], gpu=False, verbose=False, quantize=True)
+        # La fuente de verdad es el dispositivo que EasyOCR realmente aceptó.
+        self.dispositivo = str(getattr(self._reader, "device", self.dispositivo))
+        self._batch_size = int(rendimiento.get(
+            "batch_cpu" if self.dispositivo == "cpu" else "batch_gpu", 1))
+        self._workers = int(rendimiento.get("workers_easyocr", 0))
         self._allowlist = cfg_fase1.get("caracteres_permitidos") or None
+
+    def _fallback_cpu(self, causa: Exception) -> None:
+        self.advertencias.append(
+            f"La inferencia en {self.dispositivo.upper()} falló ({type(causa).__name__}); "
+            "EasyOCR continuó en CPU.")
+        self._reader = self._easyocr.Reader(
+            [self._lang], gpu=False, verbose=False, quantize=True)
+        self.dispositivo = "cpu"
+        self._batch_size = 1
 
     def _leer(self, imagen_bgr: np.ndarray, usar_allowlist: bool) -> list[dict]:
         opciones = ({"allowlist": self._allowlist}
                     if usar_allowlist and self._allowlist else {})
-        lecturas = self._reader.readtext(imagen_bgr, detail=1, **opciones)
+        try:
+            with warnings.catch_warnings():
+                if self.dispositivo == "mps":
+                    warnings.filterwarnings(
+                        "ignore", message=".*pin_memory.*not supported on MPS.*",
+                        category=UserWarning)
+                lecturas = self._reader.readtext(
+                    imagen_bgr, detail=1, batch_size=self._batch_size,
+                    workers=self._workers, **opciones)
+        except RuntimeError as exc:
+            if self.dispositivo == "cpu":
+                raise
+            self._fallback_cpu(exc)
+            lecturas = self._reader.readtext(
+                imagen_bgr, detail=1, batch_size=1, workers=0, **opciones)
         lineas = []
         for pts, texto, conf in lecturas:
             pts = np.asarray(pts, dtype=np.float32)
@@ -136,18 +186,20 @@ def obtener_motor(config: dict | None = None):
     """Retorna el primer motor configurado que pueda inicializarse."""
     config = config or cargar_config()
     f1 = config.get("fase1", {})
+    recursos = detectar_recursos(f1.get("dispositivo", "auto"))
     for clave in ("motor", "motor_fallback"):
         nombre = f1.get(clave) if clave == "motor" else f1.get("motor_fallback")
         if not nombre:
             continue
-        if nombre in _MOTORES:
-            return _MOTORES[nombre], f1
+        llave = (nombre, recursos["seleccionado"] if nombre == "easyocr" else "auto")
+        if llave in _MOTORES:
+            return _MOTORES[llave], f1
         clase = {"paddle": MotorPaddle, "easyocr": MotorEasyOCR}.get(nombre)
         if clase is None:
             continue
         try:
-            _MOTORES[nombre] = clase(f1)
-            return _MOTORES[nombre], f1
+            _MOTORES[llave] = clase(f1)
+            return _MOTORES[llave], f1
         except Exception as exc:  # ImportError u otro fallo de arranque del motor
             print(f"[ocr_engine] motor '{nombre}' no disponible ({exc}); probando fallback",
                   file=sys.stderr)
@@ -778,7 +830,10 @@ def extraer_texto(imagen_path: str, config: dict | None = None) -> dict:
     evaluar todas las combinaciones cuando el costo no sea prioritario.
     """
     motor, f1 = obtener_motor(config)
-    imagen = cargar_imagen(imagen_path)
+    imagen_original = cargar_imagen(imagen_path)
+    from aprendizaje import GestorAprendizaje, aplicar_modelo_tokens
+    rotacion_manual = GestorAprendizaje(config).rotacion_preferida(imagen_path)
+    imagen = _rotar_recto(imagen_original, rotacion_manual)
 
     pasada, intentos = _seleccionar_pasada(imagen, f1, motor)
 
@@ -803,23 +858,40 @@ def extraer_texto(imagen_path: str, config: dict | None = None) -> dict:
     lineas_texto = reconstruir_lineas_texto(lineas_crudas_texto)
     # El modelo incremental solo modifica tokens cuando una versión promovida
     # tiene evidencia suficiente; siempre conserva texto_original y versión.
-    from aprendizaje import aplicar_modelo_tokens
-    tokens = aplicar_modelo_tokens(tokens, config)
-    lineas_texto = aplicar_modelo_tokens(lineas_texto, config)
+    cantidad_tokens = len(tokens)
+    unidades_corregidas = aplicar_modelo_tokens(
+        [*tokens, *lineas_texto], config, imagen_path)
+    tokens = unidades_corregidas[:cantidad_tokens]
+    lineas_texto = unidades_corregidas[cantidad_tokens:]
     confianzas = [t["confianza"] for t in tokens]
+    h_original, w_original = imagen_original.shape[:2]
     h, w = imagen.shape[:2]
+    base_codigo = int(pasada.get("orientacion_base", 0)) % 360
+    base_texto = int(pasada.get("orientacion_texto_base", 0)) % 360
+    deskew_codigo_reportado = float(pasada["grados"]) - base_codigo
+    deskew_texto_reportado = float(orientacion_texto) - base_texto
+    dimensiones_texto = (h, w) if base_texto in {90, 270} else (w, h)
     return {
         "imagen": str(imagen_path),
         "motor": motor.nombre,
+        "dispositivo": getattr(motor, "dispositivo", "cpu"),
+        "advertencias_motor": list(getattr(motor, "advertencias", [])),
         "tokens": tokens,
         "lineas_texto": lineas_texto,
         "texto_completo": "\n".join(l["texto"] for l in lineas_texto),
         "qr_bbox": tuple(pasada["qr"]) if pasada["qr"] is not None else None,
-        "orientacion_corregida_grados": float(pasada["grados"]),
-        "orientacion_texto_grados": orientacion_texto,
+        "rotacion_manual_aplicada_grados": rotacion_manual,
+        "orientacion_base_grados": base_codigo,
+        "deskew_aplicado_grados": -deskew_codigo_reportado,
+        "orientacion_corregida_grados": (
+            rotacion_manual + float(pasada["grados"])) % 360,
+        "orientacion_texto_base_grados": base_texto,
+        "deskew_texto_aplicado_grados": -deskew_texto_reportado,
+        "orientacion_texto_grados": (rotacion_manual + orientacion_texto) % 360,
         "confianza_media": round(float(np.mean(confianzas)), 4) if confianzas else None,
         "num_lineas_ocr": len(pasada["lineas"]),
-        "dimensiones": (w, h),
+        "dimensiones_originales": (w_original, h_original),
+        "dimensiones": dimensiones_texto,
         "roi_usado": tuple(pasada["roi"]) if pasada["roi"] is not None else None,
         "variante_preprocesamiento": pasada["variante"],
         "variante_texto_completo": pasada.get(

@@ -3,17 +3,18 @@
 ## Propósito
 
 Esta fase presenta los resultados de las Fases 0–3 sin obligar al usuario a abrir
-el Excel maestro. El dashboard es local y tiene cinco vistas:
+el Excel maestro. El dashboard es local y tiene tres vistas principales:
 
 1. **Resumen:** KPIs, dona del semáforo y distribución apilada por lote.
 2. **Listado:** bandeja unificada de carpetas y pruebas complejas, búsqueda,
-   revisión completada/pendiente, paginación y navegación por teclado.
+   cuatro estados de revisión, paginación y navegación por teclado.
 3. **Detalle:** todas las imágenes, texto completo, líneas OCR y comparación;
    permite corregir cualquier línea o bloque o dibujar una región omitida.
-4. **Procesar carpeta:** valida una ruta local, ejecuta las Fases 0–3 en segundo
+3. **Procesar carpeta:** valida una ruta local, ejecuta las Fases 0–3 en segundo
    plano y muestra estado, fase actual, errores y finalización.
-5. **Pruebas complejas:** banco externo visible, métricas separadas para códigos
-   y texto natural, reevaluación y corrección supervisada.
+
+El banco complejo está unificado en el Listado. Cada fila externa abre un
+detalle con métricas para código o texto natural y corrección supervisada.
 
 La Fase 4b trabaja por dirección local: no sube ni duplica los archivos del lote.
 Esta decisión evita copiar hasta 8 GB al navegador y conserva el procesamiento
@@ -36,8 +37,29 @@ completamente local.
 - El detalle permite confirmar una corrección de token, línea o bloque
   multilinea. FastAPI valida que el texto y la imagen pertenezcan al resultado
   antes de registrar la evidencia supervisada.
+- Las unidades repetidas conservan su `bbox`; la UI y la API usan texto + caja
+  para no corregir por accidente otra aparición igual. Un clic en la lectura o
+  en su caja la carga en el editor. Una corrección confirmada se pinta en verde.
+- Cada imagen tiene giro manual por pasos de 90°. La vista, cajas OCR y regiones
+  manuales cambian de inmediato; la preferencia queda asociada al hash y se usa
+  al comenzar el OCR siguiente. El detalle también informa la rotación
+  automática y el ajuste fino aplicados.
+- El texto omitido aparece en la misma lista de aprendizaje supervisado que las
+  correcciones OCR, agrupado por la imagen y carpeta actuales.
+- La edición solo se habilita durante la revisión y queda bloqueada en
+  `completada`; reabrir devuelve el elemento a `parcial`.
 - Solo puede ejecutarse un pipeline a la vez. Se rechazan rutas inexistentes y
   la raíz completa del sistema; la tarea corre en un hilo para no bloquear la UI.
+- La pausa es cooperativa y segura: termina la inferencia de la imagen actual y
+  espera antes de comenzar la siguiente. Continuar reutiliza el modelo cargado.
+- La ETA usa una ventana de duraciones recientes y excluye el calentamiento de
+  la primera imagen. La pantalla actualiza el reloj cada 250 ms y el backend
+  publica avance por imagen.
+- La ruta de entrada acepta comillas simples/dobles envolventes. El nombre de
+  salida es opcional, se restringe a un nombre de archivo y agrega `.xlsx`.
+- Las diez rutas usadas más recientemente se guardan en `localStorage`, junto
+  con el nombre de Excel asociado. El usuario puede recuperarlas o quitarlas;
+  no se envían a ningún servicio externo.
 - Antes de habilitar el botón, `/api/pipeline/capacidad` comprueba OpenCV,
   NumPy, openpyxl, PyYAML y al menos un motor PaddleOCR/EasyOCR.
 - Los fallos iniciados desde la UI crean automáticamente una bitácora Markdown
@@ -62,6 +84,10 @@ source .venv_dashboard/bin/activate          # Windows: .venv_dashboard\Scripts\
 python -m pip install -r dashboard/requirements.txt
 python dashboard/backend/app.py
 ```
+
+El lanzador recomendado y portable es `python iniciar.py`. En macOS/Linux puede
+usarse `./iniciar.command` y en Windows `iniciar.bat`; el lanzador elige el
+Python local disponible, diagnostica CUDA/MPS/CPU y abre el navegador.
 
 Para utilizar **Procesar carpeta**, el dashboard debe iniciarse desde el mismo
 entorno Python funcional usado por el pipeline OCR; `dashboard/requirements.txt`
@@ -94,8 +120,12 @@ dashboard:
 | `GET /api/pipeline/capacidad` | Informa si el entorno contiene las dependencias OCR. |
 | `GET /api/pipeline/estado` | Avance, porcentaje, ETA y resultados parciales de la ejecución. |
 | `POST /api/pipeline` | Valida una ruta local e inicia las Fases 0–3 en segundo plano. |
+| `POST /api/pipeline/pausar` | Solicita una pausa segura tras la imagen actual. |
+| `POST /api/pipeline/reanudar` | Continúa el mismo lote y modelo cargado. |
 | `GET /api/aprendizaje` | Estado, correcciones y versión activa del modelo local. |
 | `POST /api/aprendizaje/correcciones` | Registra verdad humana, evalúa y entrena un candidato. |
+| `POST /api/aprendizaje/rotaciones` | Memoriza la orientación manual de una imagen. |
+| `GET /api/imagen/orientada` | Sirve una vista rotada/enderezada de una imagen autorizada. |
 | `POST /api/aprendizaje/rollback` | Reactiva una versión histórica. |
 | `GET /api/externas` | Métricas y casos del banco local de imágenes difíciles. |
 | `POST /api/externas/evaluar` | Vuelve a ejecutar OCR sobre el banco externo. |

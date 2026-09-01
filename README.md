@@ -14,11 +14,13 @@ por separado y seleccionarse en `config.yaml` cuando la plataforma lo soporte.
 - Detección de nombres conformes y carpetas anómalas.
 - OCR sobre imágenes completas con deskew, binarización y QR opcional.
 - Detección de regiones, cuatro orientaciones y realce de texto grabado.
+- Selección automática CUDA/MPS/CPU con fallback seguro y CPU para preprocesamiento.
 - Aprendizaje incremental supervisado con versiones, evaluación y rollback.
 - Comparación etiqueta ↔ referencia por tokens alfanuméricos.
 - Semáforo configurable desde YAML.
 - Excel maestro con estructura completa y matriz de cumplimiento.
 - Dashboard local con resumen, listado, detalle y procesamiento de carpetas.
+- Progreso por imagen, ETA calibrada, pausa/continuación y advertencias legibles.
 - Analizador general de libros Excel, hojas, columnas y categorías.
 - Tema claro/oscuro y diseño para escritorio, tablet y móvil.
 
@@ -82,7 +84,9 @@ reconocimiento al caché del usuario. Esa descarga ocurre una sola vez.
 ### PaddleOCR opcional
 
 EasyOCR permite una instalación base por CPU sin exigir PaddlePaddle, CUDA o una
-GPU concreta. Si deseas evaluar PaddleOCR, instala PaddlePaddle y PaddleOCR
+GPU concreta. Con `fase1.dispositivo: auto`, el sistema usa CUDA, después MPS
+(Apple Silicon) y finalmente CPU. La inferencia neuronal corre en el acelerador
+y OpenCV, QR y preparación geométrica usan la CPU. Si deseas evaluar PaddleOCR, instala PaddlePaddle y PaddleOCR
 siguiendo las instrucciones oficiales correspondientes a tu sistema, CPU o GPU.
 Después configura:
 
@@ -164,7 +168,14 @@ del equipo que ejecutó el pipeline.
 
 ## Ejecutar el dashboard
 
-Con el entorno virtual activado:
+La forma más sencilla detecta el sistema, el entorno virtual y el acelerador
+disponible, muestra un diagnóstico y abre el navegador:
+
+- macOS/Linux: doble clic en `iniciar.command` o ejecuta `./iniciar.command`.
+- Windows: doble clic en `iniciar.bat`.
+- Cualquier sistema: `python iniciar.py`.
+
+También se puede usar el arranque directo con el entorno virtual activado:
 
 ```bash
 python dashboard/backend/app.py
@@ -176,22 +187,34 @@ Abre en el navegador:
 http://127.0.0.1:8000/
 ```
 
-El dashboard ofrece cinco vistas:
+El dashboard ofrece tres vistas principales:
 
 - **Resumen:** KPIs y distribución del semáforo.
 - **Listado:** bandeja única con carpetas y pruebas complejas, búsqueda, estado
-  de revisión, acciones para completar/reabrir y eliminación reversible.
+  de revisión (`Por revisar`, `Revisión parcial`, `Casi listo`, `Completada`),
+  acciones para completar/reabrir y eliminación reversible.
 - **Detalle:** todas las imágenes de la carpeta, texto completo con su layout y
   corrección de tokens, líneas o bloques multilinea. También permite dibujar una
-  región y transcribir texto que el OCR omitió por completo.
-- **Procesar carpeta:** ejecuta las Fases 0–3 desde una ruta local.
-- **Pruebas complejas:** muestra fotografías externas difíciles, sus métricas y
-  permite confirmar correcciones para el aprendizaje supervisado.
+  región y transcribir texto que el OCR omitió por completo. Incluye controles
+  de giro de 90°, informa cuando el OCR enderezó una imagen y muestra la lista
+  conjunta de correcciones y textos omitidos usados como aprendizaje supervisado.
+- **Procesar carpeta:** ejecuta las Fases 0–3 desde una ruta local, acepta la ruta
+  con o sin comillas, permite nombrar el Excel y pausar/continuar entre imágenes.
+  Las últimas diez direcciones y su nombre de Excel se conservan localmente en
+  el navegador para poder seleccionarlas en ejecuciones posteriores.
+
+Las pruebas complejas ya no viven en una pestaña aislada: aparecen en el mismo
+Listado y abren su propio detalle, con las mismas acciones de revisión y corrección.
 
 Para un lote grande, usa una ruta local en **Procesar carpeta**. Los archivos no
 se suben ni se duplican en el navegador. Durante la ejecución aparecen un reloj
 fluido, porcentaje por imagen, carpetas e imágenes pendientes, tiempo estimado
 recalculado y cada resultado ya terminado.
+
+La ETA ignora la inicialización costosa del primer modelo y usa la mediana de las
+últimas imágenes. Por eso no extrapola el calentamiento inicial como si se
+repitiera en todo el lote. En la prueba local de referencia del 31-08-2026,
+13 imágenes finalizaron en 35 segundos usando MPS y 8 hilos CPU.
 
 El puerto se cambia en `config.yaml`:
 
@@ -264,6 +287,11 @@ Cada ejecución registra ejemplos localmente. Desde el detalle del dashboard se
 puede corregir una lectura; el sistema entrena un candidato y solo lo activa si
 mejora los casos confirmados sin regresiones. Las predicciones no confirmadas no
 se usan como verdad de entrenamiento.
+
+La base y las versiones se guardan en
+`.aprendizaje/aprendizaje.sqlite3`; las fotografías no se copian. La supervisión
+puede bajar cuando se repiten confusiones ya confirmadas, pero una mera ejecución
+sin corrección humana no entrena al sistema ni garantiza menos revisión.
 
 La misma corrección supervisada está disponible en **Pruebas complejas**. Las
 imágenes externas se guardan localmente en `.pruebas_externas/`, fuera de Git.
@@ -352,6 +380,7 @@ OCR-Validacion-Excel/
 - Texto manuscrito complejo, superficies curvas, reflejos y desenfoque pueden
   requerir datos propios y fine-tuning.
 - Solo se permite una ejecución simultánea del pipeline desde el dashboard.
+- Por ahora los videos se inventarían y se advierten, pero nunca se envían al OCR.
 - Instalar un grupo opcional no implica que su integración funcional ya esté
   implementada.
 

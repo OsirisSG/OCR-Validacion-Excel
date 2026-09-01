@@ -1,4 +1,4 @@
-from aprendizaje import GestorAprendizaje
+from aprendizaje import GestorAprendizaje, rotar_bbox
 
 
 def _gestor(tmp_path, **cambios):
@@ -43,6 +43,26 @@ def test_promueve_correccion_exacta_solo_con_soporte_repetido(tmp_path):
     assert corregido == "GCC10"
     assert evidencia["tipo"] == "exacta"
     assert evidencia["soporte"] == 2
+
+
+def test_reutiliza_correccion_en_misma_imagen_y_caja_sin_generalizar(tmp_path):
+    imagen = tmp_path / "placa.jpg"
+    imagen.write_bytes(b"misma-imagen")
+    gestor = _gestor(tmp_path)
+    gestor.registrar_correccion(
+        "GCCIO", "GCC10", ruta_imagen=str(imagen), bbox=[10, 20, 80, 30])
+
+    tokens = [
+        {"texto": "GCCio", "bbox": (10, 20, 80, 30), "confianza": 0.7},
+        {"texto": "GCCio", "bbox": (200, 20, 80, 30), "confianza": 0.7},
+    ]
+    recordados = gestor.aplicar_memoria_imagen(tokens, imagen)
+
+    assert recordados[0]["texto"] == "GCC10"
+    assert recordados[0]["correccion_modelo"]["tipo"] == "memoria_imagen_confirmada"
+    assert recordados[1]["texto"] == "GCCio"
+    assert gestor.aplicar("GCCio") == ("GCCio", None)
+    assert gestor.estado()["memorias_imagen"] == 1
 
 
 def test_generaliza_confusion_de_caracter_solo_con_patron_confirmado(tmp_path):
@@ -119,3 +139,29 @@ def test_revision_es_reversible_y_no_borra_resultados(tmp_path):
     assert quitada["estado"] == "completada" and quitada["oculto"] is True
     assert restaurada["estado"] == "completada" and restaurada["oculto"] is False
     assert gestor.estado_revision("carpeta", "carpeta-1") == restaurada
+
+
+def test_rotacion_manual_se_memoriza_por_archivo(tmp_path):
+    imagen = tmp_path / "girada.jpg"
+    imagen.write_bytes(b"contenido-estable")
+    gestor = _gestor(tmp_path)
+
+    guardada = gestor.actualizar_rotacion(imagen, 90)
+
+    assert guardada["grados"] == 90
+    assert guardada["aplicar_en_siguiente_ocr"] is True
+    assert gestor.rotacion_preferida(imagen) == 90
+    assert gestor.estado()["rotaciones_confirmadas"] == 1
+    assert next(iter(gestor.listar_rotaciones([imagen]).values()))["grados"] == 90
+
+    gestor.actualizar_rotacion(imagen, 0)
+    assert gestor.rotacion_preferida(imagen) == 0
+    assert gestor.estado()["rotaciones_confirmadas"] == 0
+
+
+def test_rotacion_de_cajas_conserva_su_posicion_visual():
+    caja = [10, 20, 30, 40]
+
+    assert rotar_bbox(caja, 90, 200, 100) == [40, 10, 40, 30]
+    assert rotar_bbox(caja, 180, 200, 100) == [160, 40, 30, 40]
+    assert rotar_bbox(caja, 270, 200, 100) == [20, 160, 40, 30]

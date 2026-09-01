@@ -20,6 +20,13 @@ fase1:
   # Si el principal falla, ocr_engine prueba el secundario y reporta cuál usó.
   motor: easyocr
   motor_fallback: paddle
+  # auto selecciona CUDA, después MPS (Apple Silicon) y finalmente CPU.
+  dispositivo: auto
+  rendimiento:
+    hilos_cpu: null       # null = todos menos uno para mantener responsiva la UI
+    batch_gpu: 4
+    batch_cpu: 1
+    workers_easyocr: 0   # un Reader compartido; evita duplicar VRAM/RAM
   lang: en                # el texto es nomenclatura alfanumérica, no lenguaje natural
   # Restringe EasyOCR al dominio de códigos y reduce confusiones con símbolos.
   caracteres_permitidos: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_/"
@@ -80,6 +87,7 @@ fase1:
     reintentar_imagen_completa: true  # texto tocando borde del ROI o ROI vacío → imagen completa
 
 fase2:
+  procesar_videos: false  # reservado para una fase futura; hoy solo se inventarían como ignorados
   # Densidad de texto (área de bboxes / área de imagen) mínima para que una
   # imagen sea considerada "candidato a imagen de referencia".
   # PARÁMETRO ABIERTO (doc §10.2): la heurística de densidad es la regla v1;

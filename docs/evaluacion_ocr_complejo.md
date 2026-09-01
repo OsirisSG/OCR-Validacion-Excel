@@ -7,14 +7,15 @@ Se descargó temporalmente el repositorio público
 cuya colección contiene placas y piezas metálicas con texto en relieve,
 reflejos, curvatura y contraste irregular. La fuente no declara una licencia de
 redistribución; por esa razón las fotografías se conservan únicamente en
-`.pruebas_externas/`, que Git ignora. La vista **Pruebas complejas** permite
+`.pruebas_externas/`, que Git ignora. El detalle externo dentro de **Listado** permite
 verlas, repetir la medición y confirmar correcciones sin incorporarlas al
 repositorio. Se agregaron cuatro imágenes del directorio oficial de ejemplos de
 [`EasyOCR`](https://github.com/JaidedAI/EasyOCR/tree/master/examples), publicado
 bajo Apache-2.0, para medir texto natural en escenas, francés y señalización.
 `pruebas/evaluar_ocr_externo.py` conserva además el evaluador CLI.
 
-Fecha de la medición: 2026-08-30. Motor: EasyOCR local por CPU.
+Fecha de la medición actual: 2026-08-31. Motor: EasyOCR local con Apple MPS;
+preprocesamiento OpenCV por CPU.
 
 ## Casos
 
@@ -38,13 +39,19 @@ Fecha de la medición: 2026-08-30. Motor: EasyOCR local por CPU.
 | `test18.jpg` | `1234456789` | no; una inserción | 1 | 0.73 s |
 | `test2.jpg` | `96819216` | sí | 1 | 4.87 s |
 
-Exactitud estricta: **1/4 (25%)**. El benchmark es deliberadamente pequeño y
+Exactitud estricta de OCR bruto: **1/4 (25%)**. El benchmark es deliberadamente pequeño y
 difícil; no debe interpretarse como precisión general del sistema.
 La similitud media por caracteres es **77.5%**; esta métrica muestra el avance
 de los casos aproximados, pero no sustituye la coincidencia exacta del código.
 En los cuatro casos de texto natural se encontraron **16 de 18 fragmentos
 esperados (88.9%)**, preservando el texto detectado como líneas y bloque
 multilinea. La métrica de texto no se mezcla con la exactitud estricta de código.
+
+Tres de estas placas ya cuentan con una corrección humana guardada. En una
+reejecución del mismo archivo y `bbox`, la memoria supervisada eleva el resultado
+efectivo a **4/4 (100%)**. Este valor mide que el sistema no olvida trabajo ya
+revisado; no se reporta como exactitud sobre fotografías nuevas. El JSON y el
+dashboard exponen por separado `exactitud_ocr_bruta` y `exactitud_efectiva`.
 
 ## Hallazgos
 

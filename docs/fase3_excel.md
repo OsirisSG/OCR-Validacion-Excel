@@ -25,8 +25,12 @@ usa encabezado fijo (freeze panes) y autofiltro.
 
 Las regiones confirmadas manualmente se añaden con origen `Manual`, coordenadas
 y confianza humana. Las pruebas externas usan el grupo `Pruebas complejas`.
-Todas las filas incluyen `Completada` o `Por revisar`; los elementos quitados
+Todas las filas incluyen `Por revisar`, `Revisión parcial`, `Casi listo` o
+`Completada`; los elementos quitados
 siguen en la bandeja con la marca `Quitado del listado = Sí`.
+
+El pipeline acepta `--excel nombre.xlsx`; desde el dashboard el nombre es
+opcional y `resultado_maestro.xlsx` sigue siendo el predeterminado.
 
 ## Hoja "Matriz de cumplimiento" (semáforo)
 

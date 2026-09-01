@@ -44,6 +44,24 @@ def hash_archivo(ruta: str | Path) -> str:
     return h.hexdigest()
 
 
+def rotar_bbox(bbox, grados: int, ancho_imagen: int,
+               alto_imagen: int) -> list[int] | None:
+    """Rota una caja x/y/ancho/alto en el mismo sentido horario que la imagen."""
+    if bbox is None:
+        return None
+    x, y, ancho, alto = (int(round(float(v))) for v in bbox)
+    grados = int(grados) % 360
+    if grados == 0:
+        return [x, y, ancho, alto]
+    if grados == 90:
+        return [alto_imagen - y - alto, x, alto, ancho]
+    if grados == 180:
+        return [ancho_imagen - x - ancho, alto_imagen - y - alto, ancho, alto]
+    if grados == 270:
+        return [y, ancho_imagen - x - ancho, alto, ancho]
+    raise ValueError("La rotación de coordenadas debe ser múltiplo de 90°.")
+
+
 def _alinear(a: str, b: str) -> list[tuple[str | None, str | None]]:
     """Alineación Levenshtein determinista para extraer confusiones OCR→real."""
     n, m = len(a), len(b)
@@ -210,6 +228,11 @@ class GestorAprendizaje:
                 actualizado_en TEXT NOT NULL,
                 PRIMARY KEY(tipo, item_id)
             );
+            CREATE TABLE IF NOT EXISTS rotaciones_imagen (
+                imagen_hash TEXT PRIMARY KEY, ruta_imagen TEXT,
+                grados INTEGER NOT NULL DEFAULT 0,
+                fuente TEXT NOT NULL DEFAULT 'dashboard', actualizado_en TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS modelos (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, version TEXT UNIQUE NOT NULL,
                 padre_id INTEGER, estado TEXT NOT NULL, modelo_json TEXT NOT NULL,
@@ -223,6 +246,83 @@ class GestorAprendizaje:
             CREATE INDEX IF NOT EXISTS idx_modelos_estado ON modelos(estado);
         """)
         return con
+
+    def rotacion_preferida(self, ruta_imagen: str | Path | None) -> int:
+        """Rotación humana, en sentido horario, para la próxima lectura OCR."""
+        if not ruta_imagen or not self.db.exists() or not Path(ruta_imagen).is_file():
+            return 0
+        try:
+            imagen_hash = hash_archivo(ruta_imagen)
+        except OSError:
+            return 0
+        with self._conectar() as con:
+            fila = con.execute(
+                "SELECT grados FROM rotaciones_imagen WHERE imagen_hash=?", (imagen_hash,)).fetchone()
+        return int(fila["grados"]) % 360 if fila else 0
+
+    def actualizar_rotacion(self, ruta_imagen: str | Path, grados: int,
+                            fuente: str = "dashboard") -> dict:
+        if not Path(ruta_imagen).is_file():
+            raise ValueError("La imagen ya no está disponible.")
+        grados = int(grados) % 360
+        if grados not in {0, 90, 180, 270}:
+            raise ValueError("La rotación debe ser 0°, 90°, 180° o 270°.")
+        imagen_hash = hash_archivo(ruta_imagen)
+        with self._conectar() as con:
+            con.execute("""
+                INSERT INTO rotaciones_imagen
+                    (imagen_hash, ruta_imagen, grados, fuente, actualizado_en)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(imagen_hash) DO UPDATE SET
+                    ruta_imagen=excluded.ruta_imagen, grados=excluded.grados,
+                    fuente=excluded.fuente, actualizado_en=excluded.actualizado_en
+            """, (imagen_hash, str(ruta_imagen), grados, fuente, _ahora()))
+        return {"imagen_hash": imagen_hash, "grados": grados,
+                "aplicar_en_siguiente_ocr": True, "actualizado_en": _ahora()}
+
+    def rotar_evidencias_imagen(self, ruta_imagen: str | Path, grados: int,
+                                dimensiones: tuple[int, int]) -> dict:
+        """Mantiene alineadas correcciones y regiones al girar su vista OCR."""
+        grados = int(grados) % 360
+        if grados == 0 or not self.db.exists():
+            return {"evidencias_rotadas": 0}
+        ancho, alto = (int(dimensiones[0]), int(dimensiones[1]))
+        imagen_hash = hash_archivo(ruta_imagen)
+        actualizadas = 0
+        with self._conectar() as con:
+            for tabla in ("correcciones_texto", "correcciones", "anotaciones_regiones"):
+                filas = con.execute(
+                    f"SELECT id, bbox_json FROM {tabla} WHERE imagen_hash=?",
+                    (imagen_hash,)).fetchall()
+                for fila in filas:
+                    bbox = json.loads(fila["bbox_json"])
+                    if bbox is None:
+                        continue
+                    girada = rotar_bbox(bbox, grados, ancho, alto)
+                    con.execute(f"UPDATE {tabla} SET bbox_json=? WHERE id=?",
+                                (json.dumps(girada), fila["id"]))
+                    actualizadas += 1
+        return {"evidencias_rotadas": actualizadas}
+
+    def listar_rotaciones(self, rutas_imagen: list[str | Path]) -> dict[str, dict]:
+        if not self.db.exists():
+            return {}
+        hashes = {}
+        for ruta in rutas_imagen:
+            try:
+                if Path(ruta).is_file():
+                    hashes[hash_archivo(ruta)] = str(ruta)
+            except OSError:
+                continue
+        if not hashes:
+            return {}
+        marcadores = ",".join("?" for _ in hashes)
+        with self._conectar() as con:
+            filas = con.execute(f"""
+                SELECT * FROM rotaciones_imagen
+                WHERE imagen_hash IN ({marcadores})
+            """, list(hashes)).fetchall()
+        return {fila["imagen_hash"]: dict(fila) for fila in filas}
 
     def registrar_ejecucion(self, resultados_ocr: list[dict], raiz: str | None = None) -> dict:
         if not self.activado or not self.cfg.get("registrar_observaciones", True):
@@ -402,11 +502,38 @@ class GestorAprendizaje:
             salida.append(item)
         return salida
 
+    def listar_correcciones_texto(self, rutas_imagen: list[str | Path]) -> list[dict]:
+        """Correcciones humanas por hash; conserva duplicados espaciales por bbox."""
+        if not self.db.exists():
+            return []
+        hashes = []
+        for ruta in rutas_imagen:
+            try:
+                if Path(ruta).is_file():
+                    hashes.append(hash_archivo(ruta))
+            except OSError:
+                continue
+        if not hashes:
+            return []
+        marcadores = ",".join("?" for _ in hashes)
+        with self._conectar() as con:
+            filas = con.execute(f"""
+                SELECT * FROM correcciones_texto
+                WHERE imagen_hash IN ({marcadores}) ORDER BY id
+            """, hashes).fetchall()
+        salida = []
+        for fila in filas:
+            item = dict(fila)
+            item["bbox"] = json.loads(item.pop("bbox_json"))
+            salida.append(item)
+        return salida
+
     def estado_revision(self, tipo: str, item_id: str,
                         estado_inicial: str = "por_revisar") -> dict:
         if tipo not in {"carpeta", "externa"}:
             raise ValueError("Tipo de revisión no válido.")
-        if estado_inicial not in {"por_revisar", "completada"}:
+        estados_validos = {"por_revisar", "parcial", "casi_listo", "completada"}
+        if estado_inicial not in estados_validos:
             estado_inicial = "por_revisar"
         with self._conectar() as con:
             fila = con.execute(
@@ -422,8 +549,9 @@ class GestorAprendizaje:
                             estado_inicial: str = "por_revisar") -> dict:
         actual = self.estado_revision(tipo, item_id, estado_inicial)
         nuevo_estado = estado or actual["estado"]
-        if nuevo_estado not in {"por_revisar", "completada"}:
-            raise ValueError("El estado debe ser 'por_revisar' o 'completada'.")
+        if nuevo_estado not in {"por_revisar", "parcial", "casi_listo", "completada"}:
+            raise ValueError(
+                "El estado debe ser por_revisar, parcial, casi_listo o completada.")
         nuevo_oculto = actual["oculto"] if oculto is None else bool(oculto)
         ahora = _ahora()
         with self._conectar() as con:
@@ -466,6 +594,50 @@ class GestorAprendizaje:
             if evidencia:
                 evidencia["version_modelo"] = modelo["version"]
             return corregido, evidencia
+
+    def aplicar_memoria_imagen(self, tokens: list[dict],
+                               ruta_imagen: str | Path | None) -> list[dict]:
+        """Reutiliza verdad humana solo en el mismo archivo y caja confirmados.
+
+        Esta memoria exacta no generaliza a fotos nuevas y, por tanto, no relaja
+        los umbrales conservadores del modelo global.
+        """
+        if not ruta_imagen or not self.db.exists() or not Path(ruta_imagen).is_file():
+            return [dict(token) for token in tokens]
+        try:
+            imagen_hash = hash_archivo(ruta_imagen)
+        except OSError:
+            return [dict(token) for token in tokens]
+        with self._conectar() as con:
+            filas = con.execute("""
+                SELECT id, texto_ocr, texto_correcto, bbox_json, 'literal' AS origen, 0 AS prioridad
+                FROM correcciones_texto WHERE imagen_hash=?
+                UNION ALL
+                SELECT id, texto_ocr, texto_correcto, bbox_json, 'codigo_legacy' AS origen, 1 AS prioridad
+                FROM correcciones WHERE imagen_hash=?
+                ORDER BY prioridad ASC, id DESC
+            """, (imagen_hash, imagen_hash)).fetchall()
+        confirmadas = [{**dict(fila), "bbox": json.loads(fila["bbox_json"])}
+                       for fila in filas]
+        salida = []
+        for token in tokens:
+            nuevo = dict(token)
+            texto = str(token.get("texto_original") or token.get("texto") or "")
+            bbox = list(token["bbox"]) if token.get("bbox") is not None else None
+            coincidencia = next((fila for fila in confirmadas
+                                 if normalizar_codigo(fila["texto_ocr"]) == normalizar_codigo(texto)
+                                 and fila["bbox"] == bbox), None)
+            if coincidencia and coincidencia["texto_correcto"] != token.get("texto"):
+                nuevo["texto_original"] = texto
+                nuevo["texto"] = coincidencia["texto_correcto"]
+                nuevo["correccion_modelo"] = {
+                    "tipo": "memoria_imagen_confirmada",
+                    "correccion_id": coincidencia["id"],
+                    "origen": coincidencia["origen"],
+                    "alcance": "misma_imagen_y_bbox",
+                }
+            salida.append(nuevo)
+        return salida
 
     def entrenar_y_promover(self) -> dict:
         with self._conectar() as con:
@@ -532,11 +704,16 @@ class GestorAprendizaje:
         return {"anterior": activo["version"] if activo else None, "activo": destino["version"]}
 
     def estado(self) -> dict:
+        almacenamiento = {"directorio": str(self.directorio), "base_datos": str(self.db),
+                          "tipo": "SQLite local", "fotografias_copiadas": False}
         if not self.db.exists():
             return {"activado": self.activado, "ejecuciones": 0, "observaciones": 0,
                     "correcciones": 0, "correcciones_modelo": 0,
+                    "memorias_imagen": 0,
+                    "rotaciones_confirmadas": 0,
                     "anotaciones_regiones": 0,
-                    "modelos": 0, "modelo_activo": None}
+                    "modelos": 0, "modelo_activo": None,
+                    "almacenamiento": almacenamiento}
         with self._conectar() as con:
             conteos = {tabla: con.execute(f"SELECT COUNT(*) FROM {tabla}").fetchone()[0]
                        for tabla in ("ejecuciones", "observaciones", "correcciones", "modelos")}
@@ -544,11 +721,23 @@ class GestorAprendizaje:
                 "SELECT COUNT(*) FROM correcciones_texto").fetchone()[0]
             anotaciones_regiones = con.execute(
                 "SELECT COUNT(*) FROM anotaciones_regiones").fetchone()[0]
+            memorias_imagen = con.execute("""
+                SELECT COUNT(*) FROM (
+                    SELECT imagen_hash, bbox_json, texto_correcto FROM correcciones_texto
+                    UNION
+                    SELECT imagen_hash, bbox_json, texto_correcto FROM correcciones
+                )
+            """).fetchone()[0]
+            rotaciones_confirmadas = con.execute(
+                "SELECT COUNT(*) FROM rotaciones_imagen WHERE grados != 0").fetchone()[0]
             activo = self._modelo_activo(con)
             conteos["correcciones_modelo"] = conteos["correcciones"]
             conteos["correcciones"] = correcciones_texto
             conteos["anotaciones_regiones"] = anotaciones_regiones
+            conteos["memorias_imagen"] = memorias_imagen
+            conteos["rotaciones_confirmadas"] = rotaciones_confirmadas
             return {"activado": self.activado, **conteos,
+                    "almacenamiento": almacenamiento,
                     "modelo_activo": ({"version": activo["version"],
                                        "metricas": json.loads(activo["metricas_json"]),
                                        "creado_en": activo["creado_en"]} if activo else None)}
@@ -566,12 +755,17 @@ class GestorAprendizaje:
         return destino
 
 
-def aplicar_modelo_tokens(tokens: list[dict], config: dict | None = None) -> list[dict]:
+def aplicar_modelo_tokens(tokens: list[dict], config: dict | None = None,
+                          ruta_imagen: str | Path | None = None) -> list[dict]:
     """Copia tokens y añade trazabilidad solo cuando una corrección se aplica."""
     gestor = GestorAprendizaje(config)
+    tokens = gestor.aplicar_memoria_imagen(tokens, ruta_imagen)
     salida = []
     for token in tokens:
         nuevo = dict(token)
+        if nuevo.get("correccion_modelo"):
+            salida.append(nuevo)
+            continue
         corregido, evidencia = gestor.aplicar(token["texto"])
         if evidencia and corregido != token["texto"]:
             nuevo["texto_original"] = token["texto"]

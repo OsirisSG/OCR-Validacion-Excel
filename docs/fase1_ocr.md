@@ -20,6 +20,7 @@ extraer_texto("foto_frontal.jpg")
 #   "orientacion_corregida_grados": 4.0,
 #   # campos aditivos documentados:
 #   "imagen": "...", "motor": "paddle", "confianza_media": 0.998,
+#   "dispositivo": "cuda" | "mps" | "cpu", "advertencias_motor": [],
 #   "num_lineas_ocr": 2, "dimensiones": (1040, 760), "roi_usado": None,
 #   "variante_preprocesamiento": "adaptativa",
 #   "intentos_ocr": [{"orientacion_grados": 0, "variante": "adaptativa", ...}]
@@ -32,30 +33,35 @@ CLI: `python ocr_engine.py imagen1.jpg [imagen2.png ...] [--compacto]`
 
 1. **Carga unicode-safe** (`np.fromfile` + `cv2.imdecode`): rutas con acentos no
    rompen en Windows es-ES (fallo clásico de `cv2.imread`).
-2. **Búsqueda multiorientación**: empieza en 0° y, si no aparece un código
+2. **Selección de recursos**: `recursos.py` prueba el acelerador solicitado con
+   una asignación real de PyTorch. En `auto` el orden es CUDA → MPS → CPU.
+   EasyOCR usa la GPU; OpenCV, QR, deskew y variantes usan los hilos CPU. Si la
+   inicialización o inferencia acelerada falla, se recrea el lector en CPU y se
+   devuelve una advertencia trazable.
+3. **Búsqueda multiorientación**: empieza en 0° y, si no aparece un código
    alfanumérico sólido, prueba 90°, 180° y 270° sin interpolar la imagen.
-3. **Deskew** (±15°): umbral adaptativo → dilatación horizontal → `minAreaRect`
+4. **Deskew** (±15°): umbral adaptativo → dilatación horizontal → `minAreaRect`
    → mediana de ángulos. Solo rota si supera `angulo_minimo_correccion` (2°).
-4. **Variantes visuales adaptativas**: la imagen original es la ruta principal.
+5. **Variantes visuales adaptativas**: la imagen original es la ruta principal.
    Si la lectura sigue siendo débil se prueban binarización, CLAHE y realce
    morfológico de relieve para texto grabado o moldeado en plástico.
-5. **Regiones de texto**: si la imagen completa no produce un código sólido,
+6. **Regiones de texto**: si la imagen completa no produce un código sólido,
    MSER agrupa caracteres, amplía hasta seis recortes con contexto y los escala
    antes del OCR. Las cajas se transforman de vuelta al marco orientado.
-6. **Detección del QR** sobre la imagen YA corregida (así el ancla y el recorte
+7. **Detección del QR** sobre la imagen YA corregida (así el ancla y el recorte
    comparten marco de coordenadas — ver errores/003). `cv2.QRCodeDetector` por
    defecto; `pyzbar` opcional por config. Valida cuadratura (0.7–1.3) y tamaño.
-7. **ROI conservador**: expansión `3.0×` el tamaño del QR, rechazado si dejara
+8. **ROI conservador**: expansión `3.0×` el tamaño del QR, rechazado si dejara
    < 90% del ancho/alto. Sin QR → imagen completa, sin error ni degradación.
-8. **OCR dual** (EasyOCR portable por defecto / PaddleOCR alternativo, caché
+9. **OCR dual** (EasyOCR portable por defecto / PaddleOCR alternativo, caché
    por proceso): una pasada restringida encuentra códigos y otra sin `allowlist`
    recupera lenguaje natural, espacios, acentos y puntuación.
-9. **Selección por evidencia**: se priorizan tokens con letras y números; entre
+10. **Selección por evidencia**: se priorizan tokens con letras y números; entre
    candidatos se comparan confianza, longitud y cobertura. Una lectura de texto
    natural no impide buscar un código colocado verticalmente.
-10. **Reintento anti-truncamiento**: si un token toca el borde del ROI o el ROI
+11. **Reintento anti-truncamiento**: si un token toca el borde del ROI o el ROI
    no dio texto → relectura de la imagen completa.
-11. **Reconstrucción y trazabilidad**: se agrupan cajas por renglón y sus huecos
+12. **Reconstrucción y trazabilidad**: se agrupan cajas por renglón y sus huecos
     relativos reconstruyen espacios y saltos de línea. Se conservan orientación,
     variante y resumen de cada intento para explicar por qué ganó una lectura.
 

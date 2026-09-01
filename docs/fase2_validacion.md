@@ -128,6 +128,18 @@ lateral no. El campo `qr_detectado` reporta el de la etiqueta elegida.
 | `comparar_solo_tokens_codigo` | true | ignora lenguaje natural en la comparación |
 | `umbral_coincidencia_total` | 1.0 | ratio requerido para "total" |
 | `diagrama_max_colores` / `diagrama_max_ruido` | 4 / 50.0 | heurística foto vs diagrama |
+| `procesar_videos` | false | reservado para futuro; hoy los videos siempre se ignoran con alerta |
+
+## Advertencias recuperables
+
+Cada carpeta devuelve `alertas[]` con `codigo`, `nivel`, `mensaje` e imagen
+cuando aplica. `SIN_IMAGENES`, `IMAGEN_CORRUPTA`, `SIN_TEXTO_DETECTADO`,
+`VIDEOS_IGNORADOS`, `ERROR_LECTURA_IMAGEN` y `FALLBACK_ACELERADOR` no abortan
+todo el lote: quedan visibles en el detalle y permiten continuar revisando las
+demás fotografías.
+
+El progreso se publica por imagen. La ETA usa la mediana de una ventana de ocho
+duraciones y excluye la primera muestra, que incluye la carga inicial del modelo.
 
 ## Limitaciones conocidas
 

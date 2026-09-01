@@ -45,3 +45,31 @@ def test_conserva_todas_las_imagenes_y_agrega_tokens(monkeypatch, tmp_path):
         "etiqueta_principal", "etiqueta_adicional", "referencia"}
     assert fila["comparacion"]["resultado"] == "coincidencia_total"
     assert all(item["resultado_ocr"]["texto_completo"] for item in fila["imagenes"])
+
+
+def test_advierte_carpeta_sin_imagenes_y_videos_ignorados(monkeypatch, tmp_path):
+    (tmp_path / "clip.mp4").write_bytes(b"video")
+    monkeypatch.setattr(validacion, "clasificar_archivo", lambda ruta, config: "video")
+    carpeta = {
+        "ruta": str(tmp_path), "nombre": "sin_fotos", "conforme": True,
+        "motivo_anomalia": None,
+        "archivos": {"imagenes": [], "otros": [], "videos": ["clip.mp4"]},
+    }
+    fila = validacion._validar_carpeta(carpeta, {"fase2": {}}, {}, {}, None)
+    assert {alerta["codigo"] for alerta in fila["alertas"]} == {
+        "VIDEOS_IGNORADOS", "SIN_IMAGENES"}
+
+
+def test_advierte_imagen_corrupta_sin_abortar_carpeta(monkeypatch, tmp_path):
+    (tmp_path / "rota.jpg").write_bytes(b"no-es-una-imagen")
+    monkeypatch.setattr(validacion, "clasificar_archivo", lambda ruta, config: "fotografia")
+    monkeypatch.setattr(
+        validacion, "extraer_texto",
+        lambda ruta, config: (_ for _ in ()).throw(ValueError("archivo corrupto")))
+    carpeta = {
+        "ruta": str(tmp_path), "nombre": "imagen_rota", "conforme": True,
+        "motivo_anomalia": None,
+        "archivos": {"imagenes": ["rota.jpg"], "otros": [], "videos": []},
+    }
+    fila = validacion._validar_carpeta(carpeta, {"fase2": {}}, {}, {}, None)
+    assert any(a["codigo"] == "IMAGEN_CORRUPTA" for a in fila["alertas"])

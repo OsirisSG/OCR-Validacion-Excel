@@ -60,6 +60,13 @@ COLUMNAS_REVISION = [
     ("Revisión", 15), ("Quitado del listado", 18), ("Actualizado", 22),
 ]
 
+ETIQUETAS_REVISION = {
+    "por_revisar": "Por revisar",
+    "parcial": "Revisión parcial",
+    "casi_listo": "Casi listo",
+    "completada": "Completada",
+}
+
 
 def _hex_a_fill(hex_color: str) -> PatternFill:
     """'#22c55e' -> PatternFill aRGB sólido (openpyxl exige canal alfa)."""
@@ -77,6 +84,25 @@ def _resumen_tipos(tipos: dict) -> str:
 def _id_carpeta(fila: dict) -> str:
     return hashlib.sha256(
         str(fila.get("ruta") or fila.get("nombre") or "").encode("utf-8")).hexdigest()[:16]
+
+
+def _estado_inicial_carpeta(fila: dict) -> str:
+    resultado = fila.get("comparacion", {}).get("resultado")
+    if resultado == "sin_procesar":
+        return "por_revisar"
+    return "casi_listo" if resultado == "coincidencia_total" else "parcial"
+
+
+def _estado_inicial_externa(fila: dict) -> str:
+    completa = (bool(fila.get("coincidencia_exacta")) if fila.get("tipo") == "codigo"
+                else float(fila.get("cobertura") or 0) >= 1.0)
+    if completa:
+        return "casi_listo"
+    return "parcial" if fila.get("tokens") or fila.get("lineas_texto") else "por_revisar"
+
+
+def _revision_texto(estado: str) -> str:
+    return ETIQUETAS_REVISION.get(estado, ETIQUETAS_REVISION["por_revisar"])
 
 
 def _texto_fila(fila: dict, anotaciones_por_ruta: dict | None = None,
@@ -105,8 +131,7 @@ def _texto_fila(fila: dict, anotaciones_por_ruta: dict | None = None,
     texto_imagenes = "\n\n".join(bloques_imagen)
     comparacion = fila["comparacion"]["resultado"]
     revision = (revisiones or {}).get(("carpeta", _id_carpeta(fila)))
-    revision_estado = (revision or {}).get(
-        "estado", "completada" if comparacion == "coincidencia_total" else "por_revisar")
+    revision_estado = (revision or {}).get("estado", _estado_inicial_carpeta(fila))
     return {
         "Ruta": fila["ruta"],
         "Identificador": (f"{fila.get('prefijo_numerico')}_{fila.get('nomenclatura')}"
@@ -119,7 +144,7 @@ def _texto_fila(fila: dict, anotaciones_por_ruta: dict | None = None,
         "Texto etiqueta (OCR)": et_tokens or "—",
         "Texto referencia (OCR)": ref_tokens or "—",
         "Resultado comparación": comparacion,
-        "Revisión": "Completada" if revision_estado == "completada" else "Por revisar",
+        "Revisión": _revision_texto(revision_estado),
         "Confianza OCR (%)": fila.get("confianza_ocr_pct"),
         "QR detectado": "Sí" if fila.get("qr_detectado") else "No",
         "Anomalías Fase 0": fila.get("anomalia_fase0") or "",
@@ -259,10 +284,8 @@ def generar_excel(ruta_validacion: str | Path | None = None,
     for fila_datos in datos.get("resultados", []):
         inicio_grupo = wt.max_row + 1
         revision = revisiones.get(("carpeta", _id_carpeta(fila_datos))) or {}
-        estado_revision = revision.get(
-            "estado", "completada" if fila_datos["comparacion"]["resultado"] == "coincidencia_total"
-            else "por_revisar")
-        revision_texto = "Completada" if estado_revision == "completada" else "Por revisar"
+        estado_revision = revision.get("estado", _estado_inicial_carpeta(fila_datos))
+        revision_texto = _revision_texto(estado_revision)
         for item in fila_datos.get("imagenes", []):
             ruta_item = str(item["ruta"])
             nombre_imagen = item.get("nombre") or Path(ruta_item).name
@@ -302,9 +325,7 @@ def generar_excel(ruta_validacion: str | Path | None = None,
         datos_externos = {"resultados": []}
     for externa in datos_externos.get("resultados", []):
         revision = revisiones.get(("externa", externa["id"])) or {}
-        completa = (bool(externa.get("coincidencia_exacta")) if externa.get("tipo") == "codigo"
-                    else float(externa.get("cobertura") or 0) >= 1.0)
-        estado_revision = revision.get("estado", "completada" if completa else "por_revisar")
+        estado_revision = revision.get("estado", _estado_inicial_externa(externa))
         lineas = externa.get("lineas_texto") or ([{"texto": externa.get("texto_completo")}]
                                                   if externa.get("texto_completo") else [])
         for orden, linea in enumerate(lineas, start=1):
@@ -313,7 +334,7 @@ def generar_excel(ruta_validacion: str | Path | None = None,
             wt.append([
                 "Pruebas complejas", "Banco externo", externa.get("imagen"),
                 externa.get("tipo"), "OCR externo",
-                "Completada" if estado_revision == "completada" else "Por revisar",
+                _revision_texto(estado_revision),
                 orden, linea.get("texto"),
                 round(conf * 100, 2) if conf is not None else None, *bbox,
             ])
@@ -330,21 +351,18 @@ def generar_excel(ruta_validacion: str | Path | None = None,
         item_id = _id_carpeta(fila_datos)
         revision = revisiones.get(("carpeta", item_id)) or {}
         resultado = fila_datos["comparacion"]["resultado"]
-        estado_revision = revision.get(
-            "estado", "completada" if resultado == "coincidencia_total" else "por_revisar")
+        estado_revision = revision.get("estado", _estado_inicial_carpeta(fila_datos))
         wr.append(["Carpeta", fila_datos.get("nombre"),
                    fila_datos.get("identificador") or fila_datos.get("nombre"), resultado,
-                   "Completada" if estado_revision == "completada" else "Por revisar",
+                   _revision_texto(estado_revision),
                    "Sí" if revision.get("oculto") else "No", revision.get("actualizado_en")])
     for externa in datos_externos.get("resultados", []):
         revision = revisiones.get(("externa", externa["id"])) or {}
-        completa = (bool(externa.get("coincidencia_exacta")) if externa.get("tipo") == "codigo"
-                    else float(externa.get("cobertura") or 0) >= 1.0)
-        estado_revision = revision.get("estado", "completada" if completa else "por_revisar")
+        estado_revision = revision.get("estado", _estado_inicial_externa(externa))
         resultado = ("Código exacto" if externa.get("coincidencia_exacta") else
                      f"Cobertura {round(float(externa.get('cobertura') or 0) * 100, 1)}%")
         wr.append(["Prueba compleja", "Pruebas complejas", externa.get("imagen"), resultado,
-                   "Completada" if estado_revision == "completada" else "Por revisar",
+                   _revision_texto(estado_revision),
                    "Sí" if revision.get("oculto") else "No", revision.get("actualizado_en")])
     wr.auto_filter.ref = f"A1:{get_column_letter(len(COLUMNAS_REVISION))}{max(wr.max_row, 1)}"
 

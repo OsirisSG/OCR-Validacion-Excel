@@ -111,11 +111,18 @@ def evaluar(config: dict | None = None,
         tokens_completos = ocr.get("tokens", [])
         if caso["tipo"] == "codigo":
             esperado = caso["esperado"]
-            candidatos = [normalizar(t.get("texto_original") or t.get("texto", ""))
+            candidatos = [normalizar(t.get("texto", ""))
                           for t in tokens_completos] or [""]
+            candidatos_brutos = [normalizar(t.get("texto_original") or t.get("texto", ""))
+                                 for t in tokens_completos] or [""]
             mejor = min(candidatos, key=lambda texto: distancia_edicion(esperado, texto))
+            mejor_bruto = min(candidatos_brutos,
+                               key=lambda texto: distancia_edicion(esperado, texto))
             distancia = distancia_edicion(esperado, mejor)
+            distancia_bruta = distancia_edicion(esperado, mejor_bruto)
             similitud = 1.0 - distancia / max(len(esperado), len(mejor), 1)
+            similitud_bruta = 1.0 - distancia_bruta / max(
+                len(esperado), len(mejor_bruto), 1)
             esperados = [esperado]
             encontrados = [esperado] if mejor == esperado else []
         else:
@@ -125,6 +132,8 @@ def evaluar(config: dict | None = None,
                            if normalizar(fragmento) in texto_normalizado]
             similitud = len(encontrados) / max(len(esperados), 1)
             mejor = ocr.get("texto_completo", "")
+            mejor_bruto = mejor
+            similitud_bruta = similitud
             esperado = "\n".join(esperados)
         fila = {
             "id": f"externa-{Path(nombre).stem}",
@@ -136,16 +145,42 @@ def evaluar(config: dict | None = None,
             "tipo": caso["tipo"],
             "fuente": FUENTES[caso["fuente"]],
             "mejor_candidato": mejor,
+            "mejor_candidato_bruto": mejor_bruto,
             "coincidencia_exacta": len(encontrados) == len(esperados),
+            "coincidencia_exacta_bruta": (mejor_bruto == esperado
+                                           if caso["tipo"] == "codigo"
+                                           else len(encontrados) == len(esperados)),
             "similitud_caracteres": round(similitud, 4),
+            "similitud_caracteres_bruta": round(similitud_bruta, 4),
+            "correccion_memorizada": any(
+                t.get("correccion_modelo", {}).get("tipo") == "memoria_imagen_confirmada"
+                for t in tokens_completos),
             "cobertura": round(len(encontrados) / max(len(esperados), 1), 4),
             "tokens": tokens_completos,
             "lineas_texto": ocr.get("lineas_texto", []),
             "texto_completo": ocr.get("texto_completo", ""),
             "orientacion_grados": ocr.get("orientacion_corregida_grados"),
+            "rotacion_manual_aplicada_grados": ocr.get(
+                "rotacion_manual_aplicada_grados", 0),
+            "orientacion_base_grados": ocr.get("orientacion_base_grados", 0),
+            "deskew_aplicado_grados": ocr.get("deskew_aplicado_grados", 0),
+            "orientacion_texto_base_grados": ocr.get(
+                "orientacion_texto_base_grados", 0),
+            "deskew_texto_aplicado_grados": ocr.get(
+                "deskew_texto_aplicado_grados", 0),
             "variante": ocr.get("variante_preprocesamiento"),
             "intentos": len(ocr.get("intentos_ocr", [])),
             "motor": ocr.get("motor"),
+            "dispositivo": ocr.get("dispositivo", "cpu"),
+            "dimensiones": ocr.get("dimensiones"),
+            "dimensiones_originales": ocr.get("dimensiones_originales"),
+            "alertas": [
+                {"codigo": "FALLBACK_ACELERADOR", "nivel": "advertencia", "mensaje": mensaje}
+                for mensaje in ocr.get("advertencias_motor", [])
+            ] + ([{
+                "codigo": "SIN_TEXTO_DETECTADO", "nivel": "advertencia",
+                "mensaje": "El OCR no encontró texto legible en esta imagen externa.",
+            }] if not ocr.get("texto_completo", "").strip() else []),
             "segundos": round(time.perf_counter() - inicio, 2),
         }
         resultados.append(fila)
@@ -155,6 +190,7 @@ def evaluar(config: dict | None = None,
     codigos = [fila for fila in resultados if fila["tipo"] == "codigo"]
     textos = [fila for fila in resultados if fila["tipo"] == "texto"]
     exactos = sum(fila["coincidencia_exacta"] for fila in codigos)
+    exactos_brutos = sum(fila["coincidencia_exacta_bruta"] for fila in codigos)
     fragmentos = sum(len(fila["esperados"]) for fila in textos)
     fragmentos_ok = sum(len(fila["encontrados"]) for fila in textos)
     documento = {
@@ -162,10 +198,16 @@ def evaluar(config: dict | None = None,
         "fuentes": list(FUENTES.values()),
         "casos": len(resultados),
         "exactos": exactos,
+        "exactos_ocr_brutos": exactos_brutos,
         "casos_codigo": len(codigos),
         "exactitud": round(exactos / len(codigos), 4) if codigos else None,
+        "exactitud_ocr_bruta": round(exactos_brutos / len(codigos), 4) if codigos else None,
+        "exactitud_efectiva": round(exactos / len(codigos), 4) if codigos else None,
         "similitud_media_caracteres": round(
             sum(fila["similitud_caracteres"] for fila in codigos) / len(codigos), 4)
+            if codigos else None,
+        "similitud_media_ocr_bruta": round(
+            sum(fila["similitud_caracteres_bruta"] for fila in codigos) / len(codigos), 4)
             if codigos else None,
         "fragmentos_texto": fragmentos,
         "fragmentos_texto_detectados": fragmentos_ok,

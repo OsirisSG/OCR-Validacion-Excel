@@ -5,7 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Dashboard · Validación de pruebas (OCR)</title>
   <meta name="description" content="Panel interno de revisión de etiquetas procesadas por OCR." />
-  <link rel="stylesheet" href="estilos.css?v=20260831-7" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
+  <link rel="stylesheet" href="estilos.css?v=20260831-16" />
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔎</text></svg>" />
   <script src="vendor/react.production.min.js"></script>
   <script src="vendor/react-dom.production.min.js"></script>
@@ -17,10 +20,21 @@
     window.addEventListener("error", (evento) => {
       const raiz = document.getElementById("raiz");
       if (raiz && !raiz.textContent.trim()) {
-        raiz.innerHTML = `<main class="contenedor"><div class="estado-vacio estado-error"><h2>No se pudo iniciar la interfaz</h2><p>${evento.message}</p></div></main>`;
+        const principal = document.createElement("main");
+        principal.className = "contenedor";
+        const aviso = document.createElement("div");
+        aviso.className = "estado-vacio estado-error";
+        const titulo = document.createElement("h2");
+        titulo.textContent = "No se pudo iniciar la interfaz";
+        const mensaje = document.createElement("p");
+        mensaje.textContent = evento.message;
+        aviso.append(titulo, mensaje);
+        principal.append(aviso);
+        raiz.replaceChildren(principal);
+        console.error(evento.error || evento.message);
       }
     });
   </script>
-  <script src="app.js?v=20260831-9"></script>
+  <script src="app.js?v=20260831-16"></script>
 </body>
 </html>

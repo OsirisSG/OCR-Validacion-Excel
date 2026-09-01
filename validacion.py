@@ -26,7 +26,9 @@ import argparse
 import hashlib
 import json
 import re
+import statistics
 import time
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
@@ -200,7 +202,8 @@ def validar_lote(ruta_estructura: str | Path | None = None,
                  config: dict | None = None,
                  archivo_salida: str | Path | None = None,
                  al_resultado: Callable[[int, int, dict, float | None], None] | None = None,
-                 al_imagen: Callable[[int, int, str, float | None], None] | None = None) -> dict:
+                 al_imagen: Callable[[int, int, str, float | None], None] | None = None,
+                 control: Callable[[], None] | None = None) -> dict:
     """
     Recorre las carpetas hoja de la estructura detectada, valida cada una y
     serializa validacion_resultados.json. Retorna la estructura completa
@@ -220,20 +223,25 @@ def validar_lote(ruta_estructura: str | Path | None = None,
     inicio = time.monotonic()
     total_imagenes = sum(len(c.get("archivos", {}).get("imagenes", [])) for c in hojas)
     imagenes_procesadas = 0
+    ultimo_evento = inicio
+    duraciones: deque[float] = deque(maxlen=8)
 
     def imagen_lista(ruta_imagen: str) -> None:
-        nonlocal imagenes_procesadas
+        nonlocal imagenes_procesadas, ultimo_evento
+        ahora = time.monotonic()
+        duraciones.append(max(0.01, ahora - ultimo_evento))
+        ultimo_evento = ahora
         imagenes_procesadas += 1
         if al_imagen:
-            transcurrido = time.monotonic() - inicio
-            eta = ((transcurrido / imagenes_procesadas) *
-                   (total_imagenes - imagenes_procesadas)) if imagenes_procesadas else None
+            muestras = list(duraciones)[1:] if imagenes_procesadas > 1 else []
+            eta = (statistics.median(muestras) * (total_imagenes - imagenes_procesadas)
+                   if muestras else None)
             al_imagen(imagenes_procesadas, total_imagenes, ruta_imagen,
                       round(eta, 1) if eta is not None else None)
 
     for indice, carpeta in enumerate(hojas, start=1):
         fila = _validar_carpeta(
-            carpeta, config, f2, cache_ocr, patron_dominante, imagen_lista)
+            carpeta, config, f2, cache_ocr, patron_dominante, imagen_lista, control)
         resultados.append(fila)
         if al_resultado:
             transcurrido = time.monotonic() - inicio
@@ -269,10 +277,12 @@ def validar_lote(ruta_estructura: str | Path | None = None,
 
 def _validar_carpeta(carpeta: dict, config: dict, f2: dict,
                      cache_ocr: dict, patron_dominante: str | None,
-                     al_imagen: Callable[[str], None] | None = None) -> dict:
+                     al_imagen: Callable[[str], None] | None = None,
+                     control: Callable[[], None] | None = None) -> dict:
     """Procesa una carpeta hoja completa (clasificación + OCR + comparación)."""
     ruta = Path(carpeta["ruta"])
     observaciones: list[str] = []
+    alertas: list[dict] = []
     if not carpeta["conforme"]:
         observaciones.append(f"anomalía de Fase 0: {carpeta['motivo_anomalia']}")
 
@@ -282,10 +292,18 @@ def _validar_carpeta(carpeta: dict, config: dict, f2: dict,
                    + carpeta["archivos"]["videos"]):
         cat = clasificar_archivo(str(ruta / nombre), config)
         categorias.setdefault(cat, []).append(nombre)
+    if categorias.get("video"):
+        alertas.append({
+            "codigo": "VIDEOS_IGNORADOS", "nivel": "info",
+            "mensaje": (f"Se ignoraron {len(categorias['video'])} video(s). "
+                        "Esta versión procesa únicamente fotografías."),
+        })
 
     imagenes = [ruta / n for n in carpeta["archivos"]["imagenes"]]
     ocr_por_imagen = []
     for img in imagenes:
+        if control:
+            control()
         clave = str(img)
         if clave not in cache_ocr:
             try:
@@ -295,11 +313,35 @@ def _validar_carpeta(carpeta: dict, config: dict, f2: dict,
                                     "orientacion_corregida_grados": 0.0,
                                     "confianza_media": None, "num_lineas_ocr": 0,
                                     "error": str(exc)}
+                alertas.append({
+                    "codigo": ("IMAGEN_CORRUPTA" if isinstance(exc, ValueError)
+                               else "ERROR_LECTURA_IMAGEN"),
+                    "nivel": "error", "imagen": img.name,
+                    "mensaje": f"No se pudo procesar {img.name}: {exc}",
+                })
+        resultado_actual = cache_ocr[clave]
+        if (not resultado_actual.get("error") and
+                not resultado_actual.get("tokens") and
+                not resultado_actual.get("lineas_texto")):
+            alertas.append({
+                "codigo": "SIN_TEXTO_DETECTADO", "nivel": "warning",
+                "imagen": img.name,
+                "mensaje": f"No se encontró texto legible en {img.name}; requiere revisión manual.",
+            })
+        for warning_motor in resultado_actual.get("advertencias_motor", []):
+            alerta = {"codigo": "FALLBACK_ACELERADOR", "nivel": "warning",
+                      "imagen": img.name, "mensaje": warning_motor}
+            if alerta not in alertas:
+                alertas.append(alerta)
         ocr_por_imagen.append({"ruta": clave, "resultado_ocr": cache_ocr[clave]})
         if al_imagen:
             al_imagen(clave)
 
     if not imagenes:
+        alertas.append({
+            "codigo": "SIN_IMAGENES", "nivel": "warning",
+            "mensaje": "La carpeta no contiene fotografías compatibles; no se ejecutó OCR.",
+        })
         return {
             "ruta": str(ruta), "nombre": carpeta["nombre"],
             **_parsear_identificador(carpeta["nombre"], patron_dominante),
@@ -311,6 +353,7 @@ def _validar_carpeta(carpeta: dict, config: dict, f2: dict,
                             "coincidentes": [], "faltantes": []},
             "confianza_ocr_pct": None, "qr_detectado": False,
             "observaciones": observaciones + ["carpeta sin imágenes"],
+            "alertas": alertas,
         }
 
     # 2. Referencia: pista de nombre primero; si no, heurística de densidad.
@@ -354,6 +397,7 @@ def _validar_carpeta(carpeta: dict, config: dict, f2: dict,
                             "coincidentes": [], "faltantes": []},
             "confianza_ocr_pct": None, "qr_detectado": False,
             "observaciones": observaciones + ["sin fotografías de etiqueta"],
+            "alertas": alertas,
         }
 
     et_ocr = etiqueta_item["resultado_ocr"]
@@ -401,6 +445,7 @@ def _validar_carpeta(carpeta: dict, config: dict, f2: dict,
         "confianza_ocr_pct": conf_pct,
         "qr_detectado": any(f["resultado_ocr"].get("qr_bbox") is not None for f in fotos),
         "observaciones": observaciones,
+        "alertas": alertas,
     }
 
 
@@ -411,9 +456,13 @@ def _compacto(resultado_ocr: dict | None) -> dict | None:
     return {k: resultado_ocr.get(k) for k in (
         "tokens", "lineas_texto", "texto_completo", "qr_bbox",
         "confianza_media", "num_lineas_ocr",
-        "orientacion_corregida_grados", "variante_preprocesamiento",
-        "orientacion_texto_grados", "variante_texto_completo",
-        "intentos_ocr", "motor", "dimensiones", "error")}
+        "rotacion_manual_aplicada_grados", "orientacion_base_grados",
+        "deskew_aplicado_grados", "orientacion_corregida_grados",
+        "orientacion_texto_base_grados", "deskew_texto_aplicado_grados",
+        "orientacion_texto_grados", "variante_preprocesamiento",
+        "variante_texto_completo", "dimensiones_originales",
+        "intentos_ocr", "motor", "dispositivo", "advertencias_motor",
+        "dimensiones", "error")}
 
 
 def _imagen_salida(item: dict, rol: str) -> dict:

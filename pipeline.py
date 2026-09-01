@@ -19,21 +19,28 @@ from typing import Callable
 from configuracion import RAIZ_PROYECTO, cargar_config
 from estructura import carpetas_hoja, guardar_estructura, mapear_estructura
 from generar_excel import generar_excel
+from recursos import detectar_recursos
 from validacion import validar_lote
 
 
 def ejecutar_pipeline(ruta_raiz: str | Path, config: dict | None = None,
-                      al_progreso: Callable[[str, str, dict | None], None] | None = None) -> dict:
+                      al_progreso: Callable[[str, str, dict | None], None] | None = None,
+                      nombre_excel: str | None = None,
+                      control: Callable[[], None] | None = None) -> dict:
     """Corre las Fases 0-3 y retorna un dict con artefactos y resumen por fase."""
     config = config or cargar_config()
-    resumen: dict = {"raiz": str(ruta_raiz), "fases": {}}
+    recursos = detectar_recursos(config.get("fase1", {}).get("dispositivo", "auto"))
+    resumen: dict = {"raiz": str(ruta_raiz), "fases": {}, "recursos": recursos}
 
     def progreso(fase: str, mensaje: str, detalle: dict | None = None) -> None:
         if al_progreso:
             al_progreso(fase, mensaje, detalle)
 
     t0 = time.time()
-    progreso("fase0", "Analizando la estructura de carpetas", {"porcentaje": 2})
+    if control:
+        control()
+    progreso("fase0", "Analizando la estructura de carpetas", {
+        "porcentaje": 2, "recursos": recursos})
     estructura = mapear_estructura(ruta_raiz, config)
     ruta_estructura = guardar_estructura(estructura)
     total_hojas = len(carpetas_hoja(estructura))
@@ -78,8 +85,13 @@ def ejecutar_pipeline(ruta_raiz: str | Path, config: dict | None = None,
             },
         )
 
-    validacion = validar_lote(
-        ruta_estructura, config, al_resultado=resultado_listo, al_imagen=imagen_lista)
+    argumentos_validacion = {
+        "al_resultado": resultado_listo,
+        "al_imagen": imagen_lista,
+    }
+    if control is not None:
+        argumentos_validacion["control"] = control
+    validacion = validar_lote(ruta_estructura, config, **argumentos_validacion)
     conteo: dict[str, int] = {}
     for fila in validacion["resultados"]:
         conteo[fila["comparacion"]["resultado"]] = conteo.get(fila["comparacion"]["resultado"], 0) + 1
@@ -91,9 +103,16 @@ def ejecutar_pipeline(ruta_raiz: str | Path, config: dict | None = None,
     }
 
     progreso("fase3", "Generando el Excel maestro", {"porcentaje": 95, "eta_segundos": None})
+    if control:
+        control()
+    nombre = str(nombre_excel or config.get("fase3", {}).get(
+        "archivo_salida", "resultado_maestro.xlsx")).strip()
+    if Path(nombre).name != nombre or nombre in {".", ".."}:
+        raise ValueError("El nombre del Excel no debe contener carpetas.")
+    if not nombre.lower().endswith(".xlsx"):
+        nombre += ".xlsx"
     ruta_excel = generar_excel(
-        None, RAIZ_PROYECTO / config.get("fase3", {}).get(
-            "archivo_salida", "resultado_maestro.xlsx"), config)
+        None, RAIZ_PROYECTO / nombre, config)
     resumen["fases"]["fase3"] = {"artifacto": str(ruta_excel)}
     resumen["duracion_segundos"] = round(time.time() - t0, 1)
     progreso("completado", "Resultados y Excel actualizados", {
@@ -105,6 +124,7 @@ def ejecutar_pipeline(ruta_raiz: str | Path, config: dict | None = None,
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Pipeline completo Fases 0-3.")
     parser.add_argument("ruta_raiz", help="Carpeta raíz del lote a procesar.")
+    parser.add_argument("--excel", default=None, help="Nombre del Excel de salida.")
     args = parser.parse_args()
-    resumen = ejecutar_pipeline(args.ruta_raiz)
+    resumen = ejecutar_pipeline(args.ruta_raiz.strip().strip('"\''), nombre_excel=args.excel)
     print(json.dumps(resumen, ensure_ascii=False, indent=2))

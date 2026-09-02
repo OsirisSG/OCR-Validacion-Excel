@@ -119,12 +119,15 @@ function persistirRutasRecientes(rutas) {
   }
 }
 const textoUnidad = (unidad) => unidad?.texto_original || unidad?.texto || "";
+const textoVisible = (unidad) => unidad?.texto || unidad?.texto_original || "";
 const firmaUnidad = (unidad) => `${textoUnidad(unidad)}|${JSON.stringify(unidad?.bbox || null)}`;
 function unidadesOcr(ocr = {}) {
-  const espaciales = [
-    ...(ocr.lineas_texto || []).map((u) => ({ ...u, tipo_unidad: "renglón" })),
-    ...(ocr.tokens || []).map((u) => ({ ...u, tipo_unidad: "token" })),
-  ];
+  const lineas = (ocr.lineas_texto || []).map((u) => ({ ...u, tipo_unidad: "renglón" }));
+  // Un renglón ya contiene sus tokens: no mostramos ambas representaciones.
+  // Los tokens siguen siendo el respaldo para OCR antiguos que no generaron líneas.
+  const tokens = lineas.length ? [] : (ocr.tokens || [])
+    .map((u) => ({ ...u, tipo_unidad: "token" }));
+  const espaciales = lineas.length ? lineas : tokens;
   const vistas = espaciales.filter((unidad, indice, todas) => textoUnidad(unidad)
     && todas.findIndex((otra) => firmaUnidad(otra) === firmaUnidad(unidad)) === indice);
   if (ocr.texto_completo) {
@@ -289,6 +292,7 @@ function VistaCarga() {
   const [ruta, setRuta] = useState(() => cargarRutasRecientes()[0]?.ruta || "");
   const [nombreExcel, setNombreExcel] = useState(
     () => cargarRutasRecientes()[0]?.nombre_excel || "");
+  const [sobrescribirExcel, setSobrescribirExcel] = useState(false);
   const [estado, setEstado] = useState(undefined);
   const [errorEstado, setErrorEstado] = useState(null);
   const [enviando, setEnviando] = useState(false);
@@ -339,6 +343,7 @@ function VistaCarga() {
     try {
       await enviarJSON("/api/pipeline", {
         ruta: ruta.trim(), nombre_excel: nombreExcel.trim() || null,
+        sobrescribir_excel: sobrescribirExcel,
       });
       const nueva = {
         ruta: ruta.trim(), nombre_excel: nombreExcel.trim(),
@@ -449,6 +454,13 @@ function VistaCarga() {
       <input id="nombre-excel" class="campo" type="text" maxLength=${128}
         placeholder="resultado_maestro.xlsx" value=${nombreExcel}
         onInput=${(e) => setNombreExcel(e.target.value)} disabled=${activo || enviando} />
+      <label class="control-ocultos opcion-sobrescribir">
+        <input type="checkbox" checked=${sobrescribirExcel}
+          onChange=${(e) => setSobrescribirExcel(e.target.checked)} disabled=${activo || enviando} />
+        Sobrescribir el Excel si ya existe
+      </label>
+      <p class="subtitulo-seccion">Si está desactivado, se conserva el anterior y se crea, por ejemplo,
+        <span class="mono"> resultado_maestro_1.xlsx</span>.</p>
       <div class="nota-local">
         <span aria-hidden="true">🔒</span>
         <span>Los archivos permanecen en su ubicación. Para lotes de 8 GB, esto evita una copia innecesaria.</span>
@@ -532,7 +544,7 @@ function TarjetaExterna({ prueba, alActualizarRevision }) {
   };
   const [unidadId, setUnidadId] = useState(() => lecturaSugerida()?.unidad_id || "");
   const [textoCorrecto, setTextoCorrecto] = useState(
-    prueba.tipo === "codigo" ? (prueba.esperado || "") : textoUnidad(lecturaSugerida()));
+    prueba.tipo === "codigo" ? (prueba.esperado || "") : textoVisible(lecturaSugerida()));
   const [guardando, setGuardando] = useState(false);
   const [respuesta, setRespuesta] = useState(null);
   const [modoEdicion, setModoEdicion] = useState(false);
@@ -541,14 +553,14 @@ function TarjetaExterna({ prueba, alActualizarRevision }) {
   useEffect(() => {
     const sugerida = lecturaSugerida();
     setUnidadId(sugerida?.unidad_id || "");
-    setTextoCorrecto(prueba.tipo === "codigo" ? (prueba.esperado || "") : textoUnidad(sugerida));
+    setTextoCorrecto(prueba.tipo === "codigo" ? (prueba.esperado || "") : textoVisible(sugerida));
     setRespuesta(null);
     if (prueba.revision?.estado === "completada") setModoEdicion(false);
   }, [prueba.mejor_candidato, prueba.esperado, prueba.revision?.estado]);
 
   function seleccionar(unidad) {
     setUnidadId(unidad.unidad_id);
-    setTextoCorrecto(textoUnidad(unidad));
+    setTextoCorrecto(textoVisible(unidad));
     setModoEdicion(true);
   }
 
@@ -590,6 +602,19 @@ function TarjetaExterna({ prueba, alActualizarRevision }) {
         tipo: "externa", prueba_id: prueba.id, imagen_id: null, grados,
       });
       setRespuesta({ ok: true, rotacion: true, resultado });
+      await alActualizarRevision();
+    } catch (error) {
+      setRespuesta({ ok: false, mensaje: error.message });
+    } finally {
+      setGuardando(false);
+    }
+  }
+  async function atenderAlerta(alerta) {
+    setGuardando(true);
+    try {
+      await enviarJSON("/api/alertas/atender", {
+        tipo: "externa", item_id: prueba.id, alerta_id: alerta.id,
+      });
       await alActualizarRevision();
     } catch (error) {
       setRespuesta({ ok: false, mensaje: error.message });
@@ -639,10 +664,12 @@ function TarjetaExterna({ prueba, alActualizarRevision }) {
       <dt>Detección</dt><dd>${prueba.variante || "—"} · ${prueba.orientacion_grados || 0}° · ${prueba.intentos} intentos</dd>
       <dt>Tiempo</dt><dd>${fmtDuracion(prueba.segundos)}</dd>
     </dl>
-    ${prueba.tipo === "texto" && html`<div class="texto-detectado">
-      <strong>Texto completo OCR</strong><pre>${prueba.texto_completo || "Sin texto legible"}</pre>
+    <div class="texto-detectado">
+      <div class="progreso-titulo"><strong>Texto completo detectado</strong>
+        <span class="subtitulo-seccion">${(prueba.lineas_texto || []).length} renglones</span></div>
+      <pre>${prueba.texto_completo || "Sin texto legible"}</pre>
     </div>
-    <ul class="fragmentos-esperados">
+    ${prueba.tipo === "texto" && html`<ul class="fragmentos-esperados">
       ${(prueba.esperados || []).map((fragmento) => {
         const ok = (prueba.encontrados || []).includes(fragmento);
         return html`<li key=${fragmento} class=${ok ? "encontrado" : "faltante"}>
@@ -652,13 +679,20 @@ function TarjetaExterna({ prueba, alActualizarRevision }) {
     </ul>`}
     ${(prueba.alertas || []).map((alerta, i) => html`<div key=${`${alerta.codigo}-${i}`}
       class=${`aviso alerta-${alerta.nivel || "advertencia"}`}>
-      <strong>${alerta.codigo?.replaceAll("_", " ") || "ADVERTENCIA"}:</strong> ${alerta.mensaje}</div>`)}
-    <div class="tokens-externos">${unidades.length ? unidades.map((token) => html`
-      <button type="button" key=${token.unidad_id}
-        class=${`token-seleccionable mono ${unidadConfirmada(token, prueba.correcciones) ? "confirmado" : ""}`}
-        disabled=${completada} onClick=${() => seleccionar(token)}
-        title="Usar esta lectura en la corrección">${textoUnidad(token)}</button>`)
-      : html`<span class="subtitulo-seccion">No se detectaron tokens.</span>`}</div>
+      <span class="icono-alerta" title=${alerta.mensaje} aria-label=${alerta.mensaje}>⚠</span>
+      <strong>${alerta.codigo?.replaceAll("_", " ") || "ADVERTENCIA"}:</strong> ${alerta.mensaje}
+      <button type="button" class="boton boton-compacto" onClick=${() => atenderAlerta(alerta)}>
+        Marcar atendido</button></div>`)}
+    <ul class="tokens-lista lecturas-externas">${unidades.length
+      ? unidades.filter((u) => u.tipo_unidad !== "bloque completo").map((token) => html`
+        <li key=${token.unidad_id} class=${`token-fila ${unidadConfirmada(token, prueba.correcciones) ? "token-confirmado" : ""}`}>
+          <button type="button" class="token-texto-boton mono" disabled=${completada}
+            onClick=${() => seleccionar(token)} title="Usar esta lectura en la corrección">
+            ${textoVisible(token)}</button>
+          <span class="conf">${token.confianza == null ? "—" : `${(token.confianza * 100).toFixed(1)}%`}</span>
+        </li>`)
+      : html`<li class="subtitulo-seccion">No se detectaron lecturas.</li>`}
+    </ul>
     ${modoEdicion && !completada && unidades.length > 0 && html`
       <form class="formulario-correccion formulario-externo" onSubmit=${corregir}>
         <label>Lectura OCR
@@ -667,7 +701,7 @@ function TarjetaExterna({ prueba, alActualizarRevision }) {
             if (unidad) seleccionar(unidad);
           }}>
             ${unidades.map((token) => html`<option key=${token.unidad_id} value=${token.unidad_id}>
-              ${token.tipo_unidad}: ${textoUnidad(token).replaceAll("\n", " ↵ ")}</option>`)}
+              ${token.tipo_unidad}: ${textoVisible(token).replaceAll("\n", " ↵ ")}</option>`)}
           </select>
         </label>
         <label>Corrección confirmada
@@ -851,7 +885,9 @@ function VistaTabla() {
             <td data-etiqueta="Origen">${f.origen === "externa" ? "Prueba compleja" : "Carpeta"}</td>
             <td data-etiqueta="Resultado">${f.resultado}
               ${(f.alertas || []).length > 0 && html`<span class="indicador-alerta"
-                title=${f.alertas.map((a) => a.mensaje).join("\n")}> ⚠ ${f.alertas.length}</span>`}</td>
+                title=${f.alertas.map((a) => a.mensaje).join("\n")}
+                aria-label=${`Advertencias: ${f.alertas.map((a) => a.mensaje).join("; ")}`}>
+                ⚠ ${f.alertas.length}</span>`}</td>
             <td data-etiqueta="QR">${f.qr_detectado ? "Sí" : "No"}</td>
             <td data-etiqueta="Estado"><${ChipSemaforo} color=${f.semaforo} colores=${colores}>
               ${f.semaforo || "sin clasificar"}</${ChipSemaforo}></td>
@@ -937,7 +973,7 @@ function SelectorRegion({ item, valor, onChange, onSelectText }) {
         alt=${`Seleccionar texto en ${item?.nombre || "imagen"}`} draggable="false" />
       ${detectadas.filter((linea) => linea.bbox).map((linea, i) => html`
         <button type="button" key=${`ocr-${i}`} class="caja-region caja-ocr"
-          style=${estiloCaja(linea.bbox)} title=${`Usar OCR: ${textoUnidad(linea)}`}
+          style=${estiloCaja(linea.bbox)} title=${`Usar OCR: ${textoVisible(linea)}`}
           onPointerDown=${(evento) => evento.stopPropagation()}
           onClick=${() => onSelectText?.(linea)} />`)}
       ${(item?.anotaciones || []).map((anotacion) => html`
@@ -992,8 +1028,8 @@ function PanelImagen({ titulo, item, vacio, onSelectText, edicionActiva, rotacio
           <li key=${t.unidad_id} class=${`token-fila ${unidadConfirmada(t, item.correcciones) ? "token-confirmado" : ""}`}>
             <button type="button" class="token-texto-boton mono" disabled=${!edicionActiva}
               title=${edicionActiva ? "Usar este texto en la corrección" : "Activa la edición para corregir"}
-              onClick=${() => onSelectText?.(item, t)}>${textoUnidad(t)}</button>
-            <span class="conf">${(t.confianza * 100).toFixed(1)}%</span>
+              onClick=${() => onSelectText?.(item, t)}>${textoVisible(t)}</button>
+            <span class="conf">${t.confianza == null ? "—" : `${(t.confianza * 100).toFixed(1)}%`}</span>
           </li>`)}
         </ul>
         ${(item.anotaciones || []).length > 0 && html`<div class="anotaciones-manuales">
@@ -1028,7 +1064,7 @@ function VistaDetalle({ nombre }) {
     const ocr = primeraImagen?.resultado_ocr || {};
     const unidades = unidadesOcr(ocr);
     const primero = unidades[0];
-    const valor = textoUnidad(primero);
+    const valor = textoVisible(primero);
     setImagenId(primeraImagen?.id || "");
     setUnidadId(primero?.unidad_id || "");
     setTextoCorrecto(valor);
@@ -1060,7 +1096,7 @@ function VistaDetalle({ nombre }) {
     const imagen = imagenesDetalle.find((item) => item.id === nuevoId);
     const ocr = imagen?.resultado_ocr || {};
     const primera = unidadesOcr(ocr)[0];
-    const valor = textoUnidad(primera);
+    const valor = textoVisible(primera);
     setUnidadId(primera?.unidad_id || "");
     setTextoCorrecto(valor);
     setResultadoCorreccion(null);
@@ -1073,7 +1109,7 @@ function VistaDetalle({ nombre }) {
     const exacta = candidatas.find((item) => firmaUnidad(item) === firmaUnidad(unidad)) || candidatas[0];
     setImagenId(imagen?.id || "");
     setUnidadId(exacta?.unidad_id || "");
-    setTextoCorrecto(textoUnidad(exacta));
+    setTextoCorrecto(textoVisible(exacta));
     setModoEdicion(true);
     setResultadoCorreccion(null);
   }
@@ -1142,6 +1178,16 @@ function VistaDetalle({ nombre }) {
       setResultadoCorreccion({ ok: false, mensaje: error.message });
     }
   }
+  async function atenderAlerta(alerta) {
+    try {
+      await enviarJSON("/api/alertas/atender", {
+        tipo: "carpeta", item_id: detalle.id, alerta_id: alerta.id,
+      });
+      setDetalle(await pedirJSON(`/api/pruebas/${encodeURIComponent(nombre)}`));
+    } catch (error) {
+      setResultadoCorreccion({ ok: false, mensaje: error.message });
+    }
+  }
   const historialAprendizaje = imagenesDetalle.flatMap((imagen) => [
     ...(imagen.correcciones || []).map((item) => ({
       id: `c-${item.id}`, tipo: "Corrección OCR", imagen: imagen.nombre,
@@ -1188,7 +1234,10 @@ function VistaDetalle({ nombre }) {
 
     ${(detalle.alertas || []).map((alerta, i) => html`<div key=${`${alerta.codigo}-${i}`}
       class=${`aviso alerta-${alerta.nivel || "advertencia"}`}>
-      <strong>${alerta.codigo?.replaceAll("_", " ") || "ADVERTENCIA"}:</strong> ${alerta.mensaje}</div>`)}
+      <span class="icono-alerta" title=${alerta.mensaje} aria-label=${alerta.mensaje}>⚠</span>
+      <strong>${alerta.codigo?.replaceAll("_", " ") || "ADVERTENCIA"}:</strong> ${alerta.mensaje}
+      <button type="button" class="boton boton-compacto" onClick=${() => atenderAlerta(alerta)}>
+        Marcar atendido</button></div>`)}
 
     ${modoEdicion && !revisionCompletada ? html`<div class="tarjeta aprendizaje-panel">
       <div>
@@ -1211,11 +1260,11 @@ function VistaDetalle({ nombre }) {
             <select class="campo" value=${unidadSeleccionada?.unidad_id || ""} onChange=${(e) => {
               const unidad = unidadesCorregibles.find((u) => u.unidad_id === e.target.value);
               if (unidad) {
-                setUnidadId(unidad.unidad_id); setTextoCorrecto(textoUnidad(unidad));
+                setUnidadId(unidad.unidad_id); setTextoCorrecto(textoVisible(unidad));
               }
             }}>
               ${unidadesCorregibles.map((t) => html`<option key=${t.unidad_id} value=${t.unidad_id}>
-                ${t.tipo_unidad}: ${textoUnidad(t).replaceAll("\n", " ↵ ")}</option>`)}
+                ${t.tipo_unidad}: ${textoVisible(t).replaceAll("\n", " ↵ ")}</option>`)}
             </select>
           </label>
           <label>Texto correcto (con espacios y saltos)

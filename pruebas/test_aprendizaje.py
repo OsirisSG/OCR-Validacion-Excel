@@ -165,3 +165,12 @@ def test_rotacion_de_cajas_conserva_su_posicion_visual():
     assert rotar_bbox(caja, 90, 200, 100) == [40, 10, 40, 30]
     assert rotar_bbox(caja, 180, 200, 100) == [160, 40, 30, 40]
     assert rotar_bbox(caja, 270, 200, 100) == [20, 160, 40, 30]
+
+
+def test_alerta_atendida_persiste_y_puede_filtrarse(tmp_path):
+    gestor = _gestor(tmp_path)
+
+    resultado = gestor.atender_alerta("carpeta", "carpeta-1", "alerta-12345678")
+
+    assert resultado["atendida"] is True
+    assert ("carpeta", "carpeta-1", "alerta-12345678") in gestor.listar_alertas_atendidas()

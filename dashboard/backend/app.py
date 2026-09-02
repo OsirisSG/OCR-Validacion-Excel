@@ -74,6 +74,7 @@ async def evitar_frontend_obsoleto(request, call_next):
 class SolicitudPipeline(BaseModel):
     ruta: str = Field(min_length=1, max_length=4096)
     nombre_excel: str | None = Field(default=None, max_length=128)
+    sobrescribir_excel: bool = False
 
 
 class SolicitudCorreccion(BaseModel):
@@ -98,6 +99,12 @@ class SolicitudRevision(BaseModel):
     estado: str | None = Field(
         default=None, pattern="^(por_revisar|parcial|casi_listo|completada)$")
     oculto: bool | None = None
+
+
+class SolicitudAlerta(BaseModel):
+    tipo: str = Field(pattern="^(carpeta|externa)$")
+    item_id: str = Field(min_length=1, max_length=128)
+    alerta_id: str = Field(min_length=8, max_length=64)
 
 
 class SolicitudRollback(BaseModel):
@@ -235,6 +242,24 @@ def _bbox_igual(primera: list | None, segunda: list | None) -> bool:
     return [int(v) for v in primera] == [int(v) for v in segunda]
 
 
+def _alerta_id(alerta: dict) -> str:
+    firma = "|".join(str(alerta.get(k) or "")
+                     for k in ("codigo", "imagen", "mensaje"))
+    return hashlib.sha256(firma.encode("utf-8")).hexdigest()[:16]
+
+
+def _alertas_pendientes(tipo: str, item_id: str, alertas: list[dict],
+                        atendidas: set[tuple[str, str, str]] | None = None) -> list[dict]:
+    atendidas = atendidas if atendidas is not None else GestorAprendizaje(
+        CONFIG).listar_alertas_atendidas()
+    salida = []
+    for alerta in alertas or []:
+        identificador = _alerta_id(alerta)
+        if (tipo, item_id, identificador) not in atendidas:
+            salida.append({**alerta, "id": identificador, "atendida": False})
+    return salida
+
+
 def _imagen_transformada(ruta: Path, rotacion: int = 0,
                          ajuste: float = 0.0) -> Response:
     """Entrega una vista orientada igual que la usada por el OCR."""
@@ -267,12 +292,35 @@ def _imagen_transformada(ruta: Path, rotacion: int = 0,
                     headers={"Cache-Control": "no-store"})
 
 
-def _rotar_resultado_existente(ocr: dict, grados_nuevos: int) -> dict:
+def _dimensiones_ocr_desde_archivo(ruta: Path, ocr: dict) -> tuple[int, int]:
+    """Obtiene el lienzo OCR actual aun cuando un JSON antiguo no lo guardó."""
+    import cv2
+    import numpy as np
+
+    datos = np.fromfile(str(ruta), dtype=np.uint8)
+    imagen = cv2.imdecode(datos, cv2.IMREAD_COLOR)
+    if imagen is None:
+        raise ValueError("La imagen está corrupta o no se puede decodificar.")
+    alto_original, ancho_original = imagen.shape[:2]
+    manual = int(ocr.get("rotacion_manual_aplicada_grados") or 0) % 360
+    orientacion = (_orientacion_base_publica(ocr) + manual) % 360
+    if orientacion in {90, 270}:
+        return alto_original, ancho_original
+    return ancho_original, alto_original
+
+
+def _rotar_resultado_existente(
+        ocr: dict, grados_nuevos: int,
+        dimensiones_respaldo: tuple[int, int] | None = None) -> dict:
     """Gira cajas OCR ya calculadas para que la corrección visual sea inmediata."""
     dimensiones = ocr.get("dimensiones") or []
-    if len(dimensiones) != 2:
-        raise ValueError("No están disponibles las dimensiones del OCR para girar la vista.")
-    ancho, alto = int(dimensiones[0]), int(dimensiones[1])
+    if len(dimensiones) == 2:
+        ancho, alto = int(dimensiones[0]), int(dimensiones[1])
+    elif dimensiones_respaldo:
+        ancho, alto = dimensiones_respaldo
+        ocr["dimensiones"] = [ancho, alto]
+    else:
+        raise ValueError("No fue posible obtener las dimensiones de la imagen para girarla.")
     aplicados = int(ocr.get("rotacion_manual_aplicada_grados") or 0) % 360
     delta = (int(grados_nuevos) - aplicados) % 360
     if delta == 0:
@@ -325,6 +373,27 @@ def _buscar_unidad_ocr(unidades: list[dict], texto: str,
     if len(sin_caja) == 1:
         return sin_caja[0]
     return candidatas[0] if len(candidatas) == 1 else None
+
+
+def _aplicar_correcciones_publicas(ocr: dict, correcciones: list[dict]) -> dict:
+    """Refleja en la respuesta el texto humano sin alterar el OCR bruto guardado."""
+    salida = dict(ocr)
+    for clave in ("tokens", "lineas_texto"):
+        unidades = [dict(unidad) for unidad in ocr.get(clave, [])]
+        for unidad in unidades:
+            original = str(unidad.get("texto_original") or unidad.get("texto") or "")
+            coincidencias = [c for c in correcciones
+                             if str(c.get("texto_ocr") or "") == original and
+                             _bbox_igual(c.get("bbox"), unidad.get("bbox"))]
+            if coincidencias:
+                unidad.setdefault("texto_original", original)
+                unidad["texto"] = coincidencias[-1]["texto_correcto"]
+                unidad["confirmado_manualmente"] = True
+        salida[clave] = unidades
+    lineas = salida.get("lineas_texto") or []
+    if lineas and any(linea.get("confirmado_manualmente") for linea in lineas):
+        salida["texto_completo"] = "\n".join(str(linea.get("texto") or "") for linea in lineas)
+    return salida
 
 
 def _regenerar_excel(resultado: dict) -> None:
@@ -386,7 +455,8 @@ def _esperar_continuacion() -> None:
         pass
 
 
-def _ejecutar_pipeline_fondo(ruta: Path, nombre_excel: str | None = None) -> None:
+def _ejecutar_pipeline_fondo(ruta: Path, nombre_excel: str | None = None,
+                             sobrescribir_excel: bool = False) -> None:
     inicio = time.monotonic()
 
     def progreso(fase: str, mensaje: str, detalle: dict | None = None) -> None:
@@ -406,6 +476,7 @@ def _ejecutar_pipeline_fondo(ruta: Path, nombre_excel: str | None = None) -> Non
         from pipeline import ejecutar_pipeline
         resumen = ejecutar_pipeline(
             ruta, al_progreso=progreso, nombre_excel=nombre_excel,
+            sobrescribir_excel=sobrescribir_excel,
             control=_esperar_continuacion)
         _cache.update({"mtime": None, "datos": None})
         _actualizar_pipeline(
@@ -431,7 +502,8 @@ def _lote_de(fila: dict) -> str:
     return partes[-2] if len(partes) >= 2 else "Sin lote"
 
 
-def _fila_publica(fila: dict, revisiones: dict | None = None) -> dict:
+def _fila_publica(fila: dict, revisiones: dict | None = None,
+                  alertas_atendidas: set | None = None) -> dict:
     """Fila para listado/tabla: ligera + semáforo evaluado con el motor de reglas."""
     clasif = clasificar(fila.get("confianza_ocr_pct"),
                         fila["comparacion"]["resultado"], REGLAS)
@@ -457,7 +529,8 @@ def _fila_publica(fila: dict, revisiones: dict | None = None) -> dict:
         "qr_detectado": fila.get("qr_detectado", False),
         "conforme": fila.get("es_conforme"),
         "observaciones": fila.get("observaciones", []),
-        "alertas": fila.get("alertas", []),
+        "alertas": _alertas_pendientes(
+            "carpeta", item_id, fila.get("alertas", []), alertas_atendidas),
         "semaforo": clasif.get("semaforo_global"),
         "semaforo_confianza": clasif.get("confianza_ocr"),
         "semaforo_coincidencia": clasif.get("coincidencia_texto"),
@@ -601,18 +674,22 @@ def anotar_region_no_detectada(solicitud: SolicitudAnotacionRegion):
                  if imagen.get("id") == solicitud.imagen_id), None)
     if item is None:
         raise HTTPException(404, "La imagen indicada no pertenece a la carpeta.")
-    dimensiones = (item.get("resultado_ocr") or {}).get("dimensiones") or []
-    if len(dimensiones) != 2:
-        raise HTTPException(400, "No están disponibles las dimensiones de la imagen.")
-    ancho_imagen, alto_imagen = (int(dimensiones[0]), int(dimensiones[1]))
-    x, y, ancho, alto = solicitud.bbox
-    if (x < 0 or y < 0 or ancho < 2 or alto < 2 or
-            x + ancho > ancho_imagen or y + alto > alto_imagen):
-        raise HTTPException(400, "La región seleccionada queda fuera de la imagen.")
     raiz = _resolver_raiz_datos(datos)
     if raiz is None:
         raise HTTPException(503, "La raíz de imágenes no está disponible en este equipo.")
     ruta_local = _resolver_imagen(str(item["ruta"]), datos, raiz)
+    dimensiones = (item.get("resultado_ocr") or {}).get("dimensiones") or []
+    try:
+        ancho_imagen, alto_imagen = (
+            (int(dimensiones[0]), int(dimensiones[1]))
+            if len(dimensiones) == 2 else
+            _dimensiones_ocr_desde_archivo(ruta_local, item.get("resultado_ocr") or {}))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    x, y, ancho, alto = solicitud.bbox
+    if (x < 0 or y < 0 or ancho < 2 or alto < 2 or
+            x + ancho > ancho_imagen or y + alto > alto_imagen):
+        raise HTTPException(400, "La región seleccionada queda fuera de la imagen.")
     try:
         resultado = gestor.registrar_region(
             solicitud.texto_correcto, solicitud.bbox,
@@ -682,7 +759,9 @@ def guardar_rotacion(solicitud: SolicitudRotacion):
         ocr_objetivo = fila
         _, salida_externa = rutas(CONFIG)
     try:
-        giro = _rotar_resultado_existente(ocr_objetivo, solicitud.grados)
+        dimensiones_respaldo = _dimensiones_ocr_desde_archivo(ruta, ocr_objetivo)
+        giro = _rotar_resultado_existente(
+            ocr_objetivo, solicitud.grados, dimensiones_respaldo)
         resultado = gestor.actualizar_rotacion(ruta, solicitud.grados)
         resultado.update(gestor.rotar_evidencias_imagen(
             ruta, giro["delta"], giro["dimensiones_anteriores"]))
@@ -692,8 +771,10 @@ def guardar_rotacion(solicitud: SolicitudRotacion):
                 copia = fila.get(campo)
                 if (copia and str(copia.get("ruta")) == str(item.get("ruta")) and
                         copia.get("resultado_ocr") is not ocr_objetivo):
-                    _rotar_resultado_existente(copia.get("resultado_ocr") or {},
-                                               solicitud.grados)
+                    ocr_copia = copia.get("resultado_ocr") or {}
+                    _rotar_resultado_existente(
+                        ocr_copia, solicitud.grados,
+                        _dimensiones_ocr_desde_archivo(ruta, ocr_copia))
             _guardar_json_atomico(RUTA_VALIDACION, datos)
             _cache.update({"mtime": None, "datos": None})
         else:
@@ -714,6 +795,7 @@ def _externas_publicas(incluir_ocultos: bool = False) -> dict:
     publico["resultados"] = []
     gestor = GestorAprendizaje(CONFIG)
     revisiones = gestor.listar_revisiones()
+    alertas_atendidas = gestor.listar_alertas_atendidas()
     directorio, _ = rutas(CONFIG)
     rutas_disponibles = [(directorio / fila["imagen"]).resolve()
                          for fila in documento.get("resultados", [])
@@ -752,6 +834,9 @@ def _externas_publicas(incluir_ocultos: bool = False) -> dict:
             f"?rotacion={(aplicada + base) % 360}&ajuste={ajuste}")
         item["correcciones"] = (correcciones_por_hash.get(hash_archivo(ruta_imagen), [])
                                 if ruta_imagen.is_file() else [])
+        item = _aplicar_correcciones_publicas(item, item["correcciones"])
+        item["alertas"] = _alertas_pendientes(
+            "externa", fila["id"], fila.get("alertas", []), alertas_atendidas)
         publico["resultados"].append(item)
     publico["visibles"] = len(publico["resultados"])
     return publico
@@ -814,6 +899,13 @@ def actualizar_revision(solicitud: SolicitudRevision):
     except Exception as exc:
         resultado["advertencia_excel"] = str(exc)
     return resultado
+
+
+@app.post("/api/alertas/atender")
+def atender_alerta(solicitud: SolicitudAlerta):
+    gestor = GestorAprendizaje(CONFIG)
+    return gestor.atender_alerta(
+        solicitud.tipo, solicitud.item_id, solicitud.alerta_id)
 
 
 @app.get("/api/externas/imagen/{nombre}")
@@ -920,7 +1012,8 @@ def iniciar_pipeline(solicitud: SolicitudPipeline):
         })
 
     hilo = threading.Thread(
-        target=_ejecutar_pipeline_fondo, args=(ruta, nombre_excel), daemon=True)
+        target=_ejecutar_pipeline_fondo,
+        args=(ruta, nombre_excel, solicitud.sobrescribir_excel), daemon=True)
     hilo.start()
     return {"aceptado": True, "ruta": str(ruta), "estado": "procesando"}
 
@@ -990,7 +1083,8 @@ def pruebas(q: str = "", estado: str = "", limit: int = Query(200, ge=1, le=1000
     if not datos:
         raise HTTPException(404, "Sin datos procesados.")
     revisiones = GestorAprendizaje(CONFIG).listar_revisiones()
-    filas = [_fila_publica(f, revisiones) for f in datos["resultados"]]
+    atendidas = GestorAprendizaje(CONFIG).listar_alertas_atendidas()
+    filas = [_fila_publica(f, revisiones, atendidas) for f in datos["resultados"]]
     externas = _externas_publicas(incluir_ocultos=True)
     filas.extend(_fila_externa_publica(f) for f in externas.get("resultados", []))
     q_norm = unquote(q).strip().lower()
@@ -1038,7 +1132,8 @@ def detalle(clave: str):
     raiz_local = _resolver_raiz_datos(datos)
     ruta_local = _reubicar_ruta(str(fila["ruta"]), datos, raiz_local) if raiz_local else None
     detalle_json["ruta_mostrada"] = str(ruta_local) if ruta_local else str(fila["ruta"])
-    detalle_json["alertas"] = fila.get("alertas", [])
+    detalle_json["alertas"] = _alertas_pendientes(
+        "carpeta", _id_fila(fila), fila.get("alertas", []))
     for campo in ("etiqueta", "referencia"):
         if fila.get(campo):
             detalle_json[campo] = dict(fila[campo])
@@ -1073,6 +1168,8 @@ def detalle(clave: str):
                 imagen_hash = hash_archivo(ruta_item)
                 publico["anotaciones"] = por_hash.get(imagen_hash, [])
                 publico["correcciones"] = correcciones_por_hash.get(imagen_hash, [])
+                publico["resultado_ocr"] = _aplicar_correcciones_publicas(
+                    publico.get("resultado_ocr") or {}, publico["correcciones"])
                 rotacion = rotaciones.get(imagen_hash) or {}
                 preferida = int(rotacion.get("grados", 0))
                 ocr = publico.get("resultado_ocr") or {}

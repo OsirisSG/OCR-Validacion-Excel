@@ -76,6 +76,11 @@ completamente local.
 
 ## Instalación y ejecución
 
+La instalación completa recomendada es `python instalar.py --perfil completo`;
+selecciona CUDA, MPS o CPU, crea un entorno aislado cuando corresponde y verifica
+PyTorch con una operación real. Los detalles están en
+`docs/instalacion_multiplataforma.md`.
+
 Desde la raíz del proyecto:
 
 ```bash
@@ -106,6 +111,13 @@ dashboard:
   raiz_datos_permitida: null  # null = raíz del último pipeline
   puerto: 8000
 ```
+
+La vista de carga permite sobrescribir expresamente un Excel ya existente. Si
+la casilla queda desactivada, el backend conserva el archivo y genera una salida
+versionada. Las advertencias muestran su motivo al posar el puntero y pueden
+marcarse como atendidas; esa decisión persiste en la base de aprendizaje. Las
+correcciones confirmadas se reflejan de inmediato en el texto visible y en
+verde, sin volver a listar por separado un renglón y sus tokens internos.
 
 ## Contrato de la API
 

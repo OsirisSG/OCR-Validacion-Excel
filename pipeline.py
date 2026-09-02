@@ -26,6 +26,7 @@ from validacion import validar_lote
 def ejecutar_pipeline(ruta_raiz: str | Path, config: dict | None = None,
                       al_progreso: Callable[[str, str, dict | None], None] | None = None,
                       nombre_excel: str | None = None,
+                      sobrescribir_excel: bool = False,
                       control: Callable[[], None] | None = None) -> dict:
     """Corre las Fases 0-3 y retorna un dict con artefactos y resumen por fase."""
     config = config or cargar_config()
@@ -111,8 +112,17 @@ def ejecutar_pipeline(ruta_raiz: str | Path, config: dict | None = None,
         raise ValueError("El nombre del Excel no debe contener carpetas.")
     if not nombre.lower().endswith(".xlsx"):
         nombre += ".xlsx"
-    ruta_excel = generar_excel(
-        None, RAIZ_PROYECTO / nombre, config)
+    ruta_destino = RAIZ_PROYECTO / nombre
+    if ruta_destino.exists() and not sobrescribir_excel:
+        base, extension = ruta_destino.stem, ruta_destino.suffix
+        indice = 1
+        while True:
+            candidata = ruta_destino.with_name(f"{base}_{indice}{extension}")
+            if not candidata.exists():
+                ruta_destino = candidata
+                break
+            indice += 1
+    ruta_excel = generar_excel(None, ruta_destino, config)
     resumen["fases"]["fase3"] = {"artifacto": str(ruta_excel)}
     resumen["duracion_segundos"] = round(time.time() - t0, 1)
     progreso("completado", "Resultados y Excel actualizados", {
@@ -125,6 +135,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Pipeline completo Fases 0-3.")
     parser.add_argument("ruta_raiz", help="Carpeta raíz del lote a procesar.")
     parser.add_argument("--excel", default=None, help="Nombre del Excel de salida.")
+    parser.add_argument("--sobrescribir", action="store_true",
+                        help="Reemplaza el Excel si ya existe.")
     args = parser.parse_args()
-    resumen = ejecutar_pipeline(args.ruta_raiz.strip().strip('"\''), nombre_excel=args.excel)
+    resumen = ejecutar_pipeline(
+        args.ruta_raiz.strip().strip('"\''), nombre_excel=args.excel,
+        sobrescribir_excel=args.sobrescribir)
     print(json.dumps(resumen, ensure_ascii=False, indent=2))

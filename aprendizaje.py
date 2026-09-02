@@ -233,6 +233,11 @@ class GestorAprendizaje:
                 grados INTEGER NOT NULL DEFAULT 0,
                 fuente TEXT NOT NULL DEFAULT 'dashboard', actualizado_en TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS alertas_atendidas (
+                tipo TEXT NOT NULL, item_id TEXT NOT NULL, alerta_id TEXT NOT NULL,
+                atendida_en TEXT NOT NULL,
+                PRIMARY KEY(tipo, item_id, alerta_id)
+            );
             CREATE TABLE IF NOT EXISTS modelos (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, version TEXT UNIQUE NOT NULL,
                 padre_id INTEGER, estado TEXT NOT NULL, modelo_json TEXT NOT NULL,
@@ -572,6 +577,28 @@ class GestorAprendizaje:
             filas = con.execute("SELECT * FROM revisiones").fetchall()
         return {(fila["tipo"], fila["item_id"]):
                 {**dict(fila), "oculto": bool(fila["oculto"])} for fila in filas}
+
+    def atender_alerta(self, tipo: str, item_id: str, alerta_id: str) -> dict:
+        if tipo not in {"carpeta", "externa"}:
+            raise ValueError("Tipo de alerta no válido.")
+        ahora = _ahora()
+        with self._conectar() as con:
+            con.execute("""
+                INSERT INTO alertas_atendidas(tipo, item_id, alerta_id, atendida_en)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(tipo, item_id, alerta_id) DO UPDATE SET
+                    atendida_en=excluded.atendida_en
+            """, (tipo, item_id, alerta_id, ahora))
+        return {"tipo": tipo, "item_id": item_id, "alerta_id": alerta_id,
+                "atendida": True, "atendida_en": ahora}
+
+    def listar_alertas_atendidas(self) -> set[tuple[str, str, str]]:
+        if not self.db.exists():
+            return set()
+        with self._conectar() as con:
+            filas = con.execute(
+                "SELECT tipo, item_id, alerta_id FROM alertas_atendidas").fetchall()
+        return {(fila["tipo"], fila["item_id"], fila["alerta_id"]) for fila in filas}
 
     def _modelo_activo(self, con: sqlite3.Connection | None = None) -> sqlite3.Row | None:
         if not self.db.exists() and con is None:

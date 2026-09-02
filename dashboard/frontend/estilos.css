@@ -326,6 +326,7 @@ td.numero { font-variant-numeric: tabular-nums; }
 }
 .alerta-advertencia { border-left-color: #f59e0b; background: rgba(245, 158, 11, .10); }
 .alerta-warning { border-left-color: #f59e0b; background: rgba(245, 158, 11, .10); }
+.icono-alerta { display: inline-flex; cursor: help; margin-right: 6px; }
 .alerta-error { border-left-color: #ef4444; background: rgba(239, 68, 68, .10); }
 .alerta-info { border-left-color: #0ea5e9; background: rgba(14, 165, 233, .10); }
 .ayuda-carga { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }

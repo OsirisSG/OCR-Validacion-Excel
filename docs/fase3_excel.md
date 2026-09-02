@@ -29,8 +29,10 @@ Todas las filas incluyen `Por revisar`, `Revisión parcial`, `Casi listo` o
 `Completada`; los elementos quitados
 siguen en la bandeja con la marca `Quitado del listado = Sí`.
 
-El pipeline acepta `--excel nombre.xlsx`; desde el dashboard el nombre es
-opcional y `resultado_maestro.xlsx` sigue siendo el predeterminado.
+El pipeline acepta `--excel nombre.xlsx` y `--sobrescribir`. Desde el dashboard
+el nombre es opcional y `resultado_maestro.xlsx` sigue siendo el predeterminado.
+Si el archivo ya existe y no se marca la opción de sobrescritura, se conserva y
+la salida recibe el primer sufijo disponible (`_1`, `_2`, ...).
 
 ## Hoja "Matriz de cumplimiento" (semáforo)
 

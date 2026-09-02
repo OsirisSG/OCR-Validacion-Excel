@@ -38,6 +38,28 @@ su propio `.venv` e instalar las dependencias desde `requirements.txt`.
 
 ## Instalación
 
+La opción recomendada detecta el sistema y prepara un entorno completo:
+
+- macOS/Linux: doble clic en `instalar.command` o ejecuta
+  `./instalar.command`.
+- Windows: doble clic en `instalar.bat`.
+- Cualquier sistema: `python instalar.py --perfil completo`.
+
+El instalador elige una sola distribución compatible de PyTorch: CUDA para una
+NVIDIA soportada, Metal/MPS en Apple Silicon o CPU como respaldo. La rueda
+acelerada también ejecuta operaciones en CPU; instalar dos paquetes `torch`
+distintos en el mismo entorno no es posible ni necesario. Consulta
+`docs/instalacion_multiplataforma.md` para diagnóstico y recuperación.
+
+Para revisar lo que hará sin instalar:
+
+```bash
+python instalar.py --solo-diagnostico
+python instalar.py --simular
+```
+
+### Instalación manual
+
 ### 1. Clonar el repositorio
 
 ```bash
@@ -108,7 +130,7 @@ no convertir cada instalación en un entorno pesado:
 
 | Archivo | Capacidades preparadas |
 | --- | --- |
-| `requirements-formats.txt` | HEIC/HEIF, RAW, secuencias, video y PDF |
+| `requirements-formats.txt` | HEIC/HEIF, RAW, secuencias y PDF (los videos siguen excluidos del OCR) |
 | `requirements-quality.txt` | calidad de imagen, similitud difusa y análisis |
 | `requirements-training.txt` | aumentación, métricas y seguimiento de entrenamiento |
 | `requirements-production.txt` | telemetría, CLI, rendimiento y ejecutables |
@@ -122,6 +144,10 @@ python -m pip install -r requirements-training.txt
 python -m pip install -r requirements-production.txt
 python -m pip check
 ```
+
+`requirements-complete.txt` referencia todos los grupos funcionales. El
+instalador automático lo hace por etapas para colocar primero la rueda correcta
+de PyTorch y verificar el acelerador al final.
 
 Estas dependencias preparan el entorno, pero no habilitan automáticamente una
 función: cada mejora debe integrarse en el código, probarse y documentarse.
@@ -199,7 +225,9 @@ El dashboard ofrece tres vistas principales:
   de giro de 90°, informa cuando el OCR enderezó una imagen y muestra la lista
   conjunta de correcciones y textos omitidos usados como aprendizaje supervisado.
 - **Procesar carpeta:** ejecuta las Fases 0–3 desde una ruta local, acepta la ruta
-  con o sin comillas, permite nombrar el Excel y pausar/continuar entre imágenes.
+  con o sin comillas, permite nombrar el Excel, elegir si se sobrescribe el
+  archivo existente y pausar/continuar entre imágenes. Si no se autoriza
+  sobrescribir, crea automáticamente `nombre_1.xlsx`, `nombre_2.xlsx`, etc.
   Las últimas diez direcciones y su nombre de Excel se conservan localmente en
   el navegador para poder seleccionarlas en ejecuciones posteriores.
 
@@ -355,7 +383,10 @@ OCR-Validacion-Excel/
 ├── configuracion.py              # Configuración y reglas compartidas
 ├── config.yaml
 ├── reglas_cumplimiento.yaml
+├── instalar.py                  # Instalación CPU/CUDA/MPS autodetectada
+├── instalar.command / .bat      # Lanzadores de instalación
 ├── requirements.txt              # Ejecución portable
+├── requirements-complete.txt     # Todos los grupos funcionales
 ├── requirements-dev.txt          # Pruebas y calidad de código
 ├── requirements-formats.txt      # Formatos extendidos opcionales
 ├── requirements-quality.txt      # Calidad y similitud opcionales
@@ -393,6 +424,7 @@ Antes de modificar una fase, consulta:
 - `docs/fase2_validacion.md`
 - `docs/fase3_excel.md`
 - `docs/fase4_dashboard.md`
+- `docs/instalacion_multiplataforma.md`
 - `docs/aprendizaje_incremental.md`
 
 Cada cambio debe conservar los contratos de entrada/salida, actualizar el

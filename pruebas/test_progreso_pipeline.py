@@ -44,3 +44,31 @@ def test_pipeline_emite_resultados_parciales_y_cierra_en_cien(monkeypatch, tmp_p
     assert [evento[2]["imagenes_procesadas"] for evento in imagenes] == [1, 2]
     assert eventos[-1][0] == "completado"
     assert eventos[-1][2]["porcentaje"] == 100
+
+
+def test_excel_existente_se_versiona_o_sobrescribe_segun_opcion(monkeypatch, tmp_path):
+    estructura = {"total_carpetas": 0, "patron_dominante": None,
+                  "anomalias": [], "carpetas": []}
+    monkeypatch.setattr(pipeline, "RAIZ_PROYECTO", tmp_path)
+    monkeypatch.setattr(pipeline, "mapear_estructura", lambda ruta, config: estructura)
+    monkeypatch.setattr(pipeline, "guardar_estructura", lambda datos: tmp_path / "estructura.json")
+    monkeypatch.setattr(pipeline, "carpetas_hoja", lambda datos: [])
+    monkeypatch.setattr(pipeline, "validar_lote", lambda *args, **kwargs: {
+        "resultados": [], "archivo_salida": str(tmp_path / "validacion.json"),
+        "carpetas_procesadas": 0,
+    })
+    destinos = []
+    monkeypatch.setattr(pipeline, "generar_excel", lambda datos, ruta, config: destinos.append(
+        Path(ruta)) or Path(ruta))
+    existente = tmp_path / "salida.xlsx"
+    existente.write_bytes(b"anterior")
+
+    primera = pipeline.ejecutar_pipeline(
+        tmp_path, config={"fase3": {}}, nombre_excel="salida.xlsx")
+    segunda = pipeline.ejecutar_pipeline(
+        tmp_path, config={"fase3": {}}, nombre_excel="salida.xlsx",
+        sobrescribir_excel=True)
+
+    assert destinos == [tmp_path / "salida_1.xlsx", existente]
+    assert primera["fases"]["fase3"]["artifacto"].endswith("salida_1.xlsx")
+    assert segunda["fases"]["fase3"]["artifacto"].endswith("salida.xlsx")

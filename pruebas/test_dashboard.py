@@ -4,7 +4,9 @@ from urllib.parse import quote
 
 from fastapi.testclient import TestClient
 
-from dashboard.backend.app import (_imagen_transformada, _orientacion_base_publica,
+from dashboard.backend.app import (_aplicar_correcciones_publicas,
+                                   _dimensiones_ocr_desde_archivo,
+                                   _imagen_transformada, _orientacion_base_publica,
                                    _rotar_resultado_existente, app)
 
 
@@ -172,6 +174,39 @@ def test_giro_inmediato_actualiza_cajas_y_dimensiones_ocr():
     assert ocr["dimensiones"] == [100, 200]
     assert ocr["tokens"][0]["bbox"] == [40, 10, 40, 30]
     assert ocr["rotacion_manual_aplicada_grados"] == 90
+
+
+def test_giro_recupera_dimensiones_de_imagen_si_el_ocr_no_las_guardo(tmp_path):
+    import cv2
+    import numpy as np
+
+    ruta = tmp_path / "antigua.png"
+    assert cv2.imwrite(str(ruta), np.zeros((100, 200, 3), dtype=np.uint8))
+    ocr = {"tokens": [{"texto": "ABC", "bbox": [10, 20, 30, 40]}]}
+
+    dimensiones = _dimensiones_ocr_desde_archivo(ruta, ocr)
+    giro = _rotar_resultado_existente(ocr, 90, dimensiones)
+
+    assert dimensiones == (200, 100)
+    assert giro["delta"] == 90
+    assert ocr["dimensiones"] == [100, 200]
+
+
+def test_correccion_publica_reemplaza_texto_y_conserva_original():
+    ocr = {
+        "texto_completo": "ETQ-2O24",
+        "lineas_texto": [{"texto": "ETQ-2O24", "bbox": [1, 2, 80, 20]}],
+        "tokens": [],
+    }
+    corregido = _aplicar_correcciones_publicas(ocr, [{
+        "texto_ocr": "ETQ-2O24", "texto_correcto": "ETQ-2024",
+        "bbox": [1, 2, 80, 20],
+    }])
+
+    assert corregido["texto_completo"] == "ETQ-2024"
+    assert corregido["lineas_texto"][0]["texto"] == "ETQ-2024"
+    assert corregido["lineas_texto"][0]["texto_original"] == "ETQ-2O24"
+    assert corregido["lineas_texto"][0]["confirmado_manualmente"] is True
 
 
 def test_recupera_orientacion_automatica_de_resultado_anterior():

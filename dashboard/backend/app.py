@@ -125,6 +125,12 @@ class SolicitudCorreccionExterna(BaseModel):
     bbox: list[int] | None = Field(default=None, min_length=4, max_length=4)
 
 
+class SolicitudRegionExterna(BaseModel):
+    prueba_id: str = Field(min_length=1, max_length=128)
+    bbox: list[int] = Field(min_length=4, max_length=4)
+    texto_correcto: str = Field(min_length=1, max_length=8192)
+
+
 _pipeline_lock = threading.Lock()
 _pipeline_continuar = threading.Event()
 _pipeline_continuar.set()
@@ -803,6 +809,9 @@ def _externas_publicas(incluir_ocultos: bool = False) -> dict:
     correcciones_por_hash: dict[str, list[dict]] = {}
     for correccion in gestor.listar_correcciones_texto(rutas_disponibles):
         correcciones_por_hash.setdefault(correccion["imagen_hash"], []).append(correccion)
+    anotaciones_por_hash: dict[str, list[dict]] = {}
+    for anotacion in gestor.listar_anotaciones(rutas_disponibles):
+        anotaciones_por_hash.setdefault(anotacion["imagen_hash"], []).append(anotacion)
     rotaciones = gestor.listar_rotaciones(rutas_disponibles)
     for fila in documento.get("resultados", []):
         item = {k: v for k, v in fila.items() if k != "ruta"}
@@ -834,6 +843,8 @@ def _externas_publicas(incluir_ocultos: bool = False) -> dict:
             f"?rotacion={(aplicada + base) % 360}&ajuste={ajuste}")
         item["correcciones"] = (correcciones_por_hash.get(hash_archivo(ruta_imagen), [])
                                 if ruta_imagen.is_file() else [])
+        item["anotaciones"] = (anotaciones_por_hash.get(hash_archivo(ruta_imagen), [])
+                               if ruta_imagen.is_file() else [])
         item = _aplicar_correcciones_publicas(item, item["correcciones"])
         item["alertas"] = _alertas_pendientes(
             "externa", fila["id"], fila.get("alertas", []), alertas_atendidas)
@@ -960,6 +971,52 @@ def corregir_prueba_externa(solicitud: SolicitudCorreccionExterna):
         resultado = gestor.registrar_correccion(
             solicitud.texto_ocr, solicitud.texto_correcto,
             ruta_imagen=fila["ruta"], bbox=token.get("bbox"), fuente="dashboard_externo")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    gestor.actualizar_revision("externa", solicitud.prueba_id, estado="parcial")
+    _regenerar_excel(resultado)
+    resultado["estado"] = gestor.estado()
+    return resultado
+
+
+@app.post("/api/externas/regiones")
+def anotar_region_externa(solicitud: SolicitudRegionExterna):
+    """Guarda texto omitido en una prueba compleja con el mismo contrato normal."""
+    from pruebas_externas import cargar, rutas
+
+    documento = cargar(CONFIG)
+    fila = next((item for item in documento.get("resultados", [])
+                 if item.get("id") == solicitud.prueba_id), None)
+    if fila is None:
+        raise HTTPException(404, "La prueba externa indicada no existe o aún no fue evaluada.")
+    gestor = GestorAprendizaje(CONFIG)
+    completa = (bool(fila.get("coincidencia_exacta")) if fila.get("tipo") == "codigo"
+                else float(fila.get("cobertura") or 0) >= 1.0)
+    inicial = ("casi_listo" if completa else
+               "parcial" if fila.get("tokens") or fila.get("lineas_texto") else "por_revisar")
+    if gestor.estado_revision("externa", solicitud.prueba_id, inicial)["estado"] == "completada":
+        raise HTTPException(409, "La revisión está completada. Reábrela antes de editar.")
+
+    directorio, _ = rutas(CONFIG)
+    ruta = (directorio / str(fila.get("imagen") or "")).resolve()
+    if not ruta.is_relative_to(directorio) or not ruta.is_file():
+        raise HTTPException(404, "La imagen compleja ya no está disponible.")
+    dimensiones = fila.get("dimensiones") or []
+    try:
+        ancho_imagen, alto_imagen = (
+            (int(dimensiones[0]), int(dimensiones[1]))
+            if len(dimensiones) == 2 else _dimensiones_ocr_desde_archivo(ruta, fila))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    x, y, ancho, alto = solicitud.bbox
+    if (x < 0 or y < 0 or ancho < 2 or alto < 2 or
+            x + ancho > ancho_imagen or y + alto > alto_imagen):
+        raise HTTPException(400, "La región seleccionada queda fuera de la imagen.")
+    try:
+        resultado = gestor.registrar_region(
+            solicitud.texto_correcto, solicitud.bbox, ruta_imagen=str(ruta),
+            carpeta_id=solicitud.prueba_id, carpeta_nombre="Pruebas complejas",
+            imagen_nombre=fila.get("imagen"), fuente="dashboard_externo")
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     gestor.actualizar_revision("externa", solicitud.prueba_id, estado="parcial")

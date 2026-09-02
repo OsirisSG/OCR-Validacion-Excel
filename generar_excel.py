@@ -166,17 +166,27 @@ def generar_excel(ruta_validacion: str | Path | None = None,
     with open(ruta_validacion, "r", encoding="utf-8") as f:
         datos = json.load(f)
 
+    try:
+        from pruebas_externas import cargar as cargar_externas
+        datos_externos = cargar_externas(config)
+    except (FileNotFoundError, OSError, ValueError):
+        datos_externos = {"resultados": []}
+
     rutas_imagen = [str(item["ruta"])
                     for fila in datos.get("resultados", [])
                     for item in fila.get("imagenes", [])]
+    rutas_externas = [str(fila["ruta"])
+                      for fila in datos_externos.get("resultados", [])
+                      if fila.get("ruta") and Path(fila["ruta"]).is_file()]
+    rutas_consulta = [*rutas_imagen, *rutas_externas]
     gestor = GestorAprendizaje(config)
-    anotaciones = gestor.listar_anotaciones(rutas_imagen)
+    anotaciones = gestor.listar_anotaciones(rutas_consulta)
     revisiones = gestor.listar_revisiones()
     anotaciones_por_hash: dict[str, list[dict]] = {}
     for anotacion in anotaciones:
         anotaciones_por_hash.setdefault(anotacion["imagen_hash"], []).append(anotacion)
     anotaciones_por_ruta: dict[str, list[dict]] = {}
-    for ruta in rutas_imagen:
+    for ruta in rutas_consulta:
         try:
             if Path(ruta).is_file():
                 anotaciones_por_ruta[ruta] = anotaciones_por_hash.get(hash_archivo(ruta), [])
@@ -318,11 +328,6 @@ def generar_excel(ruta_validacion: str | Path | None = None,
     wt.auto_filter.ref = f"A1:{get_column_letter(len(COLUMNAS_TEXTOS))}{max(wt.max_row, 1)}"
 
     # Las pruebas complejas se agregan al mismo inventario de textos.
-    try:
-        from pruebas_externas import cargar as cargar_externas
-        datos_externos = cargar_externas(config)
-    except (FileNotFoundError, OSError, ValueError):
-        datos_externos = {"resultados": []}
     for externa in datos_externos.get("resultados", []):
         revision = revisiones.get(("externa", externa["id"])) or {}
         estado_revision = revision.get("estado", _estado_inicial_externa(externa))
@@ -337,6 +342,14 @@ def generar_excel(ruta_validacion: str | Path | None = None,
                 _revision_texto(estado_revision),
                 orden, linea.get("texto"),
                 round(conf * 100, 2) if conf is not None else None, *bbox,
+            ])
+        for orden, anotacion in enumerate(
+                anotaciones_por_ruta.get(str(externa.get("ruta") or ""), []), start=1):
+            wt.append([
+                "Pruebas complejas", "Banco externo", externa.get("imagen"),
+                externa.get("tipo"), "Manual externo",
+                _revision_texto(estado_revision), orden,
+                anotacion["texto_correcto"], 100.0, *anotacion["bbox"],
             ])
 
     # ---------------------------------------------- Hoja 4: bandeja unificada

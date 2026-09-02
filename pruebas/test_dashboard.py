@@ -4,6 +4,7 @@ from urllib.parse import quote
 
 from fastapi.testclient import TestClient
 
+import dashboard.backend.app as backend
 from dashboard.backend.app import (_aplicar_correcciones_publicas,
                                    _dimensiones_ocr_desde_archivo,
                                    _imagen_transformada, _orientacion_base_publica,
@@ -119,7 +120,8 @@ def test_banco_externo_es_visible_y_restringido():
     assert all(item["ruta_api"].startswith("/api/externas/imagen/")
                for item in datos["resultados"])
     assert all("ruta" not in item for item in datos["resultados"])
-    assert all("revision" in item and "correcciones" in item for item in datos["resultados"])
+    assert all("revision" in item and "correcciones" in item and "anotaciones" in item
+               for item in datos["resultados"])
 
     imagen = cliente.get(datos["resultados"][0]["ruta_api"])
     assert imagen.status_code == 200
@@ -136,6 +138,41 @@ def test_banco_externo_es_visible_y_restringido():
         "texto_correcto": token,
     })
     assert correccion_identica.status_code == 400
+
+
+def test_region_externa_se_guarda_como_aprendizaje_y_actualiza_excel(
+        monkeypatch, tmp_path):
+    import cv2
+    import numpy as np
+    import pruebas_externas
+    from aprendizaje import GestorAprendizaje
+
+    imagen = tmp_path / "compleja.png"
+    assert cv2.imwrite(str(imagen), np.zeros((60, 120, 3), dtype=np.uint8))
+    fila = {
+        "id": "externa-compleja", "imagen": imagen.name, "ruta": str(imagen),
+        "tipo": "codigo", "esperado": "A3000", "coincidencia_exacta": False,
+        "tokens": [], "lineas_texto": [], "dimensiones": [120, 60],
+    }
+    config = {"aprendizaje": {
+        "activar": True, "directorio": str(tmp_path / "aprendizaje")}}
+    monkeypatch.setattr(backend, "CONFIG", config)
+    monkeypatch.setattr(pruebas_externas, "cargar", lambda _config: {"resultados": [fila]})
+    monkeypatch.setattr(
+        pruebas_externas, "rutas", lambda _config: (tmp_path, tmp_path / "resultados.json"))
+    monkeypatch.setattr(
+        backend, "_regenerar_excel",
+        lambda resultado: resultado.update({"excel_actualizado": str(tmp_path / "salida.xlsx")}))
+
+    resultado = backend.anotar_region_externa(backend.SolicitudRegionExterna(
+        prueba_id=fila["id"], bbox=[10, 12, 50, 20], texto_correcto="A3000"))
+
+    assert resultado["registrada"] is True
+    assert resultado["excel_actualizado"].endswith("salida.xlsx")
+    anotaciones = GestorAprendizaje(config).listar_anotaciones(
+        [imagen], carpeta_id=fila["id"])
+    assert anotaciones[0]["texto_correcto"] == "A3000"
+    assert anotaciones[0]["bbox"] == [10, 12, 50, 20]
 
 
 def test_vista_orientada_rota_y_rechaza_archivo_corrupto(tmp_path):

@@ -143,6 +143,7 @@ verde, sin volver a listar por separado un renglón y sus tokens internos.
 | `POST /api/externas/evaluar` | Vuelve a ejecutar OCR sobre el banco externo. |
 | `GET /api/externas/imagen/{nombre}` | Sirve únicamente una imagen externa permitida. |
 | `POST /api/externas/correcciones` | Registra una corrección confirmada del banco externo. |
+| `POST /api/externas/regiones` | Guarda una región y texto omitido de una prueba compleja. |
 
 Ejemplo abreviado de salida de `GET /api/pruebas?estado=rojo`:
 

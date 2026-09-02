@@ -548,8 +548,21 @@ function TarjetaExterna({ prueba, alActualizarRevision }) {
   const [guardando, setGuardando] = useState(false);
   const [respuesta, setRespuesta] = useState(null);
   const [modoEdicion, setModoEdicion] = useState(false);
+  const [region, setRegion] = useState(null);
+  const [textoRegion, setTextoRegion] = useState("");
+  const [resultadoRegion, setResultadoRegion] = useState(null);
+  const [guardandoRegion, setGuardandoRegion] = useState(false);
   const seleccionada = unidades.find((u) => u.unidad_id === unidadId) || unidades[0];
   const completada = prueba.revision?.estado === "completada";
+  const itemExterno = {
+    id: prueba.id, nombre: prueba.imagen, ruta: prueba.imagen,
+    ruta_api: prueba.ruta_api, ruta_api_visual: prueba.ruta_api_visual,
+    ruta_api_orientada: prueba.ruta_api_orientada,
+    resultado_ocr: prueba, anotaciones: prueba.anotaciones || [],
+    correcciones: prueba.correcciones || [],
+    rotacion_manual_preferida_grados: prueba.rotacion_manual_preferida_grados,
+    rotacion_pendiente: prueba.rotacion_pendiente,
+  };
   useEffect(() => {
     const sugerida = lecturaSugerida();
     setUnidadId(sugerida?.unidad_id || "");
@@ -559,8 +572,9 @@ function TarjetaExterna({ prueba, alActualizarRevision }) {
   }, [prueba.mejor_candidato, prueba.esperado, prueba.revision?.estado]);
 
   function seleccionar(unidad) {
-    setUnidadId(unidad.unidad_id);
-    setTextoCorrecto(textoVisible(unidad));
+    const exacta = unidades.find((item) => firmaUnidad(item) === firmaUnidad(unidad)) || unidad;
+    setUnidadId(exacta.unidad_id || "");
+    setTextoCorrecto(textoVisible(exacta));
     setModoEdicion(true);
   }
 
@@ -594,6 +608,25 @@ function TarjetaExterna({ prueba, alActualizarRevision }) {
       setGuardando(false);
     }
   }
+  async function confirmarRegion(e) {
+    e.preventDefault();
+    if (!region) return;
+    setGuardandoRegion(true);
+    setResultadoRegion(null);
+    try {
+      const resultado = await enviarJSON("/api/externas/regiones", {
+        prueba_id: prueba.id, bbox: region, texto_correcto: textoRegion,
+      });
+      setResultadoRegion({ ok: true, resultado });
+      setRegion(null);
+      setTextoRegion("");
+      await alActualizarRevision();
+    } catch (error) {
+      setResultadoRegion({ ok: false, mensaje: error.message });
+    } finally {
+      setGuardandoRegion(false);
+    }
+  }
   async function rotar(grados) {
     setGuardando(true);
     setRespuesta(null);
@@ -622,10 +655,6 @@ function TarjetaExterna({ prueba, alActualizarRevision }) {
       setGuardando(false);
     }
   }
-  const preferida = Number(prueba.rotacion_manual_preferida_grados) || 0;
-  const base = Number(prueba.orientacion_texto_base_grados ?? prueba.orientacion_base_grados) || 0;
-  const ajuste = Number(prueba.deskew_texto_aplicado_grados ?? prueba.deskew_aplicado_grados) || 0;
-
   return html`<article class="tarjeta tarjeta-externa">
     <div class="externa-cabecera">
       <div><p class="sobrelinea">${prueba.imagen} · ${prueba.tipo}</p>
@@ -634,25 +663,10 @@ function TarjetaExterna({ prueba, alActualizarRevision }) {
         <span class="punto"></span>${etiquetaRevision(prueba.revision?.estado)}
       </span>
     </div>
-    <div class="imagen-marco externa-imagen">
-      <img src=${prueba.ruta_api_visual || prueba.ruta_api}
-        alt=${`Placa grabada ${prueba.imagen}`} loading="lazy" />
-    </div>
-    <div class="estado-rotacion">
-      ${(base !== 0 || Math.abs(ajuste) >= 0.05)
-        ? html`<span class="chip rotacion-auto">✓ Enderezada automáticamente: ${base}°${Math.abs(ajuste) >= 0.05 ? ` + ajuste ${ajuste.toFixed(1)}°` : ""}</span>`
-        : html`<span class="chip neutro">Orientación automática: sin cambio</span>`}
-      ${preferida !== 0 && html`<span class="chip rotacion-manual">Rotación manual: ${preferida}°</span>`}
-      ${prueba.rotacion_pendiente && html`<span class="subtitulo-seccion">Se usará en el próximo OCR.</span>`}
-    </div>
-    ${!completada && html`<div class="controles-rotacion">
-      <button type="button" class="boton boton-compacto" disabled=${guardando}
-        onClick=${() => rotar((preferida + 270) % 360)}>↶ 90°</button>
-      <button type="button" class="boton boton-compacto" disabled=${guardando}
-        onClick=${() => rotar((preferida + 90) % 360)}>↷ 90°</button>
-      <button type="button" class="boton boton-compacto" disabled=${guardando || preferida === 0}
-        onClick=${() => rotar(0)}>Restablecer</button>
-    </div>`}
+    <${PanelImagen} titulo=${`${prueba.tipo} · ${prueba.imagen}`} item=${itemExterno}
+      vacio="Imagen compleja no disponible." edicionActiva=${modoEdicion && !completada}
+      rotacionActiva=${!completada} onSelectText=${(_item, unidad) => seleccionar(unidad)}
+      onRotate=${(_item, grados) => rotar(grados)} />
     <dl class="ficha ficha-externa">
       <dt>Esperado</dt><dd class="mono"><strong>${prueba.tipo === "codigo" ? prueba.esperado
         : `${(prueba.encontrados || []).length} de ${(prueba.esperados || []).length} fragmentos`}</strong></dd>
@@ -664,11 +678,6 @@ function TarjetaExterna({ prueba, alActualizarRevision }) {
       <dt>Detección</dt><dd>${prueba.variante || "—"} · ${prueba.orientacion_grados || 0}° · ${prueba.intentos} intentos</dd>
       <dt>Tiempo</dt><dd>${fmtDuracion(prueba.segundos)}</dd>
     </dl>
-    <div class="texto-detectado">
-      <div class="progreso-titulo"><strong>Texto completo detectado</strong>
-        <span class="subtitulo-seccion">${(prueba.lineas_texto || []).length} renglones</span></div>
-      <pre>${prueba.texto_completo || "Sin texto legible"}</pre>
-    </div>
     ${prueba.tipo === "texto" && html`<ul class="fragmentos-esperados">
       ${(prueba.esperados || []).map((fragmento) => {
         const ok = (prueba.encontrados || []).includes(fragmento);
@@ -683,18 +692,12 @@ function TarjetaExterna({ prueba, alActualizarRevision }) {
       <strong>${alerta.codigo?.replaceAll("_", " ") || "ADVERTENCIA"}:</strong> ${alerta.mensaje}
       <button type="button" class="boton boton-compacto" onClick=${() => atenderAlerta(alerta)}>
         Marcar atendido</button></div>`)}
-    <ul class="tokens-lista lecturas-externas">${unidades.length
-      ? unidades.filter((u) => u.tipo_unidad !== "bloque completo").map((token) => html`
-        <li key=${token.unidad_id} class=${`token-fila ${unidadConfirmada(token, prueba.correcciones) ? "token-confirmado" : ""}`}>
-          <button type="button" class="token-texto-boton mono" disabled=${completada}
-            onClick=${() => seleccionar(token)} title="Usar esta lectura en la corrección">
-            ${textoVisible(token)}</button>
-          <span class="conf">${token.confianza == null ? "—" : `${(token.confianza * 100).toFixed(1)}%`}</span>
-        </li>`)
-      : html`<li class="subtitulo-seccion">No se detectaron lecturas.</li>`}
-    </ul>
-    ${modoEdicion && !completada && unidades.length > 0 && html`
-      <form class="formulario-correccion formulario-externo" onSubmit=${corregir}>
+    ${modoEdicion && !completada && html`<div class="aprendizaje-panel herramientas-externas">
+      <div><p class="sobrelinea">APRENDIZAJE SUPERVISADO</p>
+        <h3 class="titulo-seccion">Corregir una lectura</h3>
+        <p class="subtitulo-seccion">Selecciona un renglón en la imagen o en la lista y confirma su texto.</p>
+      </div>
+      ${unidades.length > 0 ? html`<form class="formulario-correccion formulario-externo" onSubmit=${corregir}>
         <label>Lectura OCR
           <select class="campo" value=${seleccionada?.unidad_id || ""} onChange=${(e) => {
             const unidad = unidades.find((u) => u.unidad_id === e.target.value);
@@ -711,7 +714,55 @@ function TarjetaExterna({ prueba, alActualizarRevision }) {
         <button class="boton boton-primario" disabled=${guardando || !textoCorrecto.trim()}>
           ${guardando ? "Entrenando…" : "Confirmar y entrenar"}
         </button>
-      </form>`}
+      </form>` : html`<p class="subtitulo-seccion">No hay una lectura OCR previa; puedes añadirla como texto omitido.</p>`}
+
+      <div class="separador-panel"></div>
+      <div><p class="sobrelinea">TEXTO OMITIDO</p>
+        <h3 class="titulo-seccion">Marcar una zona que el OCR no encontró</h3>
+        <p class="subtitulo-seccion">Arrastra sobre la fotografía y transcribe todo el contenido,
+          respetando espacios y saltos. También se agregará al Excel.</p>
+      </div>
+      <form class="formulario-region" onSubmit=${confirmarRegion}>
+        <${SelectorRegion} item=${itemExterno} valor=${region} onChange=${setRegion}
+          onSelectText=${seleccionar} />
+        <div class="campos-region">
+          <label>Región seleccionada
+            <input class="campo mono" value=${region ? region.join(", ") : ""} readOnly
+              placeholder="Arrastra sobre la imagen" />
+          </label>
+          <label>Texto real de esa zona
+            <textarea class="campo mono campo-texto" value=${textoRegion} required maxLength=${8192}
+              rows=${Math.min(10, Math.max(3, textoRegion.split("\n").length + 1))}
+              onChange=${(e) => setTextoRegion(e.target.value)}
+              placeholder="Escribe todo el texto, respetando espacios y saltos" />
+          </label>
+          <button class="boton boton-primario"
+            disabled=${guardandoRegion || !region || !textoRegion.trim()}>
+            ${guardandoRegion ? "Guardando…" : "Guardar región y actualizar Excel"}
+          </button>
+        </div>
+      </form>
+      ${resultadoRegion?.ok && html`<div class="aviso"><strong>Región guardada.</strong>
+        ${resultadoRegion.resultado.excel_actualizado
+          ? " El Excel maestro fue actualizado."
+          : ` La anotación está segura; el Excel no pudo actualizarse: ${resultadoRegion.resultado.advertencia_excel || "error desconocido"}.`}
+      </div>`}
+      ${resultadoRegion && !resultadoRegion.ok && html`<div class="mensaje-error">${resultadoRegion.mensaje}</div>`}
+
+      ${((prueba.correcciones || []).length > 0 || (prueba.anotaciones || []).length > 0) && html`
+        <div class="historial-aprendizaje">
+          <h3 class="titulo-seccion">Lista de aprendizaje supervisado</h3>
+          ${(prueba.correcciones || []).map((item) => html`<div key=${`c-${item.id}`} class="evidencia-aprendizaje">
+            <span class="chip neutro">Corrección OCR</span><strong class="mono">${item.texto_correcto}</strong>
+            ${item.texto_ocr !== item.texto_correcto && html`<small class="mono">Antes: ${item.texto_ocr}</small>`}
+            <small>${prueba.imagen}${item.bbox ? ` · región ${item.bbox.join(", ")}` : ""}</small>
+          </div>`)}
+          ${(prueba.anotaciones || []).map((item) => html`<div key=${`a-${item.id}`} class="evidencia-aprendizaje">
+            <span class="chip neutro">Texto omitido</span><strong class="mono">${item.texto_correcto}</strong>
+            <small>${prueba.imagen} · región ${item.bbox.join(", ")}</small>
+          </div>`)}
+        </div>`}
+    </div>`}
     ${respuesta?.ok && html`<div class="aviso">${respuesta.revision
       ? "Estado de revisión actualizado."
       : respuesta.rotacion ? respuesta.resultado.mensaje

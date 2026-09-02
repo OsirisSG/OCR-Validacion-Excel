@@ -232,7 +232,10 @@ El dashboard ofrece tres vistas principales:
   el navegador para poder seleccionarlas en ejecuciones posteriores.
 
 Las pruebas complejas ya no viven en una pestaña aislada: aparecen en el mismo
-Listado y abren su propio detalle, con las mismas acciones de revisión y corrección.
+Listado y abren su propio detalle con el mismo estuche de revisión de las
+carpetas normales. Se puede seleccionar un renglón, pulsar su caja directamente
+sobre la imagen, dibujar una región omitida, transcribirla, girar la fotografía,
+consultar el historial supervisado y enviar tanto OCR como texto manual al Excel.
 
 Para un lote grande, usa una ruta local en **Procesar carpeta**. Los archivos no
 se suben ni se duplican en el navegador. Durante la ejecución aparecen un reloj

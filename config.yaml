@@ -115,10 +115,44 @@ fase2:
 
 fase3:
   archivo_salida: resultado_maestro.xlsx
+  # Ruta opcional a la plantilla empresarial. También puede elegirse desde el
+  # dashboard o con --plantilla; no se fija una ruta local para mantener portabilidad.
+  plantilla_empresarial: null
   hoja_estructura: "Estructura completa"
   hoja_matriz: "Matriz de cumplimiento"
   hoja_textos: "Textos por imagen"
   hoja_revision: "Bandeja de revisión"
+
+# Flujo por ID para proyectos con <ID> <VERSION> <INFLADOR> <TEMPERATURA>.
+empresarial:
+  archivo_cache: .cache_ocr/imagenes.json
+  base_conocimiento: base_conocimiento.json
+  reglas_minimo_ids: 3
+  reglas_consenso_minimo: 0.90
+
+ocr:
+  modo_recorte: auto       # auto | manual | completo
+  detectar_texto_antes_ocr: true
+  lado_maximo_deteccion: 1280
+  margen_recorte: 0.12
+  zoom_minimo: 1.0
+  zoom_maximo: 3.0
+  altura_objetivo_recorte: 160
+  corregir_perspectiva: true
+  rotacion_fallback: true
+  confianza_fallback: 0.45
+  roi_manual:
+    NACH: {x: 0.00, y: 0.50, ancho: 1.00, alto: 0.50}
+    VOR: {x: 0.00, y: 0.40, ancho: 1.00, alto: 0.60}
+
+normalizacion:
+  temperature_condition:
+    HT: {codigos: [HT], temperaturas_c: [85], tolerancia_c: 2}
+    RT: {codigos: [RT], temperaturas_c: [23], tolerancia_c: 2}
+    NT: {codigos: [NT], temperaturas_c: [-35], tolerancia_c: 2}
+  module_version:
+    RDW: {aliases: [RDW, RWD, ROW]}
+    NAR: {aliases: [NAR, N4R]}
 
 # Aprendizaje local y auditable. Las ejecuciones registran observaciones, pero
 # solo una corrección humana confirmada puede entrenar una versión candidata.

@@ -40,6 +40,7 @@ import os
 import re
 import statistics
 import sys
+import time
 import warnings
 from pathlib import Path
 
@@ -180,6 +181,35 @@ class MotorEasyOCR:
     def leer_texto_completo(self, imagen_bgr: np.ndarray) -> list[dict]:
         """Lectura sin allowlist: conserva espacios, acentos y puntuación."""
         return self._leer(imagen_bgr, usar_allowlist=False)
+
+    def detectar(self, imagen_bgr: np.ndarray) -> list[dict]:
+        """Expone CRAFT sin ejecutar el reconocedor de EasyOCR."""
+        try:
+            horizontales, libres = self._reader.detect(
+                imagen_bgr, min_size=10, text_threshold=0.55,
+                low_text=0.30, link_threshold=0.35)
+        except RuntimeError as exc:
+            if self.dispositivo == "cpu":
+                raise
+            self._fallback_cpu(exc)
+            horizontales, libres = self._reader.detect(imagen_bgr, min_size=10)
+        hs = horizontales[0] if horizontales and isinstance(horizontales[0], list) else horizontales
+        fs = libres[0] if libres and isinstance(libres[0], list) else libres
+        cajas = []
+        for caja in hs or []:
+            if len(caja) != 4:
+                continue
+            x1, x2, y1, y2 = (int(round(float(v))) for v in caja)
+            cajas.append({"bbox": (x1, y1, max(1, x2 - x1), max(1, y2 - y1)),
+                          "poligono": None})
+        for puntos in fs or []:
+            pts = np.asarray(puntos, dtype=np.float32).reshape(-1, 2)
+            x1, y1 = pts.min(axis=0)
+            x2, y2 = pts.max(axis=0)
+            cajas.append({"bbox": (int(x1), int(y1), max(1, int(x2 - x1)),
+                                    max(1, int(y2 - y1))),
+                          "poligono": pts.tolist()})
+        return cajas
 
 
 def obtener_motor(config: dict | None = None):
@@ -818,6 +848,180 @@ def _extraer_pasada_texto_completo(imagen: np.ndarray, f1: dict, motor,
     umbral = float(f1.get("umbral_confianza_texto_completo", 0.25))
     lineas = [linea for linea in lector(procesada) if linea["confianza"] >= umbral]
     return lineas, float(orientacion) + float(deskew)
+
+
+def _roi_proporcional(imagen: np.ndarray, roi: dict | None) -> tuple[np.ndarray, tuple[int, int, int, int]]:
+    """Convierte una ROI 0..1 a píxeles, validando que permanezca dentro de la foto."""
+    alto, ancho = imagen.shape[:2]
+    roi = roi or {"x": 0, "y": 0, "ancho": 1, "alto": 1}
+    valores = [float(roi.get(k, d)) for k, d in (("x", 0), ("y", 0), ("ancho", 1), ("alto", 1))]
+    x, y, w, h = valores
+    if not (0 <= x < 1 and 0 <= y < 1 and 0 < w <= 1 and 0 < h <= 1 and x + w <= 1.0001 and y + h <= 1.0001):
+        raise ValueError("La ROI manual debe usar proporciones entre 0 y 1.")
+    caja = (int(x * ancho), int(y * alto), max(1, int(w * ancho)), max(1, int(h * alto)))
+    px, py, pw, ph = caja
+    return imagen[py:py + ph, px:px + pw], caja
+
+
+def _recorte_perspectiva(imagen: np.ndarray, puntos) -> np.ndarray:
+    """Endereza un cuadrilátero de CRAFT; usa el recorte rectangular si es degenerado."""
+    pts = np.asarray(puntos, dtype=np.float32).reshape(4, 2)
+    suma, diferencia = pts.sum(axis=1), np.diff(pts, axis=1).reshape(-1)
+    orden = np.array([pts[np.argmin(suma)], pts[np.argmin(diferencia)],
+                      pts[np.argmax(suma)], pts[np.argmax(diferencia)]], dtype=np.float32)
+    tl, tr, br, bl = orden
+    ancho = int(max(np.linalg.norm(br - bl), np.linalg.norm(tr - tl)))
+    alto = int(max(np.linalg.norm(tr - br), np.linalg.norm(tl - bl)))
+    if ancho < 2 or alto < 2:
+        return np.empty((0, 0, 3), dtype=imagen.dtype)
+    destino = np.array([[0, 0], [ancho - 1, 0], [ancho - 1, alto - 1], [0, alto - 1]],
+                       dtype=np.float32)
+    return cv2.warpPerspective(imagen, cv2.getPerspectiveTransform(orden, destino), (ancho, alto))
+
+
+def extraer_texto_empresarial(imagen_path: str, config: dict | None = None,
+                              fase: str = "VOR", modo_recorte: str | None = None,
+                              roi_manual: dict | None = None) -> dict:
+    """Ruta rápida: CRAFT en miniatura y reconocimiento sólo de los recortes detectados.
+
+    Si no existen cajas se retorna ``descartada_sin_texto`` sin invocar al
+    reconocedor. ``completo`` delega al flujo probado anterior.
+    """
+    config = config or cargar_config()
+    f1 = config.get("fase1", {})
+    cfg = config.get("ocr", {})
+    modo = str(modo_recorte or cfg.get("modo_recorte", "auto")).lower()
+    if modo not in {"auto", "manual", "completo"}:
+        raise ValueError("modo_recorte debe ser auto, manual o completo.")
+    inicio_total = time.monotonic()
+    if modo == "completo":
+        resultado = extraer_texto(imagen_path, config)
+        resultado.update({"estado_imagen": ("procesada_con_texto" if resultado.get("lineas_texto")
+                                             or resultado.get("tokens") else "descartada_sin_texto"),
+                          "modo_recorte": "completo", "tiempo_deteccion_seg": 0.0,
+                          "tiempo_ocr_seg": round(time.monotonic() - inicio_total, 4),
+                          "numero_regiones": 1, "zoom_aplicado": 1.0})
+        return resultado
+
+    motor, _ = obtener_motor(config)
+    imagen_original = cargar_imagen(imagen_path)
+    alto, ancho = imagen_original.shape[:2]
+    manual_cfg = roi_manual or cfg.get("roi_manual", {}).get(str(fase).upper())
+    if modo == "manual":
+        imagen_deteccion, caja_manual = _roi_proporcional(imagen_original, manual_cfg)
+        cajas = [{"bbox": caja_manual, "poligono": None, "manual": True}]
+        escala = 1.0
+        offset_manual = (caja_manual[0], caja_manual[1])
+    else:
+        lado_maximo = max(320, int(cfg.get("lado_maximo_deteccion", 1280)))
+        escala = min(1.0, lado_maximo / max(alto, ancho))
+        imagen_deteccion = (cv2.resize(imagen_original, None, fx=escala, fy=escala,
+                                       interpolation=cv2.INTER_AREA)
+                            if escala < 0.999 else imagen_original)
+        detector = getattr(motor, "detectar", None)
+        if detector is None:
+            regiones = detectar_regiones_texto(
+                imagen_deteccion, f1.get("preprocesamiento", {}).get("regiones_texto", {}))
+            cajas = [{"bbox": b, "poligono": None} for b in regiones]
+        else:
+            cajas = detector(imagen_deteccion)
+        offset_manual = (0, 0)
+    tiempo_deteccion = time.monotonic() - inicio_total
+    if not cajas:
+        return {"imagen": str(imagen_path), "motor": motor.nombre,
+                "dispositivo": getattr(motor, "dispositivo", "cpu"), "tokens": [],
+                "lineas_texto": [], "texto_completo": "", "confianza_media": None,
+                "dimensiones_originales": (ancho, alto), "dimensiones": (ancho, alto),
+                "estado_imagen": "descartada_sin_texto", "modo_recorte": modo,
+                "tiempo_deteccion_seg": round(tiempo_deteccion, 4), "tiempo_ocr_seg": 0.0,
+                "numero_regiones": 0, "zoom_aplicado": 1.0, "intentos_ocr": [],
+                "advertencias_motor": list(getattr(motor, "advertencias", []))}
+
+    margen = max(0.0, float(cfg.get("margen_recorte", 0.12)))
+    zoom_min, zoom_max = float(cfg.get("zoom_minimo", 1.0)), float(cfg.get("zoom_maximo", 3.0))
+    altura_objetivo = int(cfg.get("altura_objetivo_recorte", 160))
+    lineas = []
+    zooms = []
+    inicio_ocr = time.monotonic()
+    for caja in cajas:
+        x, y, w, h = caja.get("bbox", caja)
+        if modo == "manual":
+            x, y, w, h = caja_manual
+            recorte = imagen_deteccion
+        else:
+            x, y, w, h = (int(round(v / escala)) for v in (x, y, w, h))
+            mx, my = int(w * margen), int(h * margen)
+            x, y = max(0, x - mx), max(0, y - my)
+            w, h = min(ancho - x, w + 2 * mx), min(alto - y, h + 2 * my)
+            poligono = caja.get("poligono")
+            if poligono and cfg.get("corregir_perspectiva", True):
+                puntos = np.asarray(poligono, dtype=np.float32) / escala
+                recorte = _recorte_perspectiva(imagen_original, puntos)
+            else:
+                recorte = imagen_original[y:y + h, x:x + w]
+        if recorte.size == 0:
+            continue
+        zoom = min(zoom_max, max(zoom_min, altura_objetivo / max(recorte.shape[0], 1)))
+        zooms.append(zoom)
+        preparada = (cv2.resize(recorte, None, fx=zoom, fy=zoom, interpolation=cv2.INTER_CUBIC)
+                     if zoom > 1.01 else recorte)
+        lecturas = motor.leer_texto_completo(preparada)
+        for lectura in lecturas:
+            lx, ly, lw, lh = lectura["bbox"]
+            lineas.append({**lectura, "bbox": (x + int(lx / zoom), y + int(ly / zoom),
+                                                max(1, int(lw / zoom)), max(1, int(lh / zoom))),
+                           "region_bbox": (x, y, w, h), "origen": "region"})
+
+    umbral = float(f1.get("umbral_confianza_texto_completo", 0.25))
+    lineas = [l for l in lineas if float(l.get("confianza") or 0) >= umbral]
+    intentos = [{"tipo": "recortes", "variante": "original", "lineas": len(lineas)}]
+    confianza = float(np.mean([l["confianza"] for l in lineas])) if lineas else 0.0
+    if (not lineas or confianza < float(cfg.get("confianza_fallback", 0.45))) and cajas:
+        # Una sola segunda pasada: CLAHE + enfoque y una rotación razonable.
+        respaldo = []
+        for caja in cajas:
+            x, y, w, h = caja.get("bbox", caja)
+            if modo != "manual":
+                x, y, w, h = (int(round(v / escala)) for v in (x, y, w, h))
+                recorte = imagen_original[max(0, y):min(alto, y + h), max(0, x):min(ancho, x + w)]
+            else:
+                x, y, w, h = caja_manual
+                recorte = imagen_deteccion
+            if recorte.size == 0:
+                continue
+            preparada = aplicar_variante(recorte, "clahe", f1.get("preprocesamiento", {}))
+            kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], dtype=np.float32)
+            preparada = cv2.filter2D(preparada, -1, kernel)
+            angulo = 180 if preparada.shape[1] >= preparada.shape[0] else 90
+            preparada = _rotar_recto(preparada, angulo)
+            for lectura in motor.leer_texto_completo(preparada):
+                if float(lectura.get("confianza") or 0) >= umbral:
+                    respaldo.append({**lectura, "region_bbox": (x, y, w, h), "origen": "region"})
+        intentos.append({"tipo": "respaldo", "variante": "clahe_enfoque",
+                         "orientacion_grados": 180 if ancho >= alto else 90,
+                         "lineas": len(respaldo)})
+        if _calidad(respaldo) > _calidad(lineas):
+            lineas = respaldo
+
+    reconstruidas = reconstruir_lineas_texto(lineas)
+    tokens = segmentar_tokens(lineas, int(f1.get("umbral_espacio_px", 40)))
+    from aprendizaje import aplicar_modelo_tokens
+    cantidad_tokens = len(tokens)
+    corregidas = aplicar_modelo_tokens([*tokens, *reconstruidas], config, imagen_path)
+    tokens, reconstruidas = corregidas[:cantidad_tokens], corregidas[cantidad_tokens:]
+    confianzas = [float(l["confianza"]) for l in lineas]
+    return {"imagen": str(imagen_path), "motor": motor.nombre,
+            "dispositivo": getattr(motor, "dispositivo", "cpu"), "tokens": tokens,
+            "lineas_texto": reconstruidas,
+            "texto_completo": "\n".join(l["texto"] for l in reconstruidas),
+            "confianza_media": round(float(np.mean(confianzas)), 4) if confianzas else None,
+            "dimensiones_originales": (ancho, alto), "dimensiones": (ancho, alto),
+            "estado_imagen": "procesada_con_texto" if lineas else "descartada_sin_texto",
+            "modo_recorte": modo, "tiempo_deteccion_seg": round(tiempo_deteccion, 4),
+            "tiempo_ocr_seg": round(time.monotonic() - inicio_ocr, 4),
+            "numero_regiones": len(cajas), "zoom_aplicado": round(max(zooms or [1.0]), 3),
+            "intentos_ocr": intentos,
+            "advertencias_motor": list(getattr(motor, "advertencias", []))}
 
 
 def extraer_texto(imagen_path: str, config: dict | None = None) -> dict:

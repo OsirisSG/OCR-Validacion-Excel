@@ -28,7 +28,8 @@ import json
 import re
 import statistics
 import time
-from collections import deque
+from collections import defaultdict, deque
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
@@ -36,9 +37,13 @@ from typing import Callable
 import cv2
 import numpy as np
 
+from aprendizaje import GestorAprendizaje
 from configuracion import RAIZ_PROYECTO, cargar_config
 from estructura import carpetas_hoja
-from ocr_engine import cargar_imagen, extraer_texto
+from flujo_empresarial import (BaseConocimiento, CAMPOS_REQUERIDOS_DEFAULT,
+                               CacheOCR, EXTENSIONES_IMAGEN, ahora,
+                               consolidar_caso, extraer_candidatos_texto)
+from ocr_engine import cargar_imagen, extraer_texto, extraer_texto_empresarial
 
 _RE_TOKEN_CODIGO = re.compile(r"^([A-Za-z]+)(\d+)$")
 
@@ -275,6 +280,327 @@ def validar_lote(ruta_estructura: str | Path | None = None,
     return salida
 
 
+def _imagenes_legacy_caso(caso: dict) -> list[dict]:
+    """Fallback acotado al caso incompleto; nunca degrada los demás casos."""
+    raiz = Path(caso["ruta"])
+    return [{"ruta": str(p), "ruta_relativa": p.relative_to(raiz).as_posix(),
+             "fase": "LEGACY", "tor": None}
+            for p in sorted(raiz.rglob("*"))
+            if p.is_file() and p.suffix.lower() in EXTENSIONES_IMAGEN]
+
+
+def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = None,
+                             archivo_salida: str | Path | None = None,
+                             al_resultado: Callable[[int, int, dict, float | None], None] | None = None,
+                             al_imagen: Callable[[int, int, str, float | None], None] | None = None,
+                             control: Callable[[], None] | None = None,
+                             casos_filtrados: set[str] | None = None,
+                             imagenes_filtradas: set[str] | None = None,
+                             solo_errores: bool = False,
+                             modo_recorte: str | None = None,
+                             roi_manual: dict[str, float] | None = None,
+                             al_caso: Callable[[dict], None] | None = None) -> dict:
+    """Procesa todos los casos empresariales y consolida una sola salida por ID."""
+    config = config or cargar_config()
+    if roi_manual:
+        config = deepcopy(config)
+        config.setdefault("ocr", {}).setdefault("roi_manual", {})
+        config["ocr"]["roi_manual"].update({"NACH": roi_manual, "VOR": roi_manual})
+    with open(ruta_estructura, encoding="utf-8") as archivo:
+        estructura = json.load(archivo)
+    casos = estructura.get("casos_empresariales", [])
+    if casos_filtrados:
+        casos = [c for c in casos if c["case_key"] in casos_filtrados]
+    cfg_emp = config.get("empresarial", {})
+    directorio_aprendizaje = Path(config.get("aprendizaje", {}).get("directorio", ".aprendizaje"))
+    if not directorio_aprendizaje.is_absolute():
+        directorio_aprendizaje = RAIZ_PROYECTO / directorio_aprendizaje
+    db_aprendizaje = directorio_aprendizaje / "aprendizaje.sqlite3"
+    cache = CacheOCR(
+        RAIZ_PROYECTO / cfg_emp.get("archivo_cache", ".cache_ocr/imagenes.json"),
+        {"fase1": config.get("fase1", {}), "ocr": config.get("ocr", {}),
+         "normalizacion": config.get("normalizacion", {}),
+         "aprendizaje_mtime_ns": db_aprendizaje.stat().st_mtime_ns if db_aprendizaje.exists() else 0})
+    conocimiento = BaseConocimiento(
+        RAIZ_PROYECTO / cfg_emp.get("base_conocimiento", "base_conocimiento.json"),
+        cfg_emp.get("reglas_minimo_ids", 3), cfg_emp.get("reglas_consenso_minimo", 0.90))
+    todas_las_fotos = [f for c in casos for f in (
+        c.get("fotos", []) if c.get("estructura_valida") else _imagenes_legacy_caso(c))]
+    anotaciones_por_ruta: dict[str, list[dict]] = defaultdict(list)
+    for anotacion in GestorAprendizaje(config).listar_anotaciones(
+            [f["ruta"] for f in todas_las_fotos]):
+        if anotacion.get("ruta_imagen"):
+            anotaciones_por_ruta[str(anotacion["ruta_imagen"])].append(anotacion)
+    destino = Path(archivo_salida) if archivo_salida else RAIZ_PROYECTO / "validacion_resultados.json"
+    resultados: list[dict] = []
+    resultados_previos: list[dict] = []
+    resultados_existentes: list[dict] = []
+    if destino.is_file():
+        try:
+            resultados_existentes = json.loads(
+                destino.read_text(encoding="utf-8")).get("resultados", [])
+        except (OSError, json.JSONDecodeError):
+            resultados_existentes = []
+    if casos_filtrados:
+        resultados_previos = resultados_existentes
+    inicio = time.monotonic()
+    total_imagenes = sum(len(c.get("fotos", [])) if c.get("estructura_valida")
+                         else len(_imagenes_legacy_caso(c)) for c in casos)
+    procesadas = 0
+    duraciones: deque[float] = deque(maxlen=12)
+    anterior = inicio
+
+    def persistir(parcial: bool) -> None:
+        combinados = {r.get("case_key") or r.get("ruta"): r for r in resultados_previos}
+        combinados.update({r.get("case_key") or r.get("ruta"): r for r in resultados})
+        salida_parcial = {
+            "raiz": estructura["raiz"], "generado_en": datetime.now().isoformat(timespec="seconds"),
+            "estructura_usada": str(ruta_estructura), "perfil": "empresarial",
+            "tipo_st": estructura.get("tipo_st"), "tipos_st": estructura.get("tipos_st", []),
+            "parcial": parcial, "carpetas_procesadas": len(combinados),
+            "casos_encontrados": len(combinados), "resultados": list(combinados.values()),
+        }
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        temporal = destino.with_suffix(destino.suffix + ".tmp")
+        with open(temporal, "w", encoding="utf-8") as archivo:
+            json.dump(salida_parcial, archivo, ensure_ascii=False, indent=2)
+        temporal.replace(destino)
+
+    for indice, caso in enumerate(casos, start=1):
+        if control:
+            control()
+        caso = dict(caso)
+        if modo_recorte:
+            caso["modo_recorte"] = modo_recorte
+        caso["estado"] = "procesando"
+        if al_caso:
+            al_caso(deepcopy(caso))
+        fotos = caso.get("fotos", []) if caso.get("estructura_valida") else _imagenes_legacy_caso(caso)
+        trazabilidad, evidencias, imagenes_salida, alertas = [], [], [], []
+        con_texto = sin_texto = errores = 0
+        for foto in fotos:
+            if control:
+                control()
+            ruta = foto["ruta"]
+            resultado = None
+            try:
+                resultado = cache.obtener(ruta)
+            except OSError:
+                resultado = None
+            desde_cache = resultado is not None
+            if imagenes_filtradas and ruta in imagenes_filtradas:
+                resultado = None
+                desde_cache = False
+            if (solo_errores and desde_cache and
+                    (resultado.get("error") or str(resultado.get("estado_imagen", "")).startswith("error"))):
+                resultado = None
+                desde_cache = False
+            if resultado is None:
+                try:
+                    if caso.get("estructura_valida"):
+                        resultado = extraer_texto_empresarial(
+                            ruta, config, fase=foto.get("fase", "VOR"),
+                            modo_recorte=caso.get("modo_recorte"))
+                    else:
+                        resultado = extraer_texto(ruta, config)
+                        resultado.update({"estado_imagen": "procesada_con_texto" if
+                                          resultado.get("tokens") or resultado.get("lineas_texto")
+                                          else "descartada_sin_texto",
+                                          "modo_recorte": "completo", "tiempo_deteccion_seg": None,
+                                          "tiempo_ocr_seg": None, "numero_regiones": None,
+                                          "zoom_aplicado": 1.0})
+                    cache.guardar(ruta, resultado)
+                except Exception as exc:
+                    resultado = {"imagen": ruta, "tokens": [], "lineas_texto": [],
+                                 "texto_completo": "", "estado_imagen": "error_ocr",
+                                 "error": f"{type(exc).__name__}: {exc}", "modo_recorte":
+                                 "auto" if caso.get("estructura_valida") else "completo"}
+                    try:
+                        cache.guardar(ruta, resultado)
+                    except OSError:
+                        pass
+            estado_imagen = resultado.get("estado_imagen", "procesada_con_texto")
+            if estado_imagen == "procesada_con_texto":
+                con_texto += 1
+            elif estado_imagen == "descartada_sin_texto":
+                sin_texto += 1
+            else:
+                errores += 1
+                alertas.append({"codigo": "ERROR_OCR", "nivel": "error",
+                                "imagen": Path(ruta).name,
+                                "mensaje": resultado.get("error", "No se pudo leer la imagen.")})
+            confianza = resultado.get("confianza_media") or 0.0
+            foto_contexto = {**foto, "confianza_ocr": confianza}
+            evidencias.extend(extraer_candidatos_texto(
+                resultado.get("texto_completo", ""), foto_contexto,
+                caso.get("metadata_ruta", {})))
+            for anotacion in anotaciones_por_ruta.get(str(ruta), []):
+                evidencias.extend(extraer_candidatos_texto(
+                    anotacion.get("texto_correcto", ""),
+                    {**foto_contexto, "fuente": "manual", "confianza_ocr": 1.0},
+                    caso.get("metadata_ruta", {})))
+            trazabilidad.append({
+                "test_number": caso.get("metadata_ruta", {}).get("test_number"),
+                "tipo_st": caso.get("tipo_st"),
+                "temperature_condition": caso.get("metadata_ruta", {}).get("temperature_condition"),
+                "module_version": caso.get("metadata_ruta", {}).get("module_version"),
+                "inflator_type": caso.get("metadata_ruta", {}).get("inflator_type"),
+                "fase": foto.get("fase"), "tor": foto.get("tor"),
+                "ruta_absoluta": ruta, "ruta_relativa": foto.get("ruta_relativa"),
+                "estado_imagen": estado_imagen,
+                "texto_crudo": resultado.get("texto_completo", ""),
+                "confianza_ocr": resultado.get("confianza_media"),
+                "coordenadas_roi": resultado.get("roi_usado"),
+                "zoom_aplicado": resultado.get("zoom_aplicado"),
+                "modo_recorte": resultado.get("modo_recorte"),
+                "dispositivo": resultado.get("dispositivo"),
+                "tiempo_deteccion": resultado.get("tiempo_deteccion_seg"),
+                "tiempo_ocr": resultado.get("tiempo_ocr_seg"),
+                "campos_detectados": sorted({e["clave"] for e in evidencias
+                                             if e.get("imagen") == foto.get("ruta_relativa")}),
+                "requiere_revision": bool(resultado.get("error")),
+                "mensaje_error": resultado.get("error"), "desde_cache": desde_cache,
+            })
+            imagenes_salida.append({"id": hashlib.sha256(ruta.encode()).hexdigest()[:16],
+                                    "nombre": Path(ruta).name, "ruta": ruta,
+                                    "ruta_relativa": foto.get("ruta_relativa"),
+                                    "fase": foto.get("fase"), "tor": foto.get("tor"),
+                                    "rol": "foto_empresarial", "estado_imagen": estado_imagen,
+                                    "resultado_ocr": _compacto(resultado)})
+            procesadas += 1
+            caso["progreso"] = {
+                "total_imagenes": len(fotos), "revisadas": len(trazabilidad),
+                "con_texto": con_texto, "sin_texto": sin_texto, "errores": errores,
+                "porcentaje": round(100 * len(trazabilidad) / len(fotos), 2) if fotos else 100.0,
+            }
+            if al_caso:
+                al_caso(deepcopy(caso))
+            ahora_monotonic = time.monotonic()
+            duraciones.append(max(0.001, ahora_monotonic - anterior))
+            anterior = ahora_monotonic
+            if al_imagen:
+                eta = statistics.median(duraciones) * max(total_imagenes - procesadas, 0)
+                al_imagen(procesadas, total_imagenes, ruta, round(eta, 1))
+
+        previo = next((r for r in resultados_existentes
+                       if r.get("case_key") == caso.get("case_key")), {})
+        consolidado = consolidar_caso(
+            caso, evidencias,
+            requeridos=set(cfg_emp.get("campos_requeridos") or CAMPOS_REQUERIDOS_DEFAULT),
+            reglas_confirmadas=conocimiento.confirmadas())
+        correcciones_manual_campos = deepcopy(previo.get("correcciones_manual_campos", {}))
+        for clave, correccion in correcciones_manual_campos.items():
+            if clave not in consolidado["campos"] or not correccion.get("valor"):
+                continue
+            original_ruta = caso.get("metadata_ruta", {}).get(clave)
+            conflicto_ruta = original_ruta not in {None, "", correccion["valor"]}
+            consolidado["campos"][clave] = {
+                "valor": correccion["valor"], "valor_original": correccion["valor"],
+                "estado": "pendiente_revision" if conflicto_ruta else "confirmado_manual",
+                "fuente": "correccion_manual_confirmada", "confianza": 1.0,
+                "inferido": False, "requiere_revision": conflicto_ruta,
+                "valor_seguro_ruta": original_ruta if conflicto_ruta else None,
+                "corregido_en": correccion.get("corregido_en"),
+                "corregido_por": correccion.get("corregido_por"),
+            }
+            consolidado["campos_faltantes"] = [
+                campo for campo in consolidado["campos_faltantes"] if campo != clave]
+            if conflicto_ruta and clave not in consolidado["conflictos"]:
+                consolidado["conflictos"].append(clave)
+            elif not conflicto_ruta:
+                consolidado["conflictos"] = [
+                    campo for campo in consolidado["conflictos"] if campo != clave]
+        consolidado["requiere_revision"] = bool(
+            consolidado["conflictos"] or any(
+                dato.get("requiere_revision") for dato in consolidado["campos"].values()))
+        progreso = {"total_imagenes": len(fotos), "revisadas": len(trazabilidad),
+                    "con_texto": con_texto, "sin_texto": sin_texto,
+                    "errores": errores,
+                    "porcentaje": round(100 * len(trazabilidad) / len(fotos), 2) if fotos else 100.0}
+        estado = ("con_conflictos" if consolidado["conflictos"] else
+                  "procesada_con_advertencias" if consolidado["campos_faltantes"] or errores else
+                  "procesada")
+        fila = {
+            "case_key": caso["case_key"], "id": hashlib.sha256(caso["case_key"].encode()).hexdigest()[:16],
+            "ruta": caso["ruta"], "ruta_relativa": caso["ruta_relativa"], "nombre": caso["nombre"],
+            "identificador": consolidado["test_number"] or caso["nombre"],
+            "test_number": consolidado["test_number"], "tipo_st": caso.get("tipo_st"),
+            **caso.get("metadata_ruta", {}), "perfil": "empresarial",
+            "modo_procesamiento": caso["modo_procesamiento"],
+            "estructura_valida": caso["estructura_valida"], "validaciones": caso["validaciones"],
+            "estado": estado, "progreso": progreso, "total_imagenes": len(fotos),
+            "imagenes_nach": caso.get("imagenes_nach", 0), "imagenes_vor": caso.get("imagenes_vor", 0),
+            "carpetas_tor": caso.get("carpetas_tor", []),
+            "imagenes_omitidas_fuera_photos": caso.get("imagenes_omitidas_fuera_photos", 0),
+            "imagenes": imagenes_salida, "trazabilidad": trazabilidad,
+            "consolidado": consolidado, "campos": consolidado["campos"],
+            "correcciones_manual_campos": correcciones_manual_campos,
+            "campos_faltantes": consolidado["campos_faltantes"],
+            "conflictos": consolidado["conflictos"],
+            "candidatos": consolidado["candidatos"],
+            "requiere_revision": consolidado["requiere_revision"] or bool(errores),
+            "ultima_ejecucion": ahora(), "alertas": alertas,
+            # Compatibilidad con Excel/dashboard anteriores.
+            "tipos_archivo": {"fotografia": [i["nombre"] for i in imagenes_salida]},
+            "etiqueta": ({"ruta": imagenes_salida[0]["ruta"],
+                           "resultado_ocr": imagenes_salida[0]["resultado_ocr"]}
+                          if imagenes_salida else None),
+            "referencia": None, "comparacion": {
+                "resultado": "coincidencia_total" if not consolidado["conflictos"] and
+                not consolidado["campos_faltantes"] else
+                "discrepancia" if consolidado["conflictos"] else "coincidencia_parcial",
+                "ratio": None, "coincidentes": [], "faltantes": consolidado["campos_faltantes"]},
+            "confianza_ocr_pct": (round(statistics.mean(
+                [t["confianza_ocr"] for t in trazabilidad if t.get("confianza_ocr") is not None]) * 100, 2)
+                if any(t.get("confianza_ocr") is not None for t in trazabilidad) else None),
+            "qr_detectado": False, "observaciones": (["procesado por fallback legacy del caso"]
+                                                       if not caso["estructura_valida"] else []),
+            "historial_ejecuciones": [*previo.get("historial_ejecuciones", []), {
+                "iniciado_en": datetime.fromtimestamp(
+                    datetime.now().timestamp() - (time.monotonic() - inicio)
+                ).isoformat(timespec="seconds"),
+                "finalizado_en": ahora(), "estado": estado,
+                "modo_recorte": caso.get("modo_recorte") or
+                                config.get("ocr", {}).get("modo_recorte", "auto"),
+                "imagenes_revisadas": len(trazabilidad), "con_texto": con_texto,
+                "sin_texto": sin_texto, "errores": errores,
+                "reproceso_selectivo": bool(casos_filtrados),
+            }],
+            "historial_acciones": deepcopy(previo.get("historial_acciones", [])),
+        }
+        resultados.append(fila)
+        persistir(parcial=True)
+        if al_resultado:
+            transcurrido = time.monotonic() - inicio
+            eta = transcurrido / indice * (len(casos) - indice)
+            al_resultado(indice, len(casos), fila, round(eta, 1))
+
+    propuestas = conocimiento.proponer([*resultados_previos, *resultados])
+    persistir(parcial=False)
+    salida = json.loads(destino.read_text(encoding="utf-8"))
+    salida.update({
+        "archivo_salida": str(destino), "base_conocimiento": str(conocimiento.ruta),
+        "reglas_propuestas": propuestas,
+        "resumen_empresarial": {
+            "estructura": "Empresarial", "tipos_st": estructura.get("tipos_st", []),
+            "casos_encontrados": len(casos),
+            "casos_validos": sum(c.get("estructura_valida", False) for c in casos),
+            "casos_legacy": sum(not c.get("estructura_valida", False) for c in casos),
+            "fotos_revisadas": sum(r["progreso"]["revisadas"] for r in resultados),
+            "fotos_con_texto": sum(r["progreso"]["con_texto"] for r in resultados),
+            "fotos_descartadas_sin_texto": sum(r["progreso"]["sin_texto"] for r in resultados),
+            "imagenes_omitidas_fuera_photos": sum(r["imagenes_omitidas_fuera_photos"] for r in resultados),
+            "ids_completos": sum(not r["campos_faltantes"] and not r["conflictos"] for r in resultados),
+            "ids_con_informacion_faltante": sum(bool(r["campos_faltantes"]) for r in resultados),
+            "ids_con_conflictos": sum(bool(r["conflictos"]) for r in resultados),
+            "reglas_propuestas": len(propuestas),
+        },
+    })
+    with open(destino, "w", encoding="utf-8") as archivo:
+        json.dump(salida, archivo, ensure_ascii=False, indent=2)
+    return salida
+
+
 def _validar_carpeta(carpeta: dict, config: dict, f2: dict,
                      cache_ocr: dict, patron_dominante: str | None,
                      al_imagen: Callable[[str], None] | None = None,
@@ -462,7 +788,8 @@ def _compacto(resultado_ocr: dict | None) -> dict | None:
         "orientacion_texto_grados", "variante_preprocesamiento",
         "variante_texto_completo", "dimensiones_originales",
         "intentos_ocr", "motor", "dispositivo", "advertencias_motor",
-        "dimensiones", "error")}
+        "dimensiones", "estado_imagen", "modo_recorte", "tiempo_deteccion_seg",
+        "tiempo_ocr_seg", "numero_regiones", "zoom_aplicado", "roi_usado", "error")}
 
 
 def _imagen_salida(item: dict, rol: str) -> dict:

@@ -33,6 +33,7 @@ from openpyxl.utils import get_column_letter
 from configuracion import (RAIZ_PROYECTO, cargar_config, cargar_reglas,
                            clasificar, estructura_regla)
 from aprendizaje import GestorAprendizaje, hash_archivo
+from plantilla_empresarial import generar_desde_plantilla
 
 COLUMNAS = [
     ("Ruta", 46), ("Identificador", 18), ("Variante", 9),
@@ -155,7 +156,8 @@ def _texto_fila(fila: dict, anotaciones_por_ruta: dict | None = None,
 def generar_excel(ruta_validacion: str | Path | None = None,
                   ruta_salida: str | Path | None = None,
                   config: dict | None = None,
-                  reglas: dict | None = None) -> Path:
+                  reglas: dict | None = None,
+                  ruta_plantilla: str | Path | None = None) -> Path:
     """Genera resultado_maestro.xlsx. Retorna la ruta del archivo creado."""
     config = config or cargar_config()
     reglas = reglas or cargar_reglas()
@@ -165,6 +167,15 @@ def generar_excel(ruta_validacion: str | Path | None = None,
 
     with open(ruta_validacion, "r", encoding="utf-8") as f:
         datos = json.load(f)
+
+    plantilla_config = ruta_plantilla or f3.get("plantilla_empresarial")
+    if datos.get("perfil") == "empresarial" and plantilla_config:
+        plantilla = Path(str(plantilla_config).strip().strip('"\''))
+        if not plantilla.is_absolute():
+            plantilla = RAIZ_PROYECTO / plantilla
+        if not plantilla.is_file():
+            raise FileNotFoundError(f"No se encontró la plantilla Excel: {plantilla}")
+        return generar_desde_plantilla(plantilla, ruta_salida, datos.get("resultados", []))
 
     try:
         from pruebas_externas import cargar as cargar_externas

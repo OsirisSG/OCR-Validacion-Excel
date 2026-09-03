@@ -11,8 +11,10 @@ artefactos y rutas de config.yaml. Retorna/imprime un resumen por fase (doc §11
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
 import time
+from copy import deepcopy
 from pathlib import Path
 from typing import Callable
 
@@ -20,14 +22,21 @@ from configuracion import RAIZ_PROYECTO, cargar_config
 from estructura import carpetas_hoja, guardar_estructura, mapear_estructura
 from generar_excel import generar_excel
 from recursos import detectar_recursos
-from validacion import validar_lote
+from validacion import validar_lote, validar_lote_empresarial
 
 
 def ejecutar_pipeline(ruta_raiz: str | Path, config: dict | None = None,
                       al_progreso: Callable[[str, str, dict | None], None] | None = None,
                       nombre_excel: str | None = None,
                       sobrescribir_excel: bool = False,
-                      control: Callable[[], None] | None = None) -> dict:
+                      control: Callable[[], None] | None = None,
+                      tipo_st: str | None = None,
+                      ruta_plantilla: str | Path | None = None,
+                      casos_filtrados: set[str] | None = None,
+                      imagenes_filtradas: set[str] | None = None,
+                      solo_errores: bool = False,
+                      modo_recorte: str | None = None,
+                      roi_manual: dict[str, float] | None = None) -> dict:
     """Corre las Fases 0-3 y retorna un dict con artefactos y resumen por fase."""
     config = config or cargar_config()
     recursos = detectar_recursos(config.get("fase1", {}).get("dispositivo", "auto"))
@@ -42,15 +51,49 @@ def ejecutar_pipeline(ruta_raiz: str | Path, config: dict | None = None,
         control()
     progreso("fase0", "Analizando la estructura de carpetas", {
         "porcentaje": 2, "recursos": recursos})
-    estructura = mapear_estructura(ruta_raiz, config)
+    casos_detectados = []
+
+    def caso_detectado(caso: dict) -> None:
+        casos_detectados.append(caso)
+        progreso("fase0", f"Caso detectado: {caso.get('nombre')}", {
+            "porcentaje": 4, "caso_detectado": caso,
+            "casos_detectados": len(casos_detectados),
+        })
+
+    parametros_mapeo = inspect.signature(mapear_estructura).parameters
+    extras_mapeo = {}
+    if "tipo_st" in parametros_mapeo:
+        extras_mapeo["tipo_st"] = tipo_st
+    if "al_descubrir_caso" in parametros_mapeo:
+        extras_mapeo["al_descubrir_caso"] = caso_detectado
+    estructura = mapear_estructura(ruta_raiz, config, **extras_mapeo)
     ruta_estructura = guardar_estructura(estructura)
-    total_hojas = len(carpetas_hoja(estructura))
+    if estructura.get("casos_empresariales") and estructura.get("requiere_seleccion_tipo_st"):
+        raise ValueError(
+            "No fue posible determinar si el proyecto corresponde a 1ST o 2ST. "
+            "Selecciona 1ST, 2ST o usa el recorrido tradicional.")
+    usar_empresarial = bool(estructura.get("casos_empresariales"))
+    if usar_empresarial and ruta_plantilla:
+        from plantilla_empresarial import cargar_contrato
+        contrato = cargar_contrato(Path(str(ruta_plantilla).strip().strip('"\'')))
+        config = deepcopy(config)
+        requeridos = [clave for clave, regla in contrato["esquema"].items()
+                      if str(regla.get("requerido") or "").lower() in {"sí", "si"}]
+        config.setdefault("empresarial", {})["campos_requeridos"] = requeridos
+        config.setdefault("fase3", {})["plantilla_empresarial"] = str(ruta_plantilla)
+    total_hojas = (len(estructura.get("casos_empresariales", [])) if usar_empresarial
+                   else len(carpetas_hoja(estructura)))
     resumen["fases"]["fase0"] = {
         "artifacto": str(ruta_estructura),
         "total_carpetas": estructura["total_carpetas"],
         "patron_dominante": estructura["patron_dominante"],
         "anomalias": len(estructura["anomalias"]),
         "hojas": total_hojas,
+        "perfil": "empresarial" if usar_empresarial else "legacy",
+        "tipo_st": estructura.get("tipo_st"),
+        "tipos_st": estructura.get("tipos_st", []),
+        "casos_validos": estructura.get("casos_validos", 0),
+        "casos_incompletos": estructura.get("casos_incompletos", 0),
     }
 
     progreso("fase2", "Ejecutando OCR y validación cruzada", {
@@ -92,7 +135,19 @@ def ejecutar_pipeline(ruta_raiz: str | Path, config: dict | None = None,
     }
     if control is not None:
         argumentos_validacion["control"] = control
-    validacion = validar_lote(ruta_estructura, config, **argumentos_validacion)
+    if usar_empresarial:
+        argumentos_validacion["al_caso"] = lambda caso: progreso(
+            "fase2", f"Procesando ID {caso.get('nombre')}", {"caso_actualizado": caso})
+        argumentos_validacion.update({
+            "casos_filtrados": casos_filtrados,
+            "imagenes_filtradas": imagenes_filtradas,
+            "solo_errores": solo_errores,
+            "modo_recorte": modo_recorte,
+            "roi_manual": roi_manual,
+        })
+    validacion = (validar_lote_empresarial(ruta_estructura, config, **argumentos_validacion)
+                  if usar_empresarial else
+                  validar_lote(ruta_estructura, config, **argumentos_validacion))
     conteo: dict[str, int] = {}
     for fila in validacion["resultados"]:
         conteo[fila["comparacion"]["resultado"]] = conteo.get(fila["comparacion"]["resultado"], 0) + 1
@@ -111,7 +166,8 @@ def ejecutar_pipeline(ruta_raiz: str | Path, config: dict | None = None,
     if Path(nombre).name != nombre or nombre in {".", ".."}:
         raise ValueError("El nombre del Excel no debe contener carpetas.")
     if not nombre.lower().endswith(".xlsx"):
-        nombre += ".xlsx"
+        nombre = (Path(nombre).with_suffix(".xlsx").name if Path(nombre).suffix
+                  else nombre + ".xlsx")
     ruta_destino = RAIZ_PROYECTO / nombre
     if ruta_destino.exists() and not sobrescribir_excel:
         base, extension = ruta_destino.stem, ruta_destino.suffix
@@ -122,7 +178,13 @@ def ejecutar_pipeline(ruta_raiz: str | Path, config: dict | None = None,
                 ruta_destino = candidata
                 break
             indice += 1
-    ruta_excel = generar_excel(None, ruta_destino, config)
+    ruta_excel = (generar_excel(None, ruta_destino, config, ruta_plantilla=ruta_plantilla)
+                  if ruta_plantilla else generar_excel(None, ruta_destino, config))
+    if validacion.get("perfil") == "empresarial":
+        validacion["archivo_excel"] = str(ruta_excel)
+        validacion["ruta_plantilla"] = str(ruta_plantilla) if ruta_plantilla else None
+        with open(validacion["archivo_salida"], "w", encoding="utf-8") as archivo:
+            json.dump(validacion, archivo, ensure_ascii=False, indent=2)
     resumen["fases"]["fase3"] = {"artifacto": str(ruta_excel)}
     resumen["duracion_segundos"] = round(time.time() - t0, 1)
     progreso("completado", "Resultados y Excel actualizados", {
@@ -137,8 +199,13 @@ if __name__ == "__main__":
     parser.add_argument("--excel", default=None, help="Nombre del Excel de salida.")
     parser.add_argument("--sobrescribir", action="store_true",
                         help="Reemplaza el Excel si ya existe.")
+    parser.add_argument("--tipo-st", choices=["1ST", "2ST", "LEGACY"], default=None,
+                        help="Fuerza el tipo de proyecto o el recorrido tradicional.")
+    parser.add_argument("--plantilla", default=None,
+                        help="Plantilla .xlsx empresarial con las 36 claves estables.")
     args = parser.parse_args()
     resumen = ejecutar_pipeline(
         args.ruta_raiz.strip().strip('"\''), nombre_excel=args.excel,
-        sobrescribir_excel=args.sobrescribir)
+        sobrescribir_excel=args.sobrescribir, tipo_st=args.tipo_st,
+        ruta_plantilla=args.plantilla)
     print(json.dumps(resumen, ensure_ascii=False, indent=2))

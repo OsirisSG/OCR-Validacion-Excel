@@ -159,6 +159,11 @@ a:hover { text-decoration: underline; }
 table { border-collapse: collapse; width: 100%; font-size: 14px; }
 th, td { text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--borde); }
 th { font-size: 12px; text-transform: uppercase; letter-spacing: .4px; color: var(--texto-3); font-weight: 600; white-space: nowrap; }
+.tabla-pruebas { min-width: 1160px; }
+.tabla-pruebas .celda-fotos { min-width: 178px; }
+.celda-fotos-contenido { display: grid; gap: 3px; min-width: max-content; }
+.desglose-fotos { display: flex; gap: 8px; white-space: nowrap; color: var(--texto-2); }
+.desglose-fotos span + span::before { content: "·"; margin-right: 8px; }
 tbody tr { cursor: pointer; transition: background var(--transicion); }
 tbody tr:hover, tbody tr:focus-visible { background: var(--acento-suave); }
 tbody tr:last-child td { border-bottom: none; }
@@ -441,6 +446,9 @@ td.numero { font-variant-numeric: tabular-nums; }
 @media (max-width: 760px) {
   .contenedor-tabla { border: none; background: transparent; overflow: visible; }
   table, thead, tbody, tr, td { display: block; width: 100%; }
+  .tabla-pruebas { min-width: 0; }
+  .tabla-pruebas .celda-fotos { min-width: 0; }
+  .celda-fotos-contenido { justify-items: end; min-width: 0; }
   thead { display: none; }
   tbody tr {
     background: var(--tarjeta); border: 1px solid var(--borde);

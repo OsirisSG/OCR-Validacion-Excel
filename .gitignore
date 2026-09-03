@@ -47,6 +47,8 @@ runs/
 wandb/
 .aprendizaje/
 .pruebas_externas/
+.cache_ocr/
+base_conocimiento.json
 *.pth
 *.pt
 *.onnx

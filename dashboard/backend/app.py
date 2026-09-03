@@ -48,6 +48,7 @@ from configuracion import cargar_config, cargar_reglas, clasificar  # noqa: E402
 from aprendizaje import (GestorAprendizaje, hash_archivo, normalizar_codigo,
                          rotar_bbox)  # noqa: E402
 from recursos import detectar_recursos  # noqa: E402
+from flujo_empresarial import BaseConocimiento, CLAVES_PLANTILLA  # noqa: E402
 
 CONFIG = cargar_config()
 REGLAS = cargar_reglas()
@@ -75,6 +76,25 @@ class SolicitudPipeline(BaseModel):
     ruta: str = Field(min_length=1, max_length=4096)
     nombre_excel: str | None = Field(default=None, max_length=128)
     sobrescribir_excel: bool = False
+    tipo_st: str | None = Field(default=None, pattern="^(1ST|2ST|LEGACY)$")
+    ruta_plantilla: str | None = Field(default=None, max_length=4096)
+
+
+class SolicitudRegla(BaseModel):
+    estado: str = Field(pattern="^(confirmada|rechazada|desactivada)$")
+    usuario: str = Field(default="dashboard", min_length=1, max_length=128)
+
+
+class SolicitudReproceso(BaseModel):
+    solo_errores: bool = False
+    imagenes: list[str] = Field(default_factory=list, max_length=1000)
+    modo_recorte: str | None = Field(default=None, pattern="^(auto|manual|completo)$")
+    roi_manual: dict[str, float] | None = None
+
+
+class SolicitudCampoManual(BaseModel):
+    valor: str = Field(min_length=1, max_length=8192)
+    usuario: str = Field(default="dashboard", min_length=1, max_length=128)
 
 
 class SolicitudCorreccion(BaseModel):
@@ -134,6 +154,7 @@ class SolicitudRegionExterna(BaseModel):
 _pipeline_lock = threading.Lock()
 _pipeline_continuar = threading.Event()
 _pipeline_continuar.set()
+_pipeline_cancelar = threading.Event()
 _externas_lock = threading.Lock()
 _pipeline_estado: dict = {
     "estado": "inactivo", "fase": None, "mensaje": None, "ruta": None,
@@ -171,7 +192,7 @@ def _cargar_datos() -> dict | None:
 
 def _id_fila(fila: dict) -> str:
     """Id corto y estable; evita colisiones cuando distintos lotes repiten nombre."""
-    clave = str(fila.get("ruta") or fila.get("nombre") or "")
+    clave = str(fila.get("case_key") or fila.get("ruta") or fila.get("nombre") or "")
     return hashlib.sha256(clave.encode("utf-8")).hexdigest()[:16]
 
 
@@ -457,17 +478,33 @@ def _registrar_error_pipeline(ruta: Path, exc: Exception) -> Path:
 
 def _esperar_continuacion() -> None:
     """Pausa cooperativa: nunca interrumpe una inferencia a la mitad."""
+    if _pipeline_cancelar.is_set():
+        raise PipelineCancelado("Procesamiento cancelado por el usuario.")
     while not _pipeline_continuar.wait(timeout=0.25):
-        pass
+        if _pipeline_cancelar.is_set():
+            raise PipelineCancelado("Procesamiento cancelado por el usuario.")
+
+
+class PipelineCancelado(RuntimeError):
+    pass
 
 
 def _ejecutar_pipeline_fondo(ruta: Path, nombre_excel: str | None = None,
-                             sobrescribir_excel: bool = False) -> None:
+                             sobrescribir_excel: bool = False,
+                             tipo_st: str | None = None,
+                             ruta_plantilla: str | None = None,
+                             casos_filtrados: set[str] | None = None,
+                             imagenes_filtradas: set[str] | None = None,
+                             solo_errores: bool = False,
+                             modo_recorte: str | None = None,
+                             roi_manual: dict[str, float] | None = None) -> None:
     inicio = time.monotonic()
 
     def progreso(fase: str, mensaje: str, detalle: dict | None = None) -> None:
         detalle = dict(detalle or {})
         fila = detalle.pop("resultado", None)
+        caso = detalle.pop("caso_detectado", None)
+        caso_actualizado = detalle.pop("caso_actualizado", None)
         with _pipeline_lock:
             _pipeline_estado.update(
                 fase=fase, mensaje=mensaje,
@@ -476,14 +513,30 @@ def _ejecutar_pipeline_fondo(ruta: Path, nombre_excel: str | None = None,
                 **detalle,
             )
             if fila is not None:
-                _pipeline_estado["resultados_parciales"].append(_fila_publica(fila))
+                publica = _fila_publica(fila)
+                _pipeline_estado["resultados_parciales"] = [
+                    f for f in _pipeline_estado["resultados_parciales"] if f["id"] != publica["id"]]
+                _pipeline_estado["resultados_parciales"].append(publica)
+                _cache.update({"mtime": None, "datos": None})
+            elif caso is not None:
+                publica = _fila_publica(caso)
+                if not any(f["id"] == publica["id"] for f in _pipeline_estado["resultados_parciales"]):
+                    _pipeline_estado["resultados_parciales"].append(publica)
+            elif caso_actualizado is not None:
+                publica = _fila_publica(caso_actualizado)
+                _pipeline_estado["resultados_parciales"] = [
+                    f for f in _pipeline_estado["resultados_parciales"] if f["id"] != publica["id"]]
+                _pipeline_estado["resultados_parciales"].append(publica)
 
     try:
         from pipeline import ejecutar_pipeline
         resumen = ejecutar_pipeline(
             ruta, al_progreso=progreso, nombre_excel=nombre_excel,
             sobrescribir_excel=sobrescribir_excel,
-            control=_esperar_continuacion)
+            control=_esperar_continuacion, tipo_st=tipo_st,
+            ruta_plantilla=ruta_plantilla, casos_filtrados=casos_filtrados,
+            imagenes_filtradas=imagenes_filtradas, solo_errores=solo_errores,
+            modo_recorte=modo_recorte, roi_manual=roi_manual)
         _cache.update({"mtime": None, "datos": None})
         _actualizar_pipeline(
             estado="completado", fase="completado", mensaje="Procesamiento terminado",
@@ -491,6 +544,16 @@ def _ejecutar_pipeline_fondo(ruta: Path, nombre_excel: str | None = None,
             porcentaje=100, restantes=0, eta_segundos=0,
             transcurrido_segundos=round(time.monotonic() - inicio, 1),
         )
+    except PipelineCancelado:
+        with _pipeline_lock:
+            for parcial in _pipeline_estado.get("resultados_parciales", []):
+                if parcial.get("estado") == "procesando":
+                    parcial["estado"] = "cancelada"
+        _actualizar_pipeline(
+            estado="cancelada", fase="cancelada", mensaje="Procesamiento detenido por el usuario",
+            finalizado_en=datetime.now().isoformat(timespec="seconds"), error=None,
+            eta_segundos=None,
+            transcurrido_segundos=round(time.monotonic() - inicio, 1))
     except Exception as exc:  # el error se expone y también queda en errores/
         bitacora = _registrar_error_pipeline(ruta, exc)
         _actualizar_pipeline(
@@ -511,10 +574,10 @@ def _lote_de(fila: dict) -> str:
 def _fila_publica(fila: dict, revisiones: dict | None = None,
                   alertas_atendidas: set | None = None) -> dict:
     """Fila para listado/tabla: ligera + semáforo evaluado con el motor de reglas."""
-    clasif = clasificar(fila.get("confianza_ocr_pct"),
-                        fila["comparacion"]["resultado"], REGLAS)
+    comparacion = fila.get("comparacion", {}).get("resultado", "sin_procesar")
+    clasif = clasificar(fila.get("confianza_ocr_pct"), comparacion, REGLAS)
     item_id = _id_fila(fila)
-    if fila["comparacion"]["resultado"] == "sin_procesar":
+    if comparacion == "sin_procesar":
         inicial = "por_revisar"
     elif clasif.get("semaforo_global") == "verde":
         inicial = "casi_listo"
@@ -530,7 +593,7 @@ def _fila_publica(fila: dict, revisiones: dict | None = None,
         "nomenclatura": fila.get("nomenclatura"),
         "variante": fila.get("variante"),
         "lote": _lote_de(fila),
-        "resultado": fila["comparacion"]["resultado"],
+        "resultado": comparacion,
         "confianza_ocr_pct": fila.get("confianza_ocr_pct"),
         "qr_detectado": fila.get("qr_detectado", False),
         "conforme": fila.get("es_conforme"),
@@ -543,6 +606,30 @@ def _fila_publica(fila: dict, revisiones: dict | None = None,
         "origen": "carpeta",
         "enlace": f"#/detalle/{item_id}",
         "revision": revision,
+        "case_key": fila.get("case_key"), "perfil": fila.get("perfil"),
+        "tipo_st": fila.get("tipo_st"),
+        "temperature_condition": fila.get("temperature_condition") or
+                                 fila.get("metadata_ruta", {}).get("temperature_condition"),
+        "module_version": fila.get("module_version") or
+                          fila.get("metadata_ruta", {}).get("module_version"),
+        "inflator_type": fila.get("inflator_type") or
+                         fila.get("metadata_ruta", {}).get("inflator_type"),
+        "ruta": fila.get("ruta"), "ruta_relativa": fila.get("ruta_relativa"),
+        "estructura_valida": fila.get("estructura_valida"),
+        "estado": fila.get("estado", "detectada"), "progreso": fila.get("progreso", {}),
+        "total_imagenes": fila.get("total_imagenes", 0),
+        "imagenes_nach": fila.get("imagenes_nach", 0),
+        "imagenes_vor": fila.get("imagenes_vor", 0),
+        "carpetas_tor": fila.get("carpetas_tor", []),
+        "estado_deteccion": fila.get("estado_deteccion") or
+                            ("estructura_valida" if fila.get("estructura_valida") else
+                             "estructura_incompleta" if fila.get("estructura_valida") is False else None),
+        "campos_encontrados": sum(
+            dato.get("valor") not in {None, ""} for dato in fila.get("campos", {}).values()),
+        "campos_faltantes": len(fila.get("campos_faltantes", [])),
+        "conflictos": len(fila.get("conflictos", [])),
+        "requiere_revision": fila.get("requiere_revision", comparacion != "coincidencia_total"),
+        "ultima_ejecucion": fila.get("ultima_ejecucion"),
     }
 
 
@@ -1044,7 +1131,16 @@ def iniciar_pipeline(solicitud: SolicitudPipeline):
         if Path(nombre_excel).name != nombre_excel or nombre_excel in {".", ".."}:
             raise HTTPException(400, "Escribe solamente el nombre del Excel, sin carpetas.")
         if not nombre_excel.lower().endswith(".xlsx"):
-            nombre_excel += ".xlsx"
+            nombre_excel = (Path(nombre_excel).with_suffix(".xlsx").name
+                            if Path(nombre_excel).suffix else nombre_excel + ".xlsx")
+    ruta_plantilla = (solicitud.ruta_plantilla or "").strip().strip('"\'') or None
+    if ruta_plantilla:
+        plantilla = Path(ruta_plantilla).expanduser()
+        plantilla = ((RAIZ_PROYECTO / plantilla).resolve() if not plantilla.is_absolute()
+                     else plantilla.resolve())
+        if not plantilla.is_file() or plantilla.suffix.lower() != ".xlsx":
+            raise HTTPException(400, "La plantilla debe ser un archivo .xlsx accesible.")
+        ruta_plantilla = str(plantilla)
 
     capacidad = _capacidad_pipeline()
     if not capacidad["listo"]:
@@ -1054,6 +1150,7 @@ def iniciar_pipeline(solicitud: SolicitudPipeline):
         if _pipeline_estado["estado"] in {"procesando", "pausado"}:
             raise HTTPException(409, "Ya hay una carpeta en procesamiento.")
         _pipeline_continuar.set()
+        _pipeline_cancelar.clear()
         _pipeline_estado.update({
             "estado": "procesando", "fase": "preparando",
             "mensaje": "Preparando el pipeline", "ruta": str(ruta),
@@ -1065,12 +1162,14 @@ def iniciar_pipeline(solicitud: SolicitudPipeline):
             "imagenes_total": 0, "imagenes_restantes": 0,
             "imagen_actual": None,
             "recursos": capacidad.get("recursos"), "nombre_excel": nombre_excel,
+            "tipo_st": solicitud.tipo_st, "ruta_plantilla": ruta_plantilla,
             "actualizado_en": datetime.now().isoformat(timespec="milliseconds"),
         })
 
     hilo = threading.Thread(
         target=_ejecutar_pipeline_fondo,
-        args=(ruta, nombre_excel, solicitud.sobrescribir_excel), daemon=True)
+        args=(ruta, nombre_excel, solicitud.sobrescribir_excel,
+              solicitud.tipo_st, ruta_plantilla), daemon=True)
     hilo.start()
     return {"aceptado": True, "ruta": str(ruta), "estado": "procesando"}
 
@@ -1097,6 +1196,19 @@ def reanudar_pipeline():
             estado="procesando", mensaje="Procesamiento reanudado",
             actualizado_en=datetime.now().isoformat(timespec="milliseconds"))
     return {"estado": "procesando"}
+
+
+@app.post("/api/pipeline/cancelar")
+def cancelar_pipeline():
+    with _pipeline_lock:
+        if _pipeline_estado["estado"] not in {"procesando", "pausado"}:
+            raise HTTPException(409, "No hay un procesamiento activo que detener.")
+        _pipeline_cancelar.set()
+        _pipeline_continuar.set()
+        _pipeline_estado.update(
+            mensaje="Detención solicitada; se cerrará al terminar la imagen actual",
+            actualizado_en=datetime.now().isoformat(timespec="milliseconds"))
+    return {"estado": "cancelando", "seguro": True}
 
 
 @app.get("/api/resumen")
@@ -1137,11 +1249,18 @@ def resumen():
 def pruebas(q: str = "", estado: str = "", limit: int = Query(200, ge=1, le=1000),
             offset: int = Query(0, ge=0), incluir_ocultos: bool = False):
     datos = _cargar_datos()
-    if not datos:
+    with _pipeline_lock:
+        parciales = [dict(f) for f in _pipeline_estado.get("resultados_parciales", [])]
+    if not datos and not parciales:
         raise HTTPException(404, "Sin datos procesados.")
     revisiones = GestorAprendizaje(CONFIG).listar_revisiones()
     atendidas = GestorAprendizaje(CONFIG).listar_alertas_atendidas()
-    filas = [_fila_publica(f, revisiones, atendidas) for f in datos["resultados"]]
+    filas = [_fila_publica(f, revisiones, atendidas) for f in (datos or {}).get("resultados", [])]
+    por_id = {f["id"]: f for f in filas}
+    for parcial in parciales:
+        if parcial.get("origen") == "carpeta":
+            por_id[parcial["id"]] = parcial
+    filas = list(por_id.values())
     externas = _externas_publicas(incluir_ocultos=True)
     filas.extend(_fila_externa_publica(f) for f in externas.get("resultados", []))
     q_norm = unquote(q).strip().lower()
@@ -1165,6 +1284,186 @@ def pruebas(q: str = "", estado: str = "", limit: int = Query(200, ge=1, le=1000
             "incluye_externas": True}
 
 
+@app.get("/api/proyectos")
+def proyectos():
+    datos = _cargar_datos() or {}
+    with _pipeline_lock:
+        estado_actual = dict(_pipeline_estado)
+    raiz = datos.get("raiz") or estado_actual.get("ruta")
+    return {"proyectos": ([{"id": hashlib.sha256(str(raiz).encode()).hexdigest()[:16],
+                             "nombre": Path(raiz).name, "ruta": raiz,
+                             "perfil": datos.get("perfil", "pendiente"),
+                             "tipos_st": datos.get("tipos_st", []),
+                             "estado": estado_actual.get("estado")}]
+                           if raiz else [])}
+
+
+@app.get("/api/resultados/excel")
+def descargar_excel():
+    datos = _cargar_datos() or {}
+    ruta = datos.get("archivo_excel")
+    if not ruta:
+        raise HTTPException(404, "Esta ejecución no registró un Excel asociado.")
+    archivo = Path(ruta).resolve()
+    if not archivo.is_file() or archivo.suffix.lower() != ".xlsx":
+        raise HTTPException(404, "El Excel asociado ya no está disponible.")
+    return FileResponse(archivo, filename=archivo.name,
+                        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+@app.get("/api/casos")
+def casos(q: str = "", estado: str = "", limit: int = Query(500, ge=1, le=1000),
+          offset: int = Query(0, ge=0)):
+    respuesta = pruebas(q=q, estado=estado, limit=1000, offset=0)
+    items = [item for item in respuesta["items"] if item.get("origen") == "carpeta"]
+    return {"total": len(items), "items": items[offset:offset + limit]}
+
+
+@app.get("/api/casos/{clave}/progreso")
+def progreso_caso(clave: str):
+    respuesta = casos(limit=1000)
+    item = next((f for f in respuesta["items"] if f["id"] == clave), None)
+    if not item:
+        raise HTTPException(404, "No existe el caso solicitado.")
+    return {"id": item["id"], "case_key": item.get("case_key"),
+            "estado": item.get("estado"), "progreso": item.get("progreso", {}),
+            "campos_faltantes": item.get("campos_faltantes", 0),
+            "conflictos": item.get("conflictos", 0)}
+
+
+@app.get("/api/casos/{clave}/historial")
+def historial_caso(clave: str):
+    datos = _cargar_datos() or {}
+    fila = next((f for f in datos.get("resultados", []) if _id_fila(f) == clave), None)
+    if not fila:
+        raise HTTPException(404, "No existe el caso solicitado.")
+    return {"id": clave, "case_key": fila.get("case_key"),
+            "ejecuciones": fila.get("historial_ejecuciones", []),
+            "acciones": fila.get("historial_acciones", [])}
+
+
+@app.post("/api/casos/{clave}/campos/{campo}")
+def corregir_campo_caso(clave: str, campo: str, solicitud: SolicitudCampoManual):
+    """Confirma un valor de las 36 claves sin alterar archivos originales."""
+    if campo not in CLAVES_PLANTILLA:
+        raise HTTPException(400, "La clave no pertenece al contrato de 36 campos.")
+    datos = _cargar_datos()
+    fila = next((f for f in (datos or {}).get("resultados", []) if _id_fila(f) == clave), None)
+    if not fila or fila.get("perfil") != "empresarial":
+        raise HTTPException(404, "No existe el caso empresarial solicitado.")
+    gestor = GestorAprendizaje(CONFIG)
+    inicial = _fila_publica(fila)["revision"]["estado"]
+    if gestor.estado_revision("carpeta", clave, inicial)["estado"] == "completada":
+        raise HTTPException(409, "La revisión está completada. Reábrela antes de editar.")
+    valor = solicitud.valor.strip()
+    ahora_iso = datetime.now().isoformat(timespec="seconds")
+    correccion = {"valor": valor, "corregido_en": ahora_iso,
+                  "corregido_por": solicitud.usuario}
+    fila.setdefault("correcciones_manual_campos", {})[campo] = correccion
+    original_ruta = fila.get(campo) if campo in {
+        "test_number", "module_version", "inflator_type", "temperature_condition"} else None
+    conflicto_ruta = original_ruta not in {None, "", valor}
+    dato = {"valor": valor, "valor_original": valor,
+            "estado": "pendiente_revision" if conflicto_ruta else "confirmado_manual",
+            "fuente": "correccion_manual_confirmada", "confianza": 1.0,
+            "inferido": False, "requiere_revision": conflicto_ruta,
+            "valor_seguro_ruta": original_ruta if conflicto_ruta else None,
+            **correccion}
+    fila.setdefault("campos", {})[campo] = dato
+    fila.setdefault("consolidado", {}).setdefault("campos", {})[campo] = dato
+    fila["campos_faltantes"] = [c for c in fila.get("campos_faltantes", []) if c != campo]
+    fila["conflictos"] = list(dict.fromkeys([
+        *[c for c in fila.get("conflictos", []) if c != campo],
+        *([campo] if conflicto_ruta else []),
+    ]))
+    fila["requiere_revision"] = bool(fila["conflictos"] or fila["campos_faltantes"])
+    fila["consolidado"].update({
+        "campos_faltantes": fila["campos_faltantes"],
+        "conflictos": fila["conflictos"],
+        "requiere_revision": fila["requiere_revision"],
+    })
+    fila.setdefault("comparacion", {})["resultado"] = (
+        "discrepancia" if fila["conflictos"] else
+        "coincidencia_parcial" if fila["campos_faltantes"] else "coincidencia_total")
+    fila["comparacion"]["faltantes"] = fila["campos_faltantes"]
+    fila.setdefault("historial_acciones", []).append({
+        "tipo": "correccion_campo", "campo": campo, "valor": valor,
+        "usuario": solicitud.usuario, "fecha": ahora_iso,
+        "conflicto_con_ruta": conflicto_ruta,
+    })
+    _guardar_json_atomico(RUTA_VALIDACION, datos)
+    _cache.update({"mtime": None, "datos": None})
+    gestor.actualizar_revision("carpeta", clave, estado="parcial")
+    respuesta = {"campo": campo, "dato": dato, "conflictos": fila["conflictos"]}
+    try:
+        from generar_excel import generar_excel
+        respuesta["archivo_excel"] = str(generar_excel(
+            RUTA_VALIDACION, datos.get("archivo_excel"), CONFIG,
+            ruta_plantilla=datos.get("ruta_plantilla")))
+    except Exception as exc:
+        respuesta["advertencia_excel"] = str(exc)
+    return respuesta
+
+
+def _base_conocimiento() -> BaseConocimiento:
+    cfg = CONFIG.get("empresarial", {})
+    return BaseConocimiento(
+        RAIZ_PROYECTO / cfg.get("base_conocimiento", "base_conocimiento.json"),
+        cfg.get("reglas_minimo_ids", 3), cfg.get("reglas_consenso_minimo", 0.90))
+
+
+@app.get("/api/reglas")
+def reglas_conocimiento(estado: str = ""):
+    reglas = _base_conocimiento().datos.get("reglas", [])
+    if estado:
+        reglas = [r for r in reglas if r.get("estado") == estado]
+    return {"total": len(reglas), "reglas": reglas}
+
+
+@app.post("/api/reglas/{regla_id}")
+def actualizar_regla(regla_id: str, solicitud: SolicitudRegla):
+    try:
+        return _base_conocimiento().cambiar_estado(
+            regla_id, solicitud.estado, solicitud.usuario)
+    except KeyError as exc:
+        raise HTTPException(404, "No existe la regla solicitada.") from exc
+
+
+@app.post("/api/casos/{clave}/reprocesar", status_code=202)
+def reprocesar_caso(clave: str, solicitud: SolicitudReproceso):
+    datos = _cargar_datos()
+    if not datos:
+        raise HTTPException(404, "Sin datos procesados.")
+    fila = next((f for f in datos.get("resultados", []) if _id_fila(f) == clave), None)
+    if not fila or not fila.get("case_key"):
+        raise HTTPException(400, "El reproceso selectivo requiere un caso empresarial.")
+    imagenes = set(solicitud.imagenes)
+    rutas_validas = {i.get("ruta") for i in fila.get("imagenes", [])}
+    if imagenes and not imagenes <= rutas_validas:
+        raise HTTPException(400, "Se solicitó una imagen que no pertenece al caso.")
+    with _pipeline_lock:
+        if _pipeline_estado["estado"] in {"procesando", "pausado"}:
+            raise HTTPException(409, "Ya hay un procesamiento activo.")
+        _pipeline_continuar.set()
+        _pipeline_cancelar.clear()
+        _pipeline_estado.update({
+            "estado": "procesando", "fase": "reproceso", "mensaje": "Preparando reproceso selectivo",
+            "ruta": datos["raiz"], "iniciado_en": datetime.now().isoformat(timespec="seconds"),
+            "finalizado_en": None, "error": None, "porcentaje": 0,
+            "resultados_parciales": [], "tipo_st": fila.get("tipo_st"),
+        })
+        plantilla = datos.get("ruta_plantilla") or _pipeline_estado.get("ruta_plantilla")
+        nombre_excel = _pipeline_estado.get("nombre_excel")
+    hilo = threading.Thread(
+        target=_ejecutar_pipeline_fondo,
+        args=(Path(datos["raiz"]), nombre_excel, True, fila.get("tipo_st"), plantilla,
+              {fila["case_key"]}, imagenes or None, solicitud.solo_errores,
+              solicitud.modo_recorte, solicitud.roi_manual), daemon=True)
+    hilo.start()
+    return {"aceptado": True, "case_key": fila["case_key"],
+            "imagenes": len(imagenes), "solo_errores": solicitud.solo_errores}
+
+
 @app.get("/api/pruebas/{clave}")
 def detalle(clave: str):
     datos = _cargar_datos()
@@ -1172,6 +1471,27 @@ def detalle(clave: str):
         raise HTTPException(404, "Sin datos procesados.")
     buscada = unquote(clave)
     fila = next((f for f in datos["resultados"] if _id_fila(f) == buscada), None)
+    if fila is None and RUTA_ESTRUCTURA.is_file():
+        try:
+            estructura_actual = json.loads(RUTA_ESTRUCTURA.read_text(encoding="utf-8"))
+            caso = next((c for c in estructura_actual.get("casos_empresariales", [])
+                         if _id_fila(c) == buscada), None)
+            if caso:
+                fila = {**caso, "identificador": caso.get("metadata_ruta", {}).get("test_number"),
+                        **caso.get("metadata_ruta", {}), "perfil": "empresarial",
+                        "comparacion": {"resultado": "sin_procesar", "ratio": None,
+                                        "coincidentes": [], "faltantes": []},
+                        "confianza_ocr_pct": None, "qr_detectado": False,
+                        "imagenes": [{"id": hashlib.sha256(f["ruta"].encode()).hexdigest()[:16],
+                                      "nombre": Path(f["ruta"]).name, "ruta": f["ruta"],
+                                      "ruta_relativa": f.get("ruta_relativa"), "fase": f.get("fase"),
+                                      "tor": f.get("tor"), "rol": "foto_empresarial",
+                                      "estado_imagen": "pendiente",
+                                      "resultado_ocr": {}}
+                                     for f in caso.get("fotos", [])],
+                        "alertas": [], "observaciones": []}
+        except (OSError, json.JSONDecodeError):
+            pass
     if fila is None:
         por_nombre = [f for f in datos["resultados"] if f["nombre"] == buscada]
         if len(por_nombre) > 1:
@@ -1189,6 +1509,7 @@ def detalle(clave: str):
     raiz_local = _resolver_raiz_datos(datos)
     ruta_local = _reubicar_ruta(str(fila["ruta"]), datos, raiz_local) if raiz_local else None
     detalle_json["ruta_mostrada"] = str(ruta_local) if ruta_local else str(fila["ruta"])
+    detalle_json["archivo_excel"] = datos.get("archivo_excel")
     detalle_json["alertas"] = _alertas_pendientes(
         "carpeta", _id_fila(fila), fila.get("alertas", []))
     for campo in ("etiqueta", "referencia"):

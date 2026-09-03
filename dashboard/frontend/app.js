@@ -293,6 +293,8 @@ function VistaCarga() {
   const [nombreExcel, setNombreExcel] = useState(
     () => cargarRutasRecientes()[0]?.nombre_excel || "");
   const [sobrescribirExcel, setSobrescribirExcel] = useState(false);
+  const [tipoSt, setTipoSt] = useState("");
+  const [rutaPlantilla, setRutaPlantilla] = useState("");
   const [estado, setEstado] = useState(undefined);
   const [errorEstado, setErrorEstado] = useState(null);
   const [enviando, setEnviando] = useState(false);
@@ -344,6 +346,7 @@ function VistaCarga() {
       await enviarJSON("/api/pipeline", {
         ruta: ruta.trim(), nombre_excel: nombreExcel.trim() || null,
         sobrescribir_excel: sobrescribirExcel,
+        tipo_st: tipoSt || null, ruta_plantilla: rutaPlantilla.trim() || null,
       });
       const nueva = {
         ruta: ruta.trim(), nombre_excel: nombreExcel.trim(),
@@ -391,6 +394,15 @@ function VistaCarga() {
     setErrorEnvio(null);
     try {
       await enviarJSON(pausado ? "/api/pipeline/reanudar" : "/api/pipeline/pausar", {});
+      refrescar();
+    } catch (e) {
+      setErrorEnvio(e.message);
+    }
+  }
+  async function detener() {
+    setErrorEnvio(null);
+    try {
+      await enviarJSON("/api/pipeline/cancelar", {});
       refrescar();
     } catch (e) {
       setErrorEnvio(e.message);
@@ -454,6 +466,20 @@ function VistaCarga() {
       <input id="nombre-excel" class="campo" type="text" maxLength=${128}
         placeholder="resultado_maestro.xlsx" value=${nombreExcel}
         onInput=${(e) => setNombreExcel(e.target.value)} disabled=${activo || enviando} />
+      <label for="tipo-st"><strong>Tipo de proyecto</strong></label>
+      <p class="subtitulo-seccion">Déjalo en automático; si la ruta no contiene 1ST/2ST podrás elegirlo aquí.</p>
+      <select id="tipo-st" class="campo" value=${tipoSt}
+        onChange=${(e) => setTipoSt(e.target.value)} disabled=${activo || enviando}>
+        <option value="">Detectar automáticamente</option>
+        <option value="1ST">1ST</option><option value="2ST">2ST</option>
+        <option value="LEGACY">Usar recorrido tradicional</option>
+      </select>
+      <label for="ruta-plantilla"><strong>Plantilla Excel empresarial</strong></label>
+      <p class="subtitulo-seccion">Ruta opcional al archivo .xlsx con las 36 claves estables; acepta comillas.</p>
+      <input id="ruta-plantilla" class="campo" type="text" maxLength=${4096}
+        placeholder="C:\\plantillas\\captura_pruebas.xlsx"
+        value=${rutaPlantilla} onInput=${(e) => setRutaPlantilla(e.target.value)}
+        disabled=${activo || enviando} />
       <label class="control-ocultos opcion-sobrescribir">
         <input type="checkbox" checked=${sobrescribirExcel}
           onChange=${(e) => setSobrescribirExcel(e.target.checked)} disabled=${activo || enviando} />
@@ -503,6 +529,8 @@ function VistaCarga() {
       </dl>
       ${activo && html`<button class=${`boton ${pausado ? "boton-primario" : ""}`}
         onClick=${alternarPausa}>${pausado ? "Continuar procesamiento" : "Pausar después de esta imagen"}</button>`}
+      ${activo && html`<button class="boton boton-peligro" onClick=${detener}>
+        Detener después de esta imagen</button>`}
       ${estado.error && html`<div class="mensaje-error" role="alert">
         <strong>Error:</strong> ${estado.error}
         ${estado.bitacora && html`<div class="mono">Bitácora: ${estado.bitacora}</div>`}
@@ -527,7 +555,8 @@ function VistaCarga() {
             <td data-etiqueta="Lote">${fila.lote}</td>
             <td data-etiqueta="Resultado">${fila.resultado}</td>
             <td data-etiqueta="Revisión">${etiquetaRevision(fila.revision?.estado)}</td>
-            <td data-etiqueta="Estado">${fila.semaforo || "sin clasificar"}</td>
+            <td data-etiqueta="Estado">${fila.estado || fila.semaforo || "sin clasificar"}
+              <a class="boton boton-compacto" href=${fila.enlace}>Ver detalle del ID</a></td>
           </tr>`)}</tbody>
         </table>
       </div>
@@ -868,6 +897,13 @@ function VistaTabla() {
   const colores = (config && config.colores) || {};
   const refTabla = useRef(null);
 
+  useEffect(() => {
+    const id = setInterval(() => {
+      pedirJSON(rutaFilas).then(setFilas).catch(() => {});
+    }, 1200);
+    return () => clearInterval(id);
+  }, [rutaFilas]);
+
   const alPulsarTecla = useCallback((ev) => {
     if (ev.key !== "ArrowDown" && ev.key !== "ArrowUp" && ev.key !== "Enter") return;
     if (["SELECT", "BUTTON", "INPUT"].includes(ev.target.tagName)) return;
@@ -922,26 +958,41 @@ function VistaTabla() {
     </div>
 
     <div class="contenedor-tabla">
-      <table aria-label="Bandeja unificada de revisión">
+      <table class="tabla-pruebas" aria-label="Bandeja unificada de revisión">
         <thead><tr>
-          <th>Identificador</th><th>Grupo</th><th>Origen</th><th>Resultado</th>
-          <th>QR</th><th>Estado</th><th>Revisión</th><th>Acciones</th>
+          <th>Identificador</th><th>Proyecto</th><th>Fotos</th><th>Resultado</th>
+          <th>Progreso</th><th>Estado</th><th>Revisión</th><th>Acciones</th>
         </tr></thead>
         <tbody>
-          ${filas.items.map((f) => html`<tr key=${f.nombre} tabIndex=${0}
+          ${filas.items.map((f) => html`<tr key=${f.id} tabIndex=${0}
             aria-label=${`Abrir detalle de ${f.identificador || f.nombre}`}
             onClick=${() => { location.hash = f.enlace || `#/detalle/${encodeURIComponent(f.id)}`; }}>
             <td data-etiqueta="Identificador"><strong>${f.identificador || f.nombre}</strong></td>
-            <td data-etiqueta="Grupo">${celda(f.lote)}</td>
-            <td data-etiqueta="Origen">${f.origen === "externa" ? "Prueba compleja" : "Carpeta"}</td>
+            <td data-etiqueta="Proyecto">${f.origen === "externa" ? "Prueba compleja" : html`
+              <strong>${f.tipo_st || "—"} · ${f.temperature_condition || "—"}</strong><br />
+              <small>${f.module_version || "—"} · ${f.inflator_type || "—"}</small>`}</td>
+            <td class="celda-fotos" data-etiqueta="Fotos">${f.origen === "externa" ? "1" : html`
+              <div class="celda-fotos-contenido">
+                <strong>${f.total_imagenes || 0} total</strong>
+                <small class="desglose-fotos">
+                  <span>NACH ${f.imagenes_nach || 0}</span><span>VOR ${f.imagenes_vor || 0}</span>
+                  <span>TOR ${(f.carpetas_tor || []).length}</span>
+                </small>
+              </div>`}</td>
             <td data-etiqueta="Resultado">${f.resultado}
               ${(f.alertas || []).length > 0 && html`<span class="indicador-alerta"
                 title=${f.alertas.map((a) => a.mensaje).join("\n")}
                 aria-label=${`Advertencias: ${f.alertas.map((a) => a.mensaje).join("; ")}`}>
                 ⚠ ${f.alertas.length}</span>`}</td>
-            <td data-etiqueta="QR">${f.qr_detectado ? "Sí" : "No"}</td>
+            <td data-etiqueta="Progreso">${f.origen === "externa" ? "—" : html`
+              ${Number(f.progreso?.porcentaje || 0).toFixed(1)}%<br />
+              <small>${f.progreso?.con_texto || 0} con texto · ${f.progreso?.sin_texto || 0} descartadas<br />
+              ${f.campos_encontrados || 0} campos · ${f.campos_faltantes || 0} faltantes ·
+              ${f.conflictos || 0} conflictos</small>`}</td>
             <td data-etiqueta="Estado"><${ChipSemaforo} color=${f.semaforo} colores=${colores}>
-              ${f.semaforo || "sin clasificar"}</${ChipSemaforo}></td>
+              ${f.semaforo || "sin clasificar"}</${ChipSemaforo}>
+              ${f.origen !== "externa" && html`<br /><small>${f.estado_deteccion || "—"} ·
+                ${f.estado || "detectada"}</small>`}</td>
             <td data-etiqueta="Revisión"><span class=${`revision-chip revision-${f.revision.estado}`}>
               ${etiquetaRevision(f.revision.estado)}</span></td>
             <td data-etiqueta="Acciones"><div class="acciones-tabla">
@@ -1098,6 +1149,7 @@ function VistaDetalle({ nombre }) {
   const [detalle, setDetalle, errorDetalle] = useApi(`/api/pruebas/${encodeURIComponent(nombre)}`, [nombre]);
   const [config, , errorConfig] = useApi("/api/config");
   const [aprendizaje, setAprendizaje] = useApi("/api/aprendizaje", [nombre]);
+  const [reglas, setReglas] = useApi("/api/reglas", [nombre]);
   const [unidadId, setUnidadId] = useState("");
   const [textoCorrecto, setTextoCorrecto] = useState("");
   const [imagenId, setImagenId] = useState("");
@@ -1108,6 +1160,9 @@ function VistaDetalle({ nombre }) {
   const [textoRegion, setTextoRegion] = useState("");
   const [guardandoRegion, setGuardandoRegion] = useState(false);
   const [resultadoRegion, setResultadoRegion] = useState(null);
+  const [modoRecorte, setModoRecorte] = useState("auto");
+  const [campoManual, setCampoManual] = useState("");
+  const [valorManual, setValorManual] = useState("");
   useEffect(() => {
     const imagenes = detalle?.imagenes?.length ? detalle.imagenes
       : [detalle?.etiqueta, detalle?.referencia].filter(Boolean);
@@ -1124,6 +1179,9 @@ function VistaDetalle({ nombre }) {
     setTextoRegion("");
     setResultadoRegion(null);
     setModoEdicion(false);
+    const primeraClave = Object.keys(detalle?.campos || {})[0] || "";
+    setCampoManual(primeraClave);
+    setValorManual(detalle?.campos?.[primeraClave]?.valor || "");
   }, [detalle?.id]);
   const colores = (config && config.colores) || {};
   if (detalle === undefined || config === undefined) {
@@ -1141,6 +1199,9 @@ function VistaDetalle({ nombre }) {
   const unidadSeleccionada = unidadesCorregibles.find((unidad) => unidad.unidad_id === unidadId)
     || unidadesCorregibles[0];
   const revisionCompletada = detalle.revision?.estado === "completada";
+  const reglasRelacionadas = (reglas?.reglas || []).filter((regla) =>
+    Object.entries(regla.alcance || {}).every(([clave, valor]) =>
+      String(detalle[clave] || "") === String(valor)));
 
   function cambiarImagen(nuevoId) {
     setImagenId(nuevoId);
@@ -1239,6 +1300,53 @@ function VistaDetalle({ nombre }) {
       setResultadoCorreccion({ ok: false, mensaje: error.message });
     }
   }
+  async function reprocesar(soloErrores = false, soloImagenVisible = false) {
+    setResultadoCorreccion(null);
+    try {
+      let roiManual = null;
+      if (modoRecorte === "manual") {
+        const dimensiones = ocrSeleccionado.dimensiones || ocrSeleccionado.dimensiones_originales;
+        if (!region || !dimensiones?.[0] || !dimensiones?.[1]) {
+          throw new Error("Para el modo manual, selecciona primero una región sobre la imagen.");
+        }
+        roiManual = { x: region[0] / dimensiones[0], y: region[1] / dimensiones[1],
+          ancho: region[2] / dimensiones[0], alto: region[3] / dimensiones[1] };
+      }
+      const resultado = await enviarJSON(`/api/casos/${encodeURIComponent(detalle.id)}/reprocesar`, {
+        solo_errores: soloErrores,
+        imagenes: soloImagenVisible && imagenSeleccionada?.ruta ? [imagenSeleccionada.ruta] : [],
+        modo_recorte: modoRecorte,
+        roi_manual: roiManual,
+      });
+      setResultadoCorreccion({ ok: true, reproceso: true, resultado });
+      location.hash = "#/carga";
+    } catch (error) {
+      setResultadoCorreccion({ ok: false, mensaje: error.message });
+    }
+  }
+  async function cambiarRegla(regla, estado) {
+    try {
+      await enviarJSON(`/api/reglas/${encodeURIComponent(regla.id)}`, {
+        estado, usuario: "dashboard",
+      });
+      setReglas(await pedirJSON("/api/reglas"));
+    } catch (error) {
+      setResultadoCorreccion({ ok: false, mensaje: error.message });
+    }
+  }
+  async function guardarCampoManual(e) {
+    e.preventDefault();
+    if (!campoManual || !valorManual.trim()) return;
+    try {
+      const resultado = await enviarJSON(
+        `/api/casos/${encodeURIComponent(detalle.id)}/campos/${encodeURIComponent(campoManual)}`,
+        { valor: valorManual.trim(), usuario: "dashboard" });
+      setResultadoCorreccion({ ok: true, campoManual: true, resultado });
+      setDetalle(await pedirJSON(`/api/pruebas/${encodeURIComponent(nombre)}`));
+    } catch (error) {
+      setResultadoCorreccion({ ok: false, mensaje: error.message });
+    }
+  }
   const historialAprendizaje = imagenesDetalle.flatMap((imagen) => [
     ...(imagen.correcciones || []).map((item) => ({
       id: `c-${item.id}`, tipo: "Corrección OCR", imagen: imagen.nombre,
@@ -1278,6 +1386,79 @@ function VistaDetalle({ nombre }) {
           html`<dt>Observaciones</dt><dd>${detalle.observaciones.join("; ")}</dd>`}
       </dl>
     </div>
+
+    ${detalle.perfil === "empresarial" && html`<div class="tarjeta" style=${{ marginTop: 12 }}>
+      <div class="progreso-titulo"><h3>Resultado consolidado del ID</h3>
+        <span class=${`chip ${detalle.requiere_revision ? "" : "neutro"}`}>
+          ${detalle.estado || "detectada"}</span></div>
+      <dl class="ficha">
+        <dt>Proyecto</dt><dd>${detalle.tipo_st || "Sin determinar"}</dd>
+        <dt>Condición</dt><dd>${detalle.temperature_condition || "—"} ·
+          ${detalle.module_version || "—"} · ${detalle.inflator_type || "—"}</dd>
+        <dt>Fotografías</dt><dd>${detalle.total_imagenes || detalle.imagenes?.length || 0} ·
+          NACH ${detalle.imagenes_nach || 0} · VOR ${detalle.imagenes_vor || 0} ·
+          TOR ${(detalle.carpetas_tor || []).length}</dd>
+        <dt>Avance</dt><dd>${Number(detalle.progreso?.porcentaje || 0).toFixed(1)}% ·
+          ${detalle.progreso?.con_texto || 0} con texto · ${detalle.progreso?.sin_texto || 0} descartadas</dd>
+        <dt>Campos faltantes</dt><dd>${(detalle.campos_faltantes || []).join(", ") || "Ninguno"}</dd>
+        <dt>Conflictos</dt><dd>${(detalle.conflictos || []).join(", ") || "Ninguno"}</dd>
+      </dl>
+      <div class="acciones-revision">
+        <select class="campo" value=${modoRecorte} onChange=${(e) => setModoRecorte(e.target.value)}>
+          <option value="auto">Recorte automático</option>
+          <option value="manual">ROI manual seleccionada</option>
+          <option value="completo">Imagen completa</option>
+        </select>
+        <button class="boton" onClick=${() => reprocesar(false)}>Reprocesar este ID</button>
+        <button class="boton" onClick=${() => reprocesar(true)}>Reintentar imágenes con error</button>
+        <button class="boton" disabled=${!imagenSeleccionada}
+          onClick=${() => reprocesar(false, true)}>Reprocesar imagen visible</button>
+        <a class="boton" href="#/tabla">Ver carpeta en Lista</a>
+        ${detalle.archivo_excel && html`<a class="boton" href="/api/resultados/excel" target="_blank">
+          Abrir resultado Excel</a>`}
+      </div>
+      <form class="formulario-correccion" onSubmit=${guardarCampoManual}
+        style=${{ marginTop: 14 }}>
+        <label><strong>Corregir campo consolidado</strong>
+          <select class="campo" value=${campoManual} disabled=${revisionCompletada}
+            onChange=${(e) => {
+              setCampoManual(e.target.value);
+              setValorManual(detalle.campos?.[e.target.value]?.valor || "");
+            }}>
+            ${Object.keys(detalle.campos || {}).map((clave) => html`
+              <option key=${clave} value=${clave}>${clave}</option>`)}
+          </select>
+        </label>
+        <label><strong>Valor confirmado</strong>
+          <input class="campo" value=${valorManual} disabled=${revisionCompletada}
+            onInput=${(e) => setValorManual(e.target.value)} />
+        </label>
+        <button class="boton boton-primario" disabled=${revisionCompletada || !campoManual || !valorManual.trim()}>
+          Guardar valor y actualizar Excel
+        </button>
+      </form>
+      ${(detalle.historial_ejecuciones || []).length > 0 && html`
+        <details style=${{ marginTop: 14 }}><summary>Historial de ejecuciones
+          (${detalle.historial_ejecuciones.length})</summary>
+          ${(detalle.historial_ejecuciones || []).map((item, i) => html`
+            <p key=${i} class="subtitulo-seccion">${item.finalizado_en} · ${item.estado} ·
+              ${item.imagenes_revisadas} imágenes · ${item.modo_recorte}</p>`)}
+        </details>`}
+    </div>`}
+
+    ${detalle.perfil === "empresarial" && reglasRelacionadas.length > 0 && html`
+      <div class="tarjeta" style=${{ marginTop: 12 }}>
+        <h3>Reglas de conocimiento relacionadas</h3>
+        ${reglasRelacionadas.map((regla) => html`<div key=${regla.id} class="evidencia-aprendizaje">
+          <span class="chip neutro">${regla.estado}</span>
+          <strong class="mono">${regla.campo} → ${regla.valor}</strong>
+          <small>${regla.cantidad_ids} IDs · ${(Number(regla.confianza || 0) * 100).toFixed(1)}% de consenso</small>
+          ${regla.estado === "propuesta" && html`<div class="acciones-revision">
+            <button class="boton boton-primario" onClick=${() => cambiarRegla(regla, "confirmada")}>Confirmar regla</button>
+            <button class="boton boton-peligro" onClick=${() => cambiarRegla(regla, "rechazada")}>Rechazar regla</button>
+          </div>`}
+        </div>`)}
+      </div>`}
 
     ${comp.faltantes && comp.faltantes.length > 0 && html`
       <div class="aviso">Tokens de la etiqueta NO encontrados en la referencia:

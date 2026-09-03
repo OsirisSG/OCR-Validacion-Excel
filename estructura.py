@@ -44,6 +44,7 @@ from datetime import datetime
 from pathlib import Path
 
 from configuracion import RAIZ_PROYECTO, cargar_config
+from flujo_empresarial import descubrir_casos
 
 _RE_SOLO_DIGITOS = re.compile(r"^\d+$")
 _RE_MAYUS_DIGITOS = re.compile(r"^[A-Z0-9]+$")
@@ -79,7 +80,9 @@ def _categorizar(nombre_archivo: str, ext_imagen: set, ext_video: set) -> str:
     return "otros"
 
 
-def mapear_estructura(ruta_raiz: str | Path, config: dict | None = None) -> dict:
+def mapear_estructura(ruta_raiz: str | Path, config: dict | None = None,
+                      tipo_st: str | None = None,
+                      al_descubrir_caso=None) -> dict:
     """
     Recorre recursivamente `ruta_raiz` y retorna el mapa de estructura.
 
@@ -163,6 +166,8 @@ def mapear_estructura(ruta_raiz: str | Path, config: dict | None = None) -> dict
             otra.startswith(prefijo) for otra in con_archivos if otra != c["ruta"])
         c["es_hoja"] = (sum(c["conteos"].values()) > 0) and not tiene_descendiente_con_archivos
 
+    empresarial = descubrir_casos(
+        ruta_raiz, tipo_st_manual=tipo_st, al_descubrir=al_descubrir_caso)
     return {
         "raiz": str(ruta_raiz),
         "generado_en": datetime.now().isoformat(timespec="seconds"),
@@ -172,6 +177,16 @@ def mapear_estructura(ruta_raiz: str | Path, config: dict | None = None) -> dict
         "estadisticas_patrones": estadisticas,
         "carpetas": carpetas,
         "anomalias": anomalias,
+        "perfil": empresarial["perfil"],
+        "deteccion_st": empresarial["deteccion_st"],
+        "tipo_st": (empresarial["deteccion_st"]["tipos"][0]
+                    if len(empresarial["deteccion_st"]["tipos"]) == 1 else None),
+        "tipos_st": empresarial["deteccion_st"]["tipos"],
+        "requiere_seleccion_tipo_st": empresarial["deteccion_st"]["requiere_seleccion"],
+        "casos_empresariales": empresarial["casos"],
+        "casos_encontrados": empresarial["casos_encontrados"],
+        "casos_validos": empresarial["casos_validos"],
+        "casos_incompletos": empresarial["casos_incompletos"],
     }
 
 

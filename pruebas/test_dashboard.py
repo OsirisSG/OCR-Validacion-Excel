@@ -1,5 +1,7 @@
 """Pruebas de contrato del backend del dashboard (Fase 4)."""
 
+import json
+
 from urllib.parse import quote
 
 from fastapi.testclient import TestClient
@@ -35,7 +37,8 @@ def test_estado_config_y_frontend():
 
     ejecucion = cliente.get("/api/pipeline/estado")
     assert ejecucion.status_code == 200
-    assert ejecucion.json()["estado"] in {"inactivo", "procesando", "pausado", "completado", "error"}
+    assert ejecucion.json()["estado"] in {
+        "inactivo", "procesando", "pausado", "completado", "cancelada", "error"}
     assert {"porcentaje", "procesadas", "total", "restantes", "eta_segundos",
             "transcurrido_segundos", "resultados_parciales"} <= set(ejecucion.json())
 
@@ -52,6 +55,45 @@ def test_pipeline_rechaza_rutas_invalidas_o_demasiado_amplias():
 
     raiz_sistema = cliente.post("/api/pipeline", json={"ruta": "/"})
     assert raiz_sistema.status_code == 400
+
+
+def test_correccion_empresarial_se_refleja_y_deja_historial(monkeypatch, tmp_path):
+    ruta_json = tmp_path / "validacion.json"
+    fila = {
+        "case_key": "Proyecto|1ST|HT/232541 RDW NOM HT",
+        "nombre": "232541 RDW NOM HT", "identificador": "232541",
+        "ruta": str(tmp_path / "HT" / "232541 RDW NOM HT"),
+        "perfil": "empresarial", "tipo_st": "1ST",
+        "comparacion": {"resultado": "coincidencia_parcial", "faltantes": ["dashboard_supplier"]},
+        "campos": {"dashboard_supplier": {"valor": None, "estado": "faltante"}},
+        "consolidado": {"campos": {}, "campos_faltantes": ["dashboard_supplier"],
+                        "conflictos": [], "requiere_revision": True},
+        "campos_faltantes": ["dashboard_supplier"], "conflictos": [],
+        "requiere_revision": True, "alertas": [], "imagenes": [],
+        "historial_ejecuciones": [{"estado": "procesada_con_advertencias"}],
+    }
+    ruta_json.write_text(json.dumps({"raiz": str(tmp_path), "perfil": "empresarial",
+                                     "resultados": [fila]}), encoding="utf-8")
+    monkeypatch.setattr(backend, "RUTA_VALIDACION", ruta_json)
+    monkeypatch.setattr(backend, "CONFIG", {
+        "aprendizaje": {"directorio": str(tmp_path / "aprendizaje")},
+        "empresarial": {"base_conocimiento": str(tmp_path / "reglas.json")},
+    })
+    backend._cache.update({"mtime": None, "datos": None})
+    import generar_excel as modulo_excel
+    monkeypatch.setattr(modulo_excel, "generar_excel", lambda *args, **kwargs: tmp_path / "salida.xlsx")
+    item_id = backend._id_fila(fila)
+    respuesta = cliente.post(
+        f"/api/casos/{item_id}/campos/dashboard_supplier",
+        json={"valor": "FORVIA", "usuario": "prueba"})
+    assert respuesta.status_code == 200
+    guardado = json.loads(ruta_json.read_text(encoding="utf-8"))["resultados"][0]
+    assert guardado["campos"]["dashboard_supplier"]["valor"] == "FORVIA"
+    assert "dashboard_supplier" not in guardado["campos_faltantes"]
+    assert guardado["historial_acciones"][0]["usuario"] == "prueba"
+    historial = cliente.get(f"/api/casos/{item_id}/historial")
+    assert historial.status_code == 200
+    assert len(historial.json()["ejecuciones"]) == 1
 
 
 def test_resumen_cuadra_con_el_total():

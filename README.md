@@ -11,6 +11,10 @@ por separado y seleccionarse en `config.yaml` cuando la plataforma lo soporte.
 ## Funciones principales
 
 - Descubrimiento recursivo de carpetas sin asumir profundidad fija.
+- Flujo empresarial por ID para proyectos 1ST/2ST, con fallback legacy por caso.
+- Recorrido exclusivo de `PHOTOS/NACH`, `PHOTOS/VOR` y `TOR X` cuando la estructura es válida.
+- Pre-detección CRAFT en miniatura, descarte rápido sin texto y OCR sólo de recortes ampliados.
+- Consolidación de todas las fotos del mismo ID y trazabilidad de cada evidencia.
 - Detección de nombres conformes y carpetas anómalas.
 - OCR sobre imágenes completas con deskew, binarización y QR opcional.
 - Detección de regiones, cuatro orientaciones y realce de texto grabado.
@@ -188,6 +192,24 @@ Produce localmente:
 - `estructura_detectada.json`
 - `validacion_resultados.json`
 - `resultado_maestro.xlsx`
+
+Para una estructura empresarial, indica la plantilla con las 36 claves estables:
+
+```bash
+python pipeline.py "/ruta/Proyecto_1ST" \
+  --plantilla "/ruta/728c57b2-46cc-42f9-99fd-d23a6fcaab82.xlsx" \
+  --excel resultado_1st.xlsx
+```
+
+El tipo 1ST/2ST se detecta en la ruta, carpetas superiores e hijas inmediatas.
+Si no aparece, usa `--tipo-st 1ST`, `--tipo-st 2ST` o `--tipo-st LEGACY`.
+El Excel empresarial conserva las hojas de la plantilla, escribe una fila por ID
+en `Captura_pruebas` y añade `Trazabilidad_OCR`, una fila por fotografía.
+
+El caché reanudable queda en `.cache_ocr/imagenes.json`. Las reglas empresariales
+se guardan en `base_conocimiento.json`: nacen como propuestas después de tres IDs
+y 90 % de consenso, y sólo rellenan campos después de confirmarse. Las memorias
+OCR supervisadas existentes continúan en `.aprendizaje/aprendizaje.sqlite3`.
 
 Estos artefactos se regeneran y no se versionan porque contienen rutas absolutas
 del equipo que ejecutó el pipeline.

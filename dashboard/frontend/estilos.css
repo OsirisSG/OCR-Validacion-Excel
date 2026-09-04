@@ -201,6 +201,14 @@ td.numero { font-variant-numeric: tabular-nums; }
   background: var(--tarjeta); padding: 10px; text-align: center;
 }
 .imagen-marco img { max-width: 100%; height: auto; border-radius: 6px; }
+.imagen-marco-zoom { overflow: auto; max-height: 72vh; text-align: left; }
+.imagen-marco-zoom img { display: block; margin: 0 auto; transition: width .12s ease; }
+.controles-zoom, .control-zoom-ocr {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 9px;
+  color: var(--texto-2); font-size: 13px; margin: 8px 0;
+}
+.controles-zoom label, .control-zoom-ocr { min-width: min(100%, 280px); }
+.controles-zoom input, .control-zoom-ocr input { accent-color: var(--acento); }
 .tokens-lista { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .token-fila {
   display: flex; justify-content: space-between; align-items: center; gap: 10px;

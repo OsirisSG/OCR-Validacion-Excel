@@ -1,5 +1,6 @@
 import json
 import tempfile
+import threading
 import types
 from pathlib import Path
 
@@ -11,7 +12,8 @@ import validacion
 from estructura import guardar_estructura, mapear_estructura
 from flujo_empresarial import (BaseConocimiento, CacheOCR, case_key,
                                consolidar_caso, detectar_tipos_st,
-                               descubrir_casos, normalizar_numero_parte,
+                               descubrir_casos, evidencias_desde_qr,
+                               interpretar_payload_qr, normalizar_numero_parte,
                                normalizar_temperatura, parsear_nombre_caso)
 
 
@@ -73,9 +75,26 @@ def test_temperatura_y_numero_parte_son_conservadores():
     assert normalizar_temperatura("−35°C") == "NT"
     assert normalizar_temperatura("35", "NT") == "NT"
     assert normalizar_temperatura("23°C") == "RT"
+    assert normalizar_temperatura("Temperatura 85,0 °C") == "HT"
+    assert normalizar_temperatura("261,857") is None
+    assert normalizar_temperatura(None) is None
     assert normalizar_temperatura("folio 85") is None
     assert normalizar_numero_parte("2GJ 880 204 J") == "2GJ.880.204.J"
     assert normalizar_numero_parte("2GJ-880-204-J") == "2GJ.880.204.J"
+
+
+def test_qr_interpreta_formatos_seguros_y_solo_claves_conocidas():
+    json_qr = interpretar_payload_qr(
+        '{"module_part_number":"2GJ.880.204.J","comando":"borrar"}')
+    pares = interpretar_payload_qr("test=232561;temperature:HT;desconocida=NO")
+    url = interpretar_payload_qr("https://ejemplo.invalid/no-se-abre")
+    assert json_qr["campos"] == {"module_part_number": "2GJ.880.204.J"}
+    assert pares["campos"] == {"test_number": "232561", "temperature_condition": "HT"}
+    assert url["formato"] == "url_texto" and url["campos"] == {}
+    qrs = [{"payload": "module_sn=SN-77"}]
+    evidencias = evidencias_desde_qr(qrs, {"ruta": "foto.jpg", "fase": "NACH"})
+    assert evidencias[0]["fuente"] == "qr"
+    assert evidencias[0]["clave"] == "module_serial_number"
 
 
 def test_consolida_repeticiones_conflictos_faltantes_y_regla_confirmada(tmp_path):
@@ -118,6 +137,24 @@ def test_cache_invalida_si_cambia_archivo_o_config(tmp_path):
     assert CacheOCR(tmp_path / "cache.json", {"modo": "manual"}).obtener(imagen) is None
 
 
+def test_cache_sqlite_coordina_escrituras_y_recupera_json(tmp_path):
+    imagenes = []
+    for indice in range(8):
+        ruta = tmp_path / f"{indice}.jpg"
+        ruta.write_bytes(f"foto-{indice}".encode())
+        imagenes.append(ruta)
+    cache = CacheOCR(tmp_path / "cache.json", {"modo": "auto"})
+    hilos = [threading.Thread(target=cache.guardar, args=(ruta, {"texto": ruta.stem}))
+             for ruta in imagenes]
+    for hilo in hilos:
+        hilo.start()
+    for hilo in hilos:
+        hilo.join()
+    assert cache.ruta.suffix == ".sqlite3"
+    assert cache.recuperar_pendientes() == []
+    assert [cache.obtener(ruta)["texto"] for ruta in imagenes] == [str(i) for i in range(8)]
+
+
 def test_base_conocimiento_propone_y_solo_confirmada_se_lista(tmp_path):
     base = BaseConocimiento(tmp_path / "base.json", minimo_ids=3, consenso=.9)
     resultados = []
@@ -141,12 +178,14 @@ class _MotorFalso:
     def __init__(self, cajas):
         self.cajas = cajas
         self.reconocimientos = 0
+        self.formas = []
 
     def detectar(self, _imagen):
         return self.cajas
 
     def leer_texto_completo(self, _imagen):
         self.reconocimientos += 1
+        self.formas.append(_imagen.shape[:2])
         return [{"texto": "2GJ 880 204 J", "bbox": (1, 1, 40, 10), "confianza": .95}]
 
 
@@ -175,6 +214,20 @@ def test_imagen_con_caja_recorta_amplia_y_reconoce(monkeypatch, tmp_path):
     assert salida["numero_regiones"] == 1
     assert salida["zoom_aplicado"] > 1
     assert motor.reconocimientos == 1
+
+
+def test_zoom_forzado_cambia_dimensiones_que_recibe_easyocr(monkeypatch, tmp_path):
+    ruta = tmp_path / "zoom.png"
+    cv2.imwrite(str(ruta), np.zeros((120, 240, 3), dtype=np.uint8))
+    motor = _MotorFalso([{"bbox": (20, 30, 80, 20), "poligono": None}])
+    config = {"fase1": {"umbral_confianza_texto_completo": .25, "umbral_espacio_px": 40},
+              "ocr": {"modo_recorte": "auto", "margen_recorte": 0,
+                      "zoom_minimo": 1, "zoom_maximo": 3, "confianza_fallback": .2}}
+    monkeypatch.setattr(ocr_engine, "obtener_motor", lambda config=None: (motor, config["fase1"]))
+    salida = ocr_engine.extraer_texto_empresarial(str(ruta), config, zoom_forzado=2.5)
+    assert motor.formas[0] == (50, 200)
+    assert salida["recortes"][0]["dimensiones_antes"] == (80, 20)
+    assert salida["recortes"][0]["dimensiones_despues"] == (200, 50)
 
 
 def test_validacion_empresarial_procesa_todas_y_reanuda_desde_cache(monkeypatch, tmp_path):

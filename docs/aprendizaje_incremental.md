@@ -1,4 +1,4 @@
-# Aprendizaje incremental seguro
+# Aprendizaje incremental y visual seguro
 
 ## Qué aprende
 
@@ -58,9 +58,9 @@ normalizada alimenta el modelo incremental de códigos.
 
 Si el OCR no detectó ninguna unidad, el usuario puede dibujar una caja sobre la
 imagen y transcribir su contenido. `anotaciones_regiones` conserva carpeta,
-imagen, hash, coordenadas y texto real. Estas regiones forman un dataset para un
-futuro detector y se reutilizan en el Excel sin fingir que el modelo ya las
-generaliza a imágenes distintas.
+imagen, hash, coordenadas y texto real. La región se copia como PNG a
+`.aprendizaje/dataset_visual/recortes`; alimenta el reconocedor EasyOCR, no el
+detector CRAFT, y se reutiliza en el Excel sin fingir que ya generaliza.
 
 La lista de aprendizaje supervisado del detalle muestra ambas clases de verdad
 humana: correcciones de una lectura OCR y regiones de texto omitido. Las
@@ -83,6 +83,7 @@ python aprendizaje.py entrenar
 python aprendizaje.py rollback
 python aprendizaje.py rollback --version 20260830-120000-abcd1234-ef01
 python aprendizaje.py exportar dataset_confirmado.jsonl
+python entrenamiento_easyocr.py
 ```
 
 ## Privacidad y recuperación
@@ -92,7 +93,8 @@ python aprendizaje.py exportar dataset_confirmado.jsonl
   `correcciones`, `correcciones_texto`, `anotaciones_regiones` y
   `rotaciones_imagen` contienen el
   historial, las versiones y la evidencia confirmada.
-- No se copian fotografías; se conservan sus rutas, hashes y cajas.
+- No se modifican ni duplican fotografías completas. Sólo se guardan los
+  recortes confirmados que forman el dataset visual auditable.
 - Todo token corregido mantiene `texto_original`, evidencia y versión del
   modelo en el resultado OCR.
 - Una versión anterior puede reactivarse con rollback.
@@ -104,6 +106,7 @@ python aprendizaje.py exportar dataset_confirmado.jsonl
 El modelo no puede deducir por sí solo que una lectura es correcta. Entrenar con
 su propia predicción convertiría errores en etiquetas falsas. Cada ejecución
 aporta ejemplos para revisar; cada corrección confirmada aporta conocimiento.
-Las regiones manuales ya forman un dataset exportable, pero aún no reentrenan el
-detector visual de EasyOCR; por eso no se promete una reducción automática de la
-supervisión para tipos de imagen completamente nuevos.
+Las regiones y correcciones confirmadas forman además un dataset visual
+auditable. El entrenamiento EasyOCR se ejecuta por lotes y crea candidatos
+versionados; nunca se ejecuta automáticamente después de cada corrección. Las
+reglas de sustitución y conocimiento continúan como capas independientes.

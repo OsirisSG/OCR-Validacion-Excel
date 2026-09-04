@@ -11,7 +11,9 @@ import hashlib
 import json
 import os
 import re
-import tempfile
+import sqlite3
+import threading
+import time
 from collections import Counter, defaultdict
 from copy import deepcopy
 from datetime import datetime
@@ -66,6 +68,78 @@ CAMPOS_NUNCA_HEREDAR = {
     "dashboard_zsb_evaluation", "overall_system_evaluation", "reserved_ah",
     "housing_sidewall_stress_whitening", "housing_inner_stress_whitening",
 }
+
+ALIAS_QR_DEFAULT = {
+    "test": "test_number", "test_number": "test_number", "id": "test_number",
+    "date": "test_date", "test_date": "test_date", "fecha": "test_date",
+    "temperature": "temperature_condition", "temperatura": "temperature_condition",
+    "module_pn": "module_part_number", "module_part_number": "module_part_number",
+    "module_sn": "module_serial_number", "module_serial_number": "module_serial_number",
+    "dashboard_pn": "dashboard_part_number", "dashboard_part_number": "dashboard_part_number",
+    "dashboard_sn": "dashboard_serial_number", "dashboard_serial_number": "dashboard_serial_number",
+    "inflator": "inflator_type", "inflator_type": "inflator_type",
+}
+
+
+def interpretar_payload_qr(payload: str, aliases: dict | None = None) -> dict:
+    """Interpreta texto QR localmente sin abrir URLs ni ejecutar contenido.
+
+    Acepta JSON plano, ``clave=valor`` y ``clave:valor``. Sólo expone claves
+    conocidas de la plantilla (o aliases configurados explícitamente).
+    """
+    texto = str(payload or "").strip()
+    resultado = {"texto": texto, "formato": "texto", "campos": {}}
+    if not texto:
+        return resultado
+    mapa = {**ALIAS_QR_DEFAULT, **{str(k).lower(): str(v) for k, v in (aliases or {}).items()}}
+    pares: dict[str, object] = {}
+    try:
+        json_qr = json.loads(texto)
+        if isinstance(json_qr, dict):
+            pares = json_qr
+            resultado["formato"] = "json"
+    except (json.JSONDecodeError, TypeError):
+        pass
+    if not pares:
+        for fragmento in re.split(r"[;\n|]+", texto):
+            coincidencia = re.match(r"\s*([\w.-]+)\s*[:=]\s*(.*?)\s*$", fragmento)
+            if coincidencia:
+                pares[coincidencia.group(1)] = coincidencia.group(2)
+        if pares:
+            resultado["formato"] = "pares"
+    for clave_original, valor in pares.items():
+        limpia = str(clave_original).strip().lower().replace("-", "_").replace(" ", "_")
+        clave = mapa.get(limpia, limpia if limpia in CLAVES_PLANTILLA else None)
+        if clave in CLAVES_PLANTILLA and valor not in {None, ""}:
+            resultado["campos"][clave] = str(valor).strip()
+    if re.match(r"^https?://", texto, re.IGNORECASE):
+        resultado["formato"] = "url_texto"
+    return resultado
+
+
+def evidencias_desde_qr(qrs: Iterable[dict], imagen: dict,
+                        aliases: dict | None = None) -> list[dict]:
+    """Convierte únicamente campos QR explícitos y conocidos en evidencias."""
+    evidencias = []
+    for indice, qr in enumerate(qrs):
+        interpretado = interpretar_payload_qr(qr.get("payload", ""), aliases)
+        qr["interpretacion"] = interpretado
+        for clave, valor in interpretado["campos"].items():
+            normalizado = str(valor).strip()
+            if clave == "module_version":
+                normalizado = {"RWD": "RDW"}.get(normalizado.upper(), normalizado.upper())
+            elif clave in {"inflator_type", "temperature_condition"}:
+                normalizado = normalizado.upper()
+            evidencias.append({
+                "clave": clave, "valor_original": str(valor),
+                "valor_normalizado": normalizado, "fuente": "qr",
+                "imagen": imagen.get("ruta_relativa") or imagen.get("ruta"),
+                "fase": imagen.get("fase"), "tor": imagen.get("tor"),
+                "confianza_ocr": 1.0, "valido_catalogo": True,
+                "valido_regex": True, "regla_aplicada": "payload_qr_explicito",
+                "qr_indice": indice,
+            })
+    return evidencias
 
 
 def ahora() -> str:
@@ -256,7 +330,12 @@ def normalizar_temperatura(texto: str, contexto: str | None = None) -> str | Non
             return codigo
     contexto_temp = bool(re.search(r"TEMP(?:ERATUR|ERATURE|ERATURA)?", bruto))
     unidad = bool(re.search(r"°\s*C?|\bC\b", bruto))
-    numeros = [float(n) for n in re.findall(r"(?<!\d)([+-]?\d{2,3}(?:[.,]\d+)?)", bruto)]
+    numeros = []
+    for candidato in re.findall(r"(?<!\d)([+-]?\d{2,3}(?:[.,]\d+)?)(?!\d)", bruto):
+        try:
+            numeros.append(float(candidato.replace(",", ".")))
+        except (TypeError, ValueError):
+            continue
     if not numeros or not (contexto_temp or unidad or ctx in {"HT", "NT", "RT"}):
         return None
     objetivos = {"HT": 85.0, "RT": 23.0, "NT": -35.0}
@@ -354,10 +433,11 @@ def consolidar_caso(caso: dict, evidencias: Iterable[dict],
         for item in items:
             por_valor[str(item["valor_normalizado"])].append(item)
         ruta = [i for i in items if i.get("fuente") == "ruta_carpeta"]
-        ocr_valores = {v for v, xs in por_valor.items() if any(x.get("fuente") == "ocr" for x in xs)}
+        lectura_valores = {v for v, xs in por_valor.items()
+                           if any(x.get("fuente") in {"ocr", "qr", "manual"} for x in xs)}
         if ruta:
             seguro = str(ruta[0]["valor_normalizado"])
-            incompatibles = sorted(v for v in ocr_valores if v != seguro)
+            incompatibles = sorted(v for v in lectura_valores if v != seguro)
             if incompatibles:
                 conflictos.append(clave)
                 campos[clave] = {"valor": seguro, "valor_seguro_ruta": seguro,
@@ -372,10 +452,15 @@ def consolidar_caso(caso: dict, evidencias: Iterable[dict],
             valor, coincidencias = next(iter(por_valor.items()))
             imagenes = sorted({i.get("imagen") for i in coincidencias if i.get("imagen")})
             confianza_base = max(float(i.get("confianza_ocr") or 0) for i in coincidencias)
-            estado = "confirmado_multiples_imagenes" if len(imagenes) > 1 else "extraido_ocr"
+            fuentes = {i.get("fuente") for i in coincidencias}
+            estado = ("confirmado_multiples_imagenes" if len(imagenes) > 1 else
+                      "extraido_manual" if "manual" in fuentes else
+                      "extraido_qr" if "qr" in fuentes else "extraido_ocr")
             campos[clave] = {"valor": valor, "estado": estado,
                              "confianza": round(min(0.99, confianza_base + 0.03 * (len(imagenes) - 1)), 4),
-                             "inferido": False, "candidatos": coincidencias, "fuentes": imagenes}
+                             "inferido": False, "candidatos": coincidencias, "fuentes": imagenes,
+                             "fuente_preferida": ("manual" if "manual" in fuentes else
+                                                   "qr" if "qr" in fuentes else "ocr")}
         elif len(por_valor) > 1:
             conflictos.append(clave)
             campos[clave] = {"valor": None, "estado": "conflicto",
@@ -419,17 +504,83 @@ def consolidar_caso(caso: dict, evidencias: Iterable[dict],
             "requiere_revision": requiere_revision}
 
 
+_CACHE_LOCKS: dict[str, threading.RLock] = {}
+_CACHE_LOCKS_GUARD = threading.Lock()
+
+
 class CacheOCR:
-    """Caché JSON atómica por huella de archivo, parser y configuración OCR."""
+    """Caché SQLite transaccional con importación del JSON histórico.
+
+    WAL y ``busy_timeout`` coordinan procesos; un bloqueo compartido coordina
+    hilos del proceso actual. Si una escritura falla el OCR se conserva en
+    memoria como pendiente y puede recuperarse con ``recuperar_pendientes``.
+    """
 
     def __init__(self, ruta: str | Path, config_ocr: dict):
-        self.ruta = Path(ruta)
+        solicitada = Path(ruta)
+        self.ruta = (solicitada if solicitada.suffix.lower() in {".sqlite", ".sqlite3", ".db"}
+                     else solicitada.with_suffix(".sqlite3"))
+        self.ruta_json_legacy = (solicitada if solicitada.suffix.lower() == ".json"
+                                 else solicitada.with_suffix(".json"))
         serial = json.dumps(config_ocr, ensure_ascii=False, sort_keys=True, default=str)
         self.config_version = hashlib.sha256(serial.encode()).hexdigest()[:16]
+        self.pendientes: dict[str, tuple[dict, dict]] = {}
+        with _CACHE_LOCKS_GUARD:
+            self._lock = _CACHE_LOCKS.setdefault(str(self.ruta.resolve()), threading.RLock())
+        self._inicializar()
+        self._importar_json_legacy()
+
+    def _conectar(self) -> sqlite3.Connection:
+        self.ruta.parent.mkdir(parents=True, exist_ok=True)
+        con = sqlite3.connect(self.ruta, timeout=30)
+        con.row_factory = sqlite3.Row
+        con.execute("PRAGMA journal_mode=WAL")
+        con.execute("PRAGMA synchronous=FULL")
+        con.execute("PRAGMA busy_timeout=30000")
+        return con
+
+    def _inicializar(self) -> None:
+        with self._lock, self._conectar() as con:
+            con.executescript("""
+                CREATE TABLE IF NOT EXISTS cache_imagenes (
+                    clave TEXT PRIMARY KEY, ruta TEXT NOT NULL, tamano INTEGER NOT NULL,
+                    mtime_ns INTEGER NOT NULL, version_parser TEXT NOT NULL,
+                    config_version TEXT NOT NULL, actualizado_en TEXT NOT NULL,
+                    resultado_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS cache_meta (
+                    clave TEXT PRIMARY KEY, valor TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_cache_ruta ON cache_imagenes(ruta);
+            """)
+
+    def _importar_json_legacy(self) -> None:
+        if not self.ruta_json_legacy.is_file():
+            return
         try:
-            self.datos = json.loads(self.ruta.read_text(encoding="utf-8"))
-        except (FileNotFoundError, json.JSONDecodeError, OSError):
-            self.datos = {"version_parser": VERSION_PARSER, "imagenes": {}}
+            with self._lock, self._conectar() as con:
+                if con.execute(
+                        "SELECT 1 FROM cache_meta WHERE clave='json_legacy_importado'").fetchone():
+                    return
+                documento = json.loads(self.ruta_json_legacy.read_text(encoding="utf-8"))
+                for clave, item in documento.get("imagenes", {}).items():
+                    if not isinstance(item, dict) or "resultado" not in item:
+                        continue
+                    con.execute("""
+                        INSERT OR IGNORE INTO cache_imagenes
+                        (clave, ruta, tamano, mtime_ns, version_parser, config_version,
+                         actualizado_en, resultado_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (clave, str(item.get("ruta") or ""), int(item.get("tamano") or 0),
+                          int(item.get("mtime_ns") or 0),
+                          str(item.get("version_parser") or VERSION_PARSER),
+                          str(item.get("config_version") or "legacy"),
+                          str(item.get("actualizado_en") or ahora()),
+                          json.dumps(item["resultado"], ensure_ascii=False)))
+                con.execute("INSERT INTO cache_meta(clave, valor) VALUES (?, ?)",
+                            ("json_legacy_importado", ahora()))
+        except (OSError, ValueError, sqlite3.Error, json.JSONDecodeError):
+            # Un JSON histórico dañado no impide crear una caché nueva.
+            return
 
     def _clave(self, ruta: str | Path) -> tuple[str, dict]:
         archivo = Path(ruta)
@@ -442,22 +593,48 @@ class CacheOCR:
 
     def obtener(self, ruta: str | Path) -> dict | None:
         clave, _ = self._clave(ruta)
-        item = self.datos.get("imagenes", {}).get(clave)
-        return deepcopy(item.get("resultado")) if item else None
-
-    def guardar(self, ruta: str | Path, resultado: dict) -> None:
-        clave, firma = self._clave(ruta)
-        self.datos.setdefault("imagenes", {})[clave] = {
-            **firma, "actualizado_en": ahora(), "resultado": resultado}
-        self.ruta.parent.mkdir(parents=True, exist_ok=True)
-        fd, temporal = tempfile.mkstemp(prefix=self.ruta.name, suffix=".tmp", dir=self.ruta.parent)
+        if clave in self.pendientes:
+            return deepcopy(self.pendientes[clave][1])
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as archivo:
-                json.dump(self.datos, archivo, ensure_ascii=False, indent=2)
-            os.replace(temporal, self.ruta)
-        finally:
-            if os.path.exists(temporal):
-                os.unlink(temporal)
+            with self._lock, self._conectar() as con:
+                fila = con.execute(
+                    "SELECT resultado_json FROM cache_imagenes WHERE clave=?", (clave,)).fetchone()
+            return json.loads(fila["resultado_json"]) if fila else None
+        except (sqlite3.Error, json.JSONDecodeError, OSError):
+            return None
+
+    def guardar(self, ruta: str | Path, resultado: dict) -> dict:
+        clave, firma = self._clave(ruta)
+        self.pendientes[clave] = (firma, deepcopy(resultado))
+        return self._guardar_clave(clave)
+
+    def _guardar_clave(self, clave: str) -> dict:
+        firma, resultado = self.pendientes[clave]
+        ultimo_error = None
+        for intento in range(4):
+            try:
+                with self._lock, self._conectar() as con:
+                    con.execute("BEGIN IMMEDIATE")
+                    con.execute("""
+                        INSERT INTO cache_imagenes
+                        (clave, ruta, tamano, mtime_ns, version_parser, config_version,
+                         actualizado_en, resultado_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(clave) DO UPDATE SET
+                            actualizado_en=excluded.actualizado_en,
+                            resultado_json=excluded.resultado_json
+                    """, (clave, firma["ruta"], firma["tamano"], firma["mtime_ns"],
+                          firma["version_parser"], firma["config_version"], ahora(),
+                          json.dumps(resultado, ensure_ascii=False)))
+                self.pendientes.pop(clave, None)
+                return {"estado": "cache_guardada", "ruta": str(self.ruta)}
+            except (sqlite3.Error, OSError) as exc:
+                ultimo_error = exc
+                time.sleep(0.05 * (intento + 1))
+        return {"estado": "error_cache", "ruta": str(self.ruta),
+                "error": f"{type(ultimo_error).__name__}: {ultimo_error}"}
+
+    def recuperar_pendientes(self) -> list[dict]:
+        return [self._guardar_clave(clave) for clave in list(self.pendientes)]
 
 
 class BaseConocimiento:

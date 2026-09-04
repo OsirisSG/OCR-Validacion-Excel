@@ -11,8 +11,10 @@ artefactos y rutas de config.yaml. Retorna/imprime un resumen por fase (doc §11
 from __future__ import annotations
 
 import argparse
+import functools
 import inspect
 import json
+import os
 import time
 from copy import deepcopy
 from pathlib import Path
@@ -21,10 +23,43 @@ from typing import Callable
 from configuracion import RAIZ_PROYECTO, cargar_config
 from estructura import carpetas_hoja, guardar_estructura, mapear_estructura
 from generar_excel import generar_excel
+from inventario import cargar_inventario, crear_inventario, estructura_desde_inventario
 from recursos import detectar_recursos
 from validacion import validar_lote, validar_lote_empresarial
 
 
+def _bloqueo_pipeline(func):
+    """Impide que dos procesos escriban simultáneamente el mismo caché/salida."""
+    @functools.wraps(func)
+    def protegido(*args, **kwargs):
+        ruta_bloqueo = RAIZ_PROYECTO / ".cache_ocr" / "pipeline.lock"
+        ruta_bloqueo.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            descriptor = os.open(ruta_bloqueo, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError as exc:
+            try:
+                pid = int(ruta_bloqueo.read_text(encoding="ascii").strip())
+                os.kill(pid, 0)
+            except (OSError, ValueError):
+                ruta_bloqueo.unlink(missing_ok=True)
+                descriptor = os.open(ruta_bloqueo, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            else:
+                raise RuntimeError(
+                    "Ya existe otro pipeline activo sobre este proyecto. Espera a que termine.") from exc
+        try:
+            os.write(descriptor, str(os.getpid()).encode())
+            os.close(descriptor)
+            return func(*args, **kwargs)
+        finally:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+            ruta_bloqueo.unlink(missing_ok=True)
+    return protegido
+
+
+@_bloqueo_pipeline
 def ejecutar_pipeline(ruta_raiz: str | Path, config: dict | None = None,
                       al_progreso: Callable[[str, str, dict | None], None] | None = None,
                       nombre_excel: str | None = None,
@@ -36,7 +71,10 @@ def ejecutar_pipeline(ruta_raiz: str | Path, config: dict | None = None,
                       imagenes_filtradas: set[str] | None = None,
                       solo_errores: bool = False,
                       modo_recorte: str | None = None,
-                      roi_manual: dict[str, float] | None = None) -> dict:
+                      roi_manual: dict[str, float] | None = None,
+                      modo_ejecucion: str = "completo",
+                      ruta_inventario: str | Path | None = None,
+                      zoom_forzado: float | None = None) -> dict:
     """Corre las Fases 0-3 y retorna un dict con artefactos y resumen por fase."""
     config = config or cargar_config()
     recursos = detectar_recursos(config.get("fase1", {}).get("dispositivo", "auto"))
@@ -46,33 +84,64 @@ def ejecutar_pipeline(ruta_raiz: str | Path, config: dict | None = None,
         if al_progreso:
             al_progreso(fase, mensaje, detalle)
 
+    modo_ejecucion = str(modo_ejecucion or "completo").lower()
+    if modo_ejecucion not in {"completo", "inventario", "reanudar"}:
+        raise ValueError("Modo inválido: usa completo, inventario o reanudar.")
     t0 = time.time()
     if control:
         control()
-    progreso("fase0", "Analizando la estructura de carpetas", {
+    progreso("fase_a", "Analizando la estructura de carpetas", {
         "porcentaje": 2, "recursos": recursos})
     casos_detectados = []
 
     def caso_detectado(caso: dict) -> None:
         casos_detectados.append(caso)
-        progreso("fase0", f"Caso detectado: {caso.get('nombre')}", {
+        progreso("fase_a", f"Caso detectado: {caso.get('nombre')}", {
             "porcentaje": 4, "caso_detectado": caso,
             "casos_detectados": len(casos_detectados),
         })
 
-    parametros_mapeo = inspect.signature(mapear_estructura).parameters
-    extras_mapeo = {}
-    if "tipo_st" in parametros_mapeo:
-        extras_mapeo["tipo_st"] = tipo_st
-    if "al_descubrir_caso" in parametros_mapeo:
-        extras_mapeo["al_descubrir_caso"] = caso_detectado
-    estructura = mapear_estructura(ruta_raiz, config, **extras_mapeo)
+    inventario = None
+    if modo_ejecucion == "reanudar":
+        ruta_inventario = ruta_inventario or RAIZ_PROYECTO / "inventario_proyecto.json"
+        inventario = cargar_inventario(ruta_inventario, ruta_raiz)
+        estructura = estructura_desde_inventario(inventario)
+        progreso("fase_a", "Inventario existente recuperado", {
+            "porcentaje": 7, "casos_detectados": inventario["casos_encontrados"],
+            "imagenes_total": inventario["fotografias"],
+        })
+    else:
+        parametros_mapeo = inspect.signature(mapear_estructura).parameters
+        extras_mapeo = {}
+        if "tipo_st" in parametros_mapeo:
+            extras_mapeo["tipo_st"] = tipo_st
+        if "al_descubrir_caso" in parametros_mapeo:
+            extras_mapeo["al_descubrir_caso"] = caso_detectado
+        estructura = mapear_estructura(ruta_raiz, config, **extras_mapeo)
     ruta_estructura = guardar_estructura(estructura)
     if estructura.get("casos_empresariales") and estructura.get("requiere_seleccion_tipo_st"):
         raise ValueError(
             "No fue posible determinar si el proyecto corresponde a 1ST o 2ST. "
             "Selecciona 1ST, 2ST o usa el recorrido tradicional.")
     usar_empresarial = bool(estructura.get("casos_empresariales"))
+    if usar_empresarial and inventario is None:
+        ruta_inv = ruta_inventario or RAIZ_PROYECTO / "inventario_proyecto.json"
+        total_inv = max(len(estructura.get("casos_empresariales", [])), 1)
+        vistos_inv = 0
+
+        def caso_inventariado(caso: dict) -> None:
+            nonlocal vistos_inv
+            vistos_inv += 1
+            progreso("fase_a", f"Inventariando {caso.get('nombre')}", {
+                "porcentaje": round(4 + (vistos_inv / total_inv) * 3, 1),
+                "casos_detectados": vistos_inv,
+            })
+
+        inventario = crear_inventario(
+            estructura, ruta_inv,
+            calcular_hash=bool(config.get("empresarial", {}).get("inventario_hash", False)),
+            al_caso=caso_inventariado,
+        )
     if usar_empresarial and ruta_plantilla:
         from plantilla_empresarial import cargar_contrato
         contrato = cargar_contrato(Path(str(ruta_plantilla).strip().strip('"\'')))
@@ -95,6 +164,18 @@ def ejecutar_pipeline(ruta_raiz: str | Path, config: dict | None = None,
         "casos_validos": estructura.get("casos_validos", 0),
         "casos_incompletos": estructura.get("casos_incompletos", 0),
     }
+    resumen["fases"]["fase_a"] = {
+        "artifacto": inventario.get("archivo_salida") if inventario else str(ruta_estructura),
+        "casos": inventario.get("casos_encontrados", total_hojas) if inventario else total_hojas,
+        "fotografias": inventario.get("fotografias") if inventario else None,
+        "modo": modo_ejecucion,
+    }
+    if modo_ejecucion == "inventario":
+        resumen["duracion_segundos"] = round(time.time() - t0, 1)
+        progreso("completado", "Inventario terminado; OCR no ejecutado", {
+            "porcentaje": 100, "eta_segundos": 0, "restantes": 0,
+        })
+        return resumen
 
     progreso("fase2", "Ejecutando OCR y validación cruzada", {
         "porcentaje": 8, "procesadas": 0, "total": total_hojas,
@@ -144,6 +225,7 @@ def ejecutar_pipeline(ruta_raiz: str | Path, config: dict | None = None,
             "solo_errores": solo_errores,
             "modo_recorte": modo_recorte,
             "roi_manual": roi_manual,
+            "zoom_forzado": zoom_forzado,
         })
     validacion = (validar_lote_empresarial(ruta_estructura, config, **argumentos_validacion)
                   if usar_empresarial else
@@ -203,9 +285,16 @@ if __name__ == "__main__":
                         help="Fuerza el tipo de proyecto o el recorrido tradicional.")
     parser.add_argument("--plantilla", default=None,
                         help="Plantilla .xlsx empresarial con las 36 claves estables.")
+    parser.add_argument("--modo", choices=["completo", "inventario", "reanudar"],
+                        default="completo", help="Ejecuta ambas fases, solo inventario o lo reanuda.")
+    parser.add_argument("--inventario", default=None,
+                        help="Ruta del inventario persistente de Fase A.")
+    parser.add_argument("--zoom", type=float, default=None,
+                        help="Fuerza el zoom OCR dentro de los límites configurados.")
     args = parser.parse_args()
     resumen = ejecutar_pipeline(
         args.ruta_raiz.strip().strip('"\''), nombre_excel=args.excel,
         sobrescribir_excel=args.sobrescribir, tipo_st=args.tipo_st,
-        ruta_plantilla=args.plantilla)
+        ruta_plantilla=args.plantilla, modo_ejecucion=args.modo,
+        ruta_inventario=args.inventario, zoom_forzado=args.zoom)
     print(json.dumps(resumen, ensure_ascii=False, indent=2))

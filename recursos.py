@@ -25,6 +25,8 @@ def detectar_recursos(dispositivo_solicitado: str = "auto") -> dict:
         "cpu_hilos": max(1, int(os.cpu_count() or 1)),
         "plataforma": platform.system(),
         "motivo": "CPU disponible",
+        "memoria_acelerador_gb": None,
+        "batch_gpu_sugerido": 1,
         "warning": None,
     }
     try:
@@ -45,9 +47,13 @@ def detectar_recursos(dispositivo_solicitado: str = "auto") -> dict:
             if elegido == "cuda":
                 torch.cuda.synchronize()
                 info["nombre_acelerador"] = torch.cuda.get_device_name(0)
+                memoria = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+                info["memoria_acelerador_gb"] = round(memoria, 2)
+                info["batch_gpu_sugerido"] = 2 if memoria < 8 else 4 if memoria < 16 else 8
             else:
                 torch.mps.synchronize()
                 info["nombre_acelerador"] = "Apple Metal (MPS)"
+                info["batch_gpu_sugerido"] = 2
             info["seleccionado"] = elegido
             info["acelerador_disponible"] = True
             info["motivo"] = "OCR neuronal en GPU; preprocesamiento y QR en CPU"

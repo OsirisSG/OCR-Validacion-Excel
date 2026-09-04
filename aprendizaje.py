@@ -1,9 +1,10 @@
 """Aprendizaje incremental seguro para corregir resultados OCR.
 
 El sistema registra observaciones automáticamente, pero solo aprende de texto
-confirmado por una persona. Cada corrección genera un modelo candidato; este se
-promueve únicamente cuando mejora la exactitud sobre las correcciones conocidas
-sin introducir regresiones. SQLite mantiene historial, versiones y rollback.
+confirmado por una persona. Las correcciones pueden actualizar la capa ligera de
+reglas; el reconocedor visual EasyOCR se entrena aparte, por lotes auditables, y
+su candidato solo se activa cuando mejora validación y prueba sin regresiones.
+SQLite mantiene historial, versiones y rollback de ambas capas.
 """
 
 from __future__ import annotations
@@ -244,13 +245,158 @@ class GestorAprendizaje:
                 metricas_json TEXT NOT NULL, creado_en TEXT NOT NULL,
                 FOREIGN KEY(padre_id) REFERENCES modelos(id)
             );
+            CREATE TABLE IF NOT EXISTS muestras_visuales (
+                id TEXT PRIMARY KEY, caso_id TEXT NOT NULL, imagen_hash TEXT NOT NULL,
+                ruta_imagen TEXT NOT NULL, ruta_recorte TEXT,
+                bbox_json TEXT, texto_ocr TEXT, texto_correcto TEXT,
+                accion TEXT NOT NULL, entrenable INTEGER NOT NULL DEFAULT 0,
+                campo TEXT, fase TEXT, tor TEXT, confianza REAL,
+                modelo_origen TEXT, confirmada INTEGER NOT NULL DEFAULT 1,
+                metadatos_json TEXT, firma TEXT UNIQUE, creado_en TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS modelos_visuales (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, version TEXT UNIQUE NOT NULL,
+                estado TEXT NOT NULL, ruta_pesos TEXT NOT NULL,
+                metricas_json TEXT NOT NULL, configuracion_json TEXT NOT NULL,
+                creado_en TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS roi_preferidas (
+                alcance TEXT NOT NULL, clave TEXT NOT NULL, fase TEXT,
+                roi_json TEXT NOT NULL, zoom REAL, actualizado_en TEXT NOT NULL,
+                PRIMARY KEY(alcance, clave, fase)
+            );
             CREATE INDEX IF NOT EXISTS idx_observaciones_hash ON observaciones(imagen_hash);
             CREATE INDEX IF NOT EXISTS idx_anotaciones_hash ON anotaciones_regiones(imagen_hash);
             CREATE INDEX IF NOT EXISTS idx_anotaciones_carpeta ON anotaciones_regiones(carpeta_id);
             CREATE INDEX IF NOT EXISTS idx_revisiones_estado ON revisiones(estado, oculto);
             CREATE INDEX IF NOT EXISTS idx_modelos_estado ON modelos(estado);
+            CREATE INDEX IF NOT EXISTS idx_muestras_visuales_caso
+                ON muestras_visuales(caso_id, entrenable);
+            CREATE INDEX IF NOT EXISTS idx_modelos_visuales_estado
+                ON modelos_visuales(estado);
         """)
+        # Migración aditiva para instalaciones que ya abrieron la tabla v1.
+        columnas = {fila[1] for fila in con.execute("PRAGMA table_info(muestras_visuales)")}
+        for nombre, definicion in {
+            "campo": "TEXT", "fase": "TEXT", "tor": "TEXT", "confianza": "REAL",
+            "modelo_origen": "TEXT", "confirmada": "INTEGER NOT NULL DEFAULT 1",
+            "metadatos_json": "TEXT", "firma": "TEXT",
+        }.items():
+            if nombre not in columnas:
+                con.execute(f"ALTER TABLE muestras_visuales ADD COLUMN {nombre} {definicion}")
+        con.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_muestras_visuales_firma "
+                    "ON muestras_visuales(firma)")
         return con
+
+    def guardar_roi_preferida(self, alcance: str, clave: str, fase: str | None,
+                              roi: dict, zoom: float | None = None) -> dict:
+        if alcance not in {"proyecto", "fase", "etiqueta"}:
+            raise ValueError("El alcance ROI debe ser proyecto, fase o etiqueta.")
+        valores = {k: float(roi[k]) for k in ("x", "y", "ancho", "alto")}
+        if not (0 <= valores["x"] < 1 and 0 <= valores["y"] < 1 and
+                0 < valores["ancho"] <= 1 and 0 < valores["alto"] <= 1 and
+                valores["x"] + valores["ancho"] <= 1.0001 and
+                valores["y"] + valores["alto"] <= 1.0001):
+            raise ValueError("La ROI persistente debe estar expresada entre 0 y 1.")
+        fase_db = str(fase or "") if alcance != "proyecto" else ""
+        with self._conectar() as con:
+            con.execute("""INSERT INTO roi_preferidas
+                (alcance, clave, fase, roi_json, zoom, actualizado_en)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(alcance, clave, fase) DO UPDATE SET
+                roi_json=excluded.roi_json, zoom=excluded.zoom,
+                actualizado_en=excluded.actualizado_en""",
+                (alcance, str(clave), fase_db, json.dumps(valores), zoom, _ahora()))
+        return {"alcance": alcance, "clave": str(clave), "fase": fase_db,
+                "roi": valores, "zoom": zoom}
+
+    def roi_preferida(self, proyecto: str, fase: str, etiqueta: str) -> dict | None:
+        if not self.db.exists():
+            return None
+        consultas = [("etiqueta", etiqueta, fase), ("fase", proyecto, fase),
+                     ("proyecto", proyecto, "")]
+        with self._conectar() as con:
+            for alcance, clave, fase_db in consultas:
+                fila = con.execute("""SELECT * FROM roi_preferidas
+                    WHERE alcance=? AND clave=? AND fase=?""",
+                    (alcance, clave, fase_db)).fetchone()
+                if fila:
+                    return {"alcance": fila["alcance"], "roi": json.loads(fila["roi_json"]),
+                            "zoom": fila["zoom"], "actualizado_en": fila["actualizado_en"]}
+        return None
+
+    def registrar_muestra_visual(self, ruta_imagen: str | Path, caso_id: str,
+                                 texto_ocr: str, texto_correcto: str, bbox=None,
+                                 accion: str = "corregir",
+                                 entrenable: bool = True, campo: str | None = None,
+                                 fase: str | None = None, tor: str | None = None,
+                                 confianza: float | None = None,
+                                 modelo_origen: str | None = None,
+                                 metadatos: dict | None = None) -> dict:
+        """Guarda una evidencia y su recorte exacto para entrenamiento auditable."""
+        acciones = {"aceptar", "corregir", "ilegible", "no_es_campo",
+                    "guardar_sin_entrenar", "confirmar_entrenar"}
+        if accion not in acciones:
+            raise ValueError("Acción de supervisión no reconocida.")
+        ruta = Path(ruta_imagen)
+        if not ruta.is_file():
+            raise ValueError("La imagen de entrenamiento ya no está disponible.")
+        import cv2
+        import numpy as np
+        datos = np.fromfile(str(ruta), dtype=np.uint8)
+        imagen = cv2.imdecode(datos, cv2.IMREAD_COLOR)
+        if imagen is None:
+            raise ValueError("La imagen de entrenamiento está corrupta o no se puede decodificar.")
+        alto_imagen, ancho_imagen = imagen.shape[:2]
+        caja = None
+        recorte = imagen
+        if bbox is not None:
+            if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+                raise ValueError("La región de entrenamiento debe tener cuatro coordenadas.")
+            x, y, ancho, alto = (int(round(float(v))) for v in bbox)
+            x, y = max(0, x), max(0, y)
+            ancho, alto = min(ancho, ancho_imagen - x), min(alto, alto_imagen - y)
+            if ancho < 2 or alto < 2:
+                raise ValueError("El recorte de entrenamiento está fuera de la imagen.")
+            caja = [x, y, ancho, alto]
+            recorte = imagen[y:y + alto, x:x + ancho]
+        imagen_hash = hash_archivo(ruta)
+        firma = hashlib.sha256(json.dumps({
+            "imagen_hash": imagen_hash, "caso_id": str(caso_id), "bbox": caja,
+            "texto_ocr": str(texto_ocr), "texto_correcto": str(texto_correcto),
+            "accion": accion, "campo": campo,
+        }, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+        with self._conectar() as con:
+            existente = con.execute(
+                "SELECT * FROM muestras_visuales WHERE firma=?", (firma,)).fetchone()
+        if existente:
+            return {"id": existente["id"], "ruta_recorte": existente["ruta_recorte"],
+                    "bbox": caja, "accion": accion,
+                    "entrenable": bool(existente["entrenable"]), "duplicada": True}
+        muestra_id = uuid.uuid4().hex
+        carpeta = self.directorio / "dataset_visual" / "recortes"
+        carpeta.mkdir(parents=True, exist_ok=True)
+        ruta_recorte = carpeta / f"{muestra_id}.png"
+        ok, codificada = cv2.imencode(".png", recorte)
+        if not ok:
+            raise ValueError("No fue posible serializar el recorte de entrenamiento.")
+        codificada.tofile(str(ruta_recorte))
+        entrenable = bool(entrenable and accion not in {"ilegible", "no_es_campo",
+                                                         "guardar_sin_entrenar"}
+                         and str(texto_correcto).strip())
+        with self._conectar() as con:
+            con.execute("""
+                INSERT INTO muestras_visuales
+                (id, caso_id, imagen_hash, ruta_imagen, ruta_recorte, bbox_json,
+                 texto_ocr, texto_correcto, accion, entrenable, campo, fase, tor,
+                 confianza, modelo_origen, confirmada, metadatos_json, firma, creado_en)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (muestra_id, str(caso_id), imagen_hash, str(ruta), str(ruta_recorte),
+                  json.dumps(caja), str(texto_ocr), str(texto_correcto), accion,
+                  int(entrenable), campo, fase, tor, confianza, modelo_origen, 1,
+                  json.dumps(metadatos or {}, ensure_ascii=False), firma, _ahora()))
+        return {"id": muestra_id, "ruta_recorte": str(ruta_recorte),
+                "bbox": caja, "accion": accion, "entrenable": entrenable}
 
     def rotacion_preferida(self, ruta_imagen: str | Path | None) -> int:
         """Rotación humana, en sentido horario, para la próxima lectura OCR."""
@@ -264,6 +410,56 @@ class GestorAprendizaje:
             fila = con.execute(
                 "SELECT grados FROM rotaciones_imagen WHERE imagen_hash=?", (imagen_hash,)).fetchone()
         return int(fila["grados"]) % 360 if fila else 0
+
+    def modelo_visual_activo(self) -> dict | None:
+        if not self.db.exists():
+            return None
+        with self._conectar() as con:
+            fila = con.execute(
+                "SELECT * FROM modelos_visuales WHERE estado='activo' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        return dict(fila) if fila else None
+
+    def activar_modelo_visual(self, version: str) -> dict:
+        """Activa sólo un candidato cuya evaluación ya demostró mejora."""
+        with self._conectar() as con:
+            fila = con.execute(
+                "SELECT * FROM modelos_visuales WHERE version=?", (version,)).fetchone()
+            if not fila:
+                raise ValueError("No existe la versión visual solicitada.")
+            metricas = json.loads(fila["metricas_json"])
+            base, candidata = metricas.get("base", {}), metricas.get("candidata", {})
+            base_prueba, prueba = metricas.get("base_prueba", {}), metricas.get("prueba", {})
+            segura = (candidata.get("exactitud", 0) >= base.get("exactitud", 0) and
+                      candidata.get("cer", 1) <= base.get("cer", 1) and
+                      prueba.get("exactitud", 0) >= base_prueba.get("exactitud", 0) and
+                      prueba.get("cer", 1) <= base_prueba.get("cer", 1) and
+                      (candidata.get("exactitud", 0) > base.get("exactitud", 0) or
+                       candidata.get("cer", 1) < base.get("cer", 1)))
+            if not segura:
+                raise ValueError("El candidato no puede activarse porque no mejoró la evaluación.")
+            con.execute("UPDATE modelos_visuales SET estado='historico' WHERE estado='activo'")
+            con.execute("UPDATE modelos_visuales SET estado='activo' WHERE id=?", (fila["id"],))
+        return {"activo": version, "metricas": metricas}
+
+    def rollback_modelo_visual(self, version: str | None = None) -> dict:
+        with self._conectar() as con:
+            activo = con.execute(
+                "SELECT * FROM modelos_visuales WHERE estado='activo' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            if version:
+                destino = con.execute(
+                    "SELECT * FROM modelos_visuales WHERE version=?", (version,)).fetchone()
+            else:
+                destino = con.execute(
+                    "SELECT * FROM modelos_visuales WHERE estado='historico' ORDER BY id DESC LIMIT 1"
+                ).fetchone()
+            if not destino or not Path(destino["ruta_pesos"]).is_file():
+                raise ValueError("No existe una versión visual histórica utilizable.")
+            con.execute("UPDATE modelos_visuales SET estado='historico' WHERE estado='activo'")
+            con.execute("UPDATE modelos_visuales SET estado='activo' WHERE id=?", (destino["id"],))
+        return {"anterior": activo["version"] if activo else None,
+                "activo": destino["version"]}
 
     def actualizar_rotacion(self, ruta_imagen: str | Path, grados: int,
                             fuente: str = "dashboard") -> dict:
@@ -371,7 +567,13 @@ class GestorAprendizaje:
 
     def registrar_correccion(self, texto_ocr: str, texto_correcto: str,
                              ruta_imagen: str | None = None, imagen_hash: str | None = None,
-                             bbox=None, fuente: str = "humana") -> dict:
+                             bbox=None, fuente: str = "humana", caso_id: str | None = None,
+                             accion: str = "confirmar_entrenar",
+                             entrenar_visual: bool = True, campo: str | None = None,
+                             fase: str | None = None, tor: str | None = None,
+                             confianza: float | None = None,
+                             modelo_origen: str | None = None,
+                             metadatos: dict | None = None) -> dict:
         crudo_original = str(texto_ocr).strip()
         correcto_original = str(texto_correcto).strip()
         crudo, correcto = normalizar_codigo(crudo_original), normalizar_codigo(correcto_original)
@@ -411,6 +613,17 @@ class GestorAprendizaje:
             else:
                 duplicada_modelo = True
         entrenamiento = self.entrenar_y_promover() if not duplicada_modelo else None
+        muestra_visual = None
+        advertencia_visual = None
+        if ruta_imagen and caso_id:
+            try:
+                muestra_visual = self.registrar_muestra_visual(
+                    ruta_imagen, caso_id, crudo_original, correcto_original, bbox,
+                    accion=accion, entrenable=entrenar_visual, campo=campo, fase=fase,
+                    tor=tor, confianza=confianza, modelo_origen=modelo_origen,
+                    metadatos=metadatos)
+            except ValueError as exc:
+                advertencia_visual = str(exc)
         return {
             "registrada": not duplicada_texto,
             "duplicada": duplicada_texto,
@@ -418,6 +631,8 @@ class GestorAprendizaje:
             "texto_correcto": correcto_original,
             "tipo": "layout" if crudo == correcto else "modelo_codigo",
             "entrenamiento": entrenamiento,
+            "muestra_visual": muestra_visual,
+            "advertencia_visual": advertencia_visual,
         }
 
     def registrar_region(self, texto_correcto: str, bbox,
@@ -426,7 +641,9 @@ class GestorAprendizaje:
                          carpeta_id: str | None = None,
                          carpeta_nombre: str | None = None,
                          imagen_nombre: str | None = None,
-                         fuente: str = "dashboard_region") -> dict:
+                         fuente: str = "dashboard_region", fase: str | None = None,
+                         tor: str | None = None, modelo_origen: str | None = None,
+                         metadatos: dict | None = None) -> dict:
         """Guarda texto humano localizado aunque el OCR no haya producido token."""
         texto = str(texto_correcto).strip()
         if not texto:
@@ -463,6 +680,16 @@ class GestorAprendizaje:
                     WHERE imagen_hash=? AND bbox_json=? AND texto_correcto=?
                 """, (imagen_hash, json.dumps(bbox_limpio), texto)).fetchone()
                 anotacion_id = fila["id"] if fila else None
+        muestra_visual = None
+        advertencia_visual = None
+        if ruta_imagen and carpeta_id:
+            try:
+                muestra_visual = self.registrar_muestra_visual(
+                    ruta_imagen, carpeta_id, "", texto, bbox_limpio,
+                    accion="confirmar_entrenar", entrenable=True, fase=fase, tor=tor,
+                    modelo_origen=modelo_origen, metadatos=metadatos)
+            except ValueError as exc:
+                advertencia_visual = str(exc)
         return {
             "registrada": not duplicada, "duplicada": duplicada,
             "anotacion": {"id": anotacion_id, "carpeta_id": carpeta_id,
@@ -471,6 +698,8 @@ class GestorAprendizaje:
                            "bbox": bbox_limpio, "texto_correcto": texto,
                            "fuente": fuente},
             "tipo": "region_manual",
+            "muestra_visual": muestra_visual,
+            "advertencia_visual": advertencia_visual,
         }
 
     def listar_anotaciones(self, rutas_imagen: list[str | Path] | None = None,
@@ -506,6 +735,20 @@ class GestorAprendizaje:
             item["bbox"] = json.loads(item.pop("bbox_json"))
             salida.append(item)
         return salida
+
+    def listar_muestras_visuales(self, rutas_imagen: list[str | Path] | None = None) -> list[dict]:
+        if not self.db.exists():
+            return []
+        hashes = set()
+        for ruta in rutas_imagen or []:
+            try:
+                if Path(ruta).is_file():
+                    hashes.add(hash_archivo(ruta))
+            except OSError:
+                continue
+        with self._conectar() as con:
+            filas = con.execute("SELECT * FROM muestras_visuales ORDER BY creado_en").fetchall()
+        return [dict(f) for f in filas if not hashes or f["imagen_hash"] in hashes]
 
     def listar_correcciones_texto(self, rutas_imagen: list[str | Path]) -> list[dict]:
         """Correcciones humanas por hash; conserva duplicados espaciales por bbox."""
@@ -740,6 +983,9 @@ class GestorAprendizaje:
                     "rotaciones_confirmadas": 0,
                     "anotaciones_regiones": 0,
                     "modelos": 0, "modelo_activo": None,
+                    "muestras_visuales": 0, "muestras_entrenables": 0,
+                    "modelo_visual_activo": None,
+                    "modelos_visuales": 0, "ultimo_modelo_visual": None,
                     "almacenamiento": almacenamiento}
         with self._conectar() as con:
             conteos = {tabla: con.execute(f"SELECT COUNT(*) FROM {tabla}").fetchone()[0]
@@ -757,14 +1003,32 @@ class GestorAprendizaje:
             """).fetchone()[0]
             rotaciones_confirmadas = con.execute(
                 "SELECT COUNT(*) FROM rotaciones_imagen WHERE grados != 0").fetchone()[0]
+            muestras_visuales = con.execute(
+                "SELECT COUNT(*) FROM muestras_visuales").fetchone()[0]
+            muestras_entrenables = con.execute(
+                "SELECT COUNT(*) FROM muestras_visuales WHERE entrenable=1").fetchone()[0]
+            modelo_visual = con.execute(
+                "SELECT * FROM modelos_visuales WHERE estado='activo' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            ultimo_visual = con.execute(
+                "SELECT * FROM modelos_visuales ORDER BY id DESC LIMIT 1").fetchone()
+            total_visuales = con.execute("SELECT COUNT(*) FROM modelos_visuales").fetchone()[0]
             activo = self._modelo_activo(con)
             conteos["correcciones_modelo"] = conteos["correcciones"]
             conteos["correcciones"] = correcciones_texto
             conteos["anotaciones_regiones"] = anotaciones_regiones
             conteos["memorias_imagen"] = memorias_imagen
             conteos["rotaciones_confirmadas"] = rotaciones_confirmadas
+            conteos["muestras_visuales"] = muestras_visuales
+            conteos["muestras_entrenables"] = muestras_entrenables
+            conteos["modelos_visuales"] = total_visuales
             return {"activado": self.activado, **conteos,
                     "almacenamiento": almacenamiento,
+                    "modelo_visual_activo": (dict(modelo_visual) if modelo_visual else None),
+                    "ultimo_modelo_visual": ({"version": ultimo_visual["version"],
+                        "estado": ultimo_visual["estado"],
+                        "metricas": json.loads(ultimo_visual["metricas_json"]),
+                        "creado_en": ultimo_visual["creado_en"]} if ultimo_visual else None),
                     "modelo_activo": ({"version": activo["version"],
                                        "metricas": json.loads(activo["metricas_json"]),
                                        "creado_en": activo["creado_en"]} if activo else None)}

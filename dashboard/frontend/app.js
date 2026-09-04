@@ -295,6 +295,8 @@ function VistaCarga() {
   const [sobrescribirExcel, setSobrescribirExcel] = useState(false);
   const [tipoSt, setTipoSt] = useState("");
   const [rutaPlantilla, setRutaPlantilla] = useState("");
+  const [modoEjecucion, setModoEjecucion] = useState("completo");
+  const [rutaInventario, setRutaInventario] = useState("");
   const [estado, setEstado] = useState(undefined);
   const [errorEstado, setErrorEstado] = useState(null);
   const [enviando, setEnviando] = useState(false);
@@ -347,6 +349,8 @@ function VistaCarga() {
         ruta: ruta.trim(), nombre_excel: nombreExcel.trim() || null,
         sobrescribir_excel: sobrescribirExcel,
         tipo_st: tipoSt || null, ruta_plantilla: rutaPlantilla.trim() || null,
+        modo_ejecucion: modoEjecucion,
+        ruta_inventario: rutaInventario.trim() || null,
       });
       const nueva = {
         ruta: ruta.trim(), nombre_excel: nombreExcel.trim(),
@@ -474,6 +478,19 @@ function VistaCarga() {
         <option value="1ST">1ST</option><option value="2ST">2ST</option>
         <option value="LEGACY">Usar recorrido tradicional</option>
       </select>
+      <label for="modo-ejecucion"><strong>Modo de ejecución</strong></label>
+      <p class="subtitulo-seccion">Puedes inventariar primero sin OCR y reanudar después desde ese archivo.</p>
+      <select id="modo-ejecucion" class="campo" value=${modoEjecucion}
+        onChange=${(e) => setModoEjecucion(e.target.value)} disabled=${activo || enviando}>
+        <option value="completo">Completo: inventario + OCR + Excel</option>
+        <option value="inventario">Solo inventario (sin OCR)</option>
+        <option value="reanudar">Reanudar desde inventario</option>
+      </select>
+      <label for="ruta-inventario"><strong>Archivo de inventario</strong></label>
+      <p class="subtitulo-seccion">Opcional. Por defecto se usa <span class="mono">inventario_proyecto.json</span>.</p>
+      <input id="ruta-inventario" class="campo" type="text" maxLength=${4096}
+        placeholder="C:\\proyecto\\inventario_proyecto.json" value=${rutaInventario}
+        onInput=${(e) => setRutaInventario(e.target.value)} disabled=${activo || enviando} />
       <label for="ruta-plantilla"><strong>Plantilla Excel empresarial</strong></label>
       <p class="subtitulo-seccion">Ruta opcional al archivo .xlsx con las 36 claves estables; acepta comillas.</p>
       <input id="ruta-plantilla" class="campo" type="text" maxLength=${4096}
@@ -577,6 +594,7 @@ function TarjetaExterna({ prueba, alActualizarRevision }) {
   const [guardando, setGuardando] = useState(false);
   const [respuesta, setRespuesta] = useState(null);
   const [modoEdicion, setModoEdicion] = useState(false);
+  const [accionSupervision, setAccionSupervision] = useState("confirmar_entrenar");
   const [region, setRegion] = useState(null);
   const [textoRegion, setTextoRegion] = useState("");
   const [resultadoRegion, setResultadoRegion] = useState(null);
@@ -615,6 +633,7 @@ function TarjetaExterna({ prueba, alActualizarRevision }) {
       const resultado = await enviarJSON("/api/externas/correcciones", {
         prueba_id: prueba.id, texto_ocr: textoUnidad(seleccionada),
         texto_correcto: textoCorrecto, bbox: seleccionada?.bbox || null,
+        accion: accionSupervision,
       });
       setRespuesta({ ok: true, resultado });
       await alActualizarRevision();
@@ -740,8 +759,19 @@ function TarjetaExterna({ prueba, alActualizarRevision }) {
           <textarea class="campo mono campo-texto" value=${textoCorrecto} required maxLength=${4096}
             rows=${3} onInput=${(e) => setTextoCorrecto(e.target.value)}></textarea>
         </label>
+        <label>Acción
+          <select class="campo" value=${accionSupervision}
+            onChange=${(e) => setAccionSupervision(e.target.value)}>
+            <option value="confirmar_entrenar">Confirmar y usar para entrenar</option>
+            <option value="corregir">Corregir sin lote visual</option>
+            <option value="aceptar">Aceptar lectura OCR</option>
+            <option value="ilegible">Marcar ilegible</option>
+            <option value="no_es_campo">No corresponde a un campo</option>
+            <option value="guardar_sin_entrenar">Guardar sin entrenar</option>
+          </select>
+        </label>
         <button class="boton boton-primario" disabled=${guardando || !textoCorrecto.trim()}>
-          ${guardando ? "Entrenando…" : "Confirmar y entrenar"}
+          ${guardando ? "Guardando…" : "Aplicar supervisión"}
         </button>
       </form>` : html`<p class="subtitulo-seccion">No hay una lectura OCR previa; puedes añadirla como texto omitido.</p>`}
 
@@ -1093,6 +1123,7 @@ function SelectorRegion({ item, valor, onChange, onSelectText }) {
 }
 
 function PanelImagen({ titulo, item, vacio, onSelectText, edicionActiva, rotacionActiva, onRotate }) {
+  const [zoomVista, setZoomVista] = useState(100);
   const ocr = item?.resultado_ocr || {};
   const base = Number(ocr.orientacion_texto_base_grados ?? ocr.orientacion_base_grados) || 0;
   const ajuste = Number(ocr.deskew_texto_aplicado_grados ?? ocr.deskew_aplicado_grados) || 0;
@@ -1101,8 +1132,17 @@ function PanelImagen({ titulo, item, vacio, onSelectText, edicionActiva, rotacio
   return html`<div class="tarjeta">
     <h3 class="titulo-seccion" style=${{ marginTop: 0 }}>${titulo}</h3>
     ${item
-      ? html`<div class="imagen-marco">
-          <img src=${item.ruta_api_visual || item.ruta_api} alt=${`Imagen: ${item.ruta}`} loading="lazy" />
+      ? html`<div class="controles-zoom">
+          <label>Zoom de vista
+            <input type="range" min="50" max="300" step="10" value=${zoomVista}
+              onInput=${(e) => setZoomVista(Number(e.target.value))} />
+          </label>
+          <strong>${zoomVista}%</strong>
+          <button type="button" class="boton boton-compacto" onClick=${() => setZoomVista(100)}>Restablecer</button>
+        </div>
+        <div class="imagen-marco imagen-marco-zoom">
+          <img style=${{ width: `${zoomVista}%`, maxWidth: "none" }}
+            src=${item.ruta_api_visual || item.ruta_api} alt=${`Imagen: ${item.ruta}`} loading="lazy" />
         </div>
         <div class="estado-rotacion">
           ${enderezada ? html`<span class="chip rotacion-auto">✓ Enderezada automáticamente:
@@ -1154,6 +1194,7 @@ function VistaDetalle({ nombre }) {
   const [textoCorrecto, setTextoCorrecto] = useState("");
   const [imagenId, setImagenId] = useState("");
   const [modoEdicion, setModoEdicion] = useState(false);
+  const [accionSupervision, setAccionSupervision] = useState("confirmar_entrenar");
   const [guardandoCorreccion, setGuardandoCorreccion] = useState(false);
   const [resultadoCorreccion, setResultadoCorreccion] = useState(null);
   const [region, setRegion] = useState(null);
@@ -1161,6 +1202,8 @@ function VistaDetalle({ nombre }) {
   const [guardandoRegion, setGuardandoRegion] = useState(false);
   const [resultadoRegion, setResultadoRegion] = useState(null);
   const [modoRecorte, setModoRecorte] = useState("auto");
+  const [zoomOcr, setZoomOcr] = useState(1.5);
+  const [alcanceRoi, setAlcanceRoi] = useState("etiqueta");
   const [campoManual, setCampoManual] = useState("");
   const [valorManual, setValorManual] = useState("");
   useEffect(() => {
@@ -1195,6 +1238,9 @@ function VistaDetalle({ nombre }) {
   const imagenSeleccionada = imagenesDetalle.find((imagen) => imagen.id === imagenId)
     || imagenesDetalle[0];
   const ocrSeleccionado = imagenSeleccionada?.resultado_ocr || {};
+  const qrsDetalle = imagenesDetalle.flatMap((imagen) =>
+    (imagen.resultado_ocr?.qrs || []).map((qr) => ({ ...qr, imagenNombre: imagen.nombre,
+      faseImagen: imagen.fase, torImagen: imagen.tor })));
   const unidadesCorregibles = unidadesOcr(ocrSeleccionado);
   const unidadSeleccionada = unidadesCorregibles.find((unidad) => unidad.unidad_id === unidadId)
     || unidadesCorregibles[0];
@@ -1235,6 +1281,7 @@ function VistaDetalle({ nombre }) {
         texto_ocr: textoUnidad(unidadSeleccionada),
         texto_correcto: textoCorrecto,
         bbox: unidadSeleccionada?.bbox || null,
+        accion: accionSupervision,
       });
       setResultadoCorreccion({ ok: true, resultado });
       const actualizado = await pedirJSON(`/api/pruebas/${encodeURIComponent(nombre)}`);
@@ -1317,6 +1364,8 @@ function VistaDetalle({ nombre }) {
         imagenes: soloImagenVisible && imagenSeleccionada?.ruta ? [imagenSeleccionada.ruta] : [],
         modo_recorte: modoRecorte,
         roi_manual: roiManual,
+        zoom_forzado: zoomOcr,
+        roi_alcance: alcanceRoi,
       });
       setResultadoCorreccion({ ok: true, reproceso: true, resultado });
       location.hash = "#/carga";
@@ -1346,6 +1395,32 @@ function VistaDetalle({ nombre }) {
     } catch (error) {
       setResultadoCorreccion({ ok: false, mensaje: error.message });
     }
+  }
+  async function entrenarVisual() {
+    try {
+      const resultado = await enviarJSON("/api/aprendizaje/entrenar-visual", {});
+      setResultadoCorreccion({ ok: true, entrenamientoVisual: true, resultado });
+      setAprendizaje(await pedirJSON("/api/aprendizaje"));
+    } catch (error) {
+      setResultadoCorreccion({ ok: false, mensaje: error.message });
+    }
+  }
+  async function activarUltimoVisual() {
+    const version = aprendizaje?.ultimo_modelo_visual?.version;
+    if (!version) return;
+    try {
+      const resultado = await enviarJSON(
+        `/api/aprendizaje/modelos-visuales/${encodeURIComponent(version)}/activar`, {});
+      setResultadoCorreccion({ ok: true, modeloVisual: true, resultado });
+      setAprendizaje(await pedirJSON("/api/aprendizaje"));
+    } catch (error) { setResultadoCorreccion({ ok: false, mensaje: error.message }); }
+  }
+  async function restaurarVisual() {
+    try {
+      const resultado = await enviarJSON("/api/aprendizaje/rollback-visual", { version: null });
+      setResultadoCorreccion({ ok: true, modeloVisual: true, resultado });
+      setAprendizaje(await pedirJSON("/api/aprendizaje"));
+    } catch (error) { setResultadoCorreccion({ ok: false, mensaje: error.message }); }
   }
   const historialAprendizaje = imagenesDetalle.flatMap((imagen) => [
     ...(imagen.correcciones || []).map((item) => ({
@@ -1409,6 +1484,20 @@ function VistaDetalle({ nombre }) {
           <option value="manual">ROI manual seleccionada</option>
           <option value="completo">Imagen completa</option>
         </select>
+        <label class="control-zoom-ocr">Zoom OCR: <strong>${Number(zoomOcr).toFixed(1)}×</strong>
+          <input type="range" min="1" max="3" step="0.1" value=${zoomOcr}
+            onInput=${(e) => setZoomOcr(Number(e.target.value))} />
+        </label>
+        ${modoRecorte === "manual" && html`<select class="campo" value=${alcanceRoi}
+          aria-label="Guardar ROI para" onChange=${(e) => setAlcanceRoi(e.target.value)}>
+          <option value="etiqueta">Guardar para esta etiqueta</option>
+          <option value="fase">Guardar para esta fase NACH/VOR</option>
+          <option value="proyecto">Guardar para todo el proyecto</option>
+        </select>`}
+        ${modoRecorte === "manual" && region && html`<span class="subtitulo-seccion">
+          Vista previa OCR: ${region[2]}×${region[3]} px →
+          ${Math.round(region[2] * zoomOcr)}×${Math.round(region[3] * zoomOcr)} px
+        </span>`}
         <button class="boton" onClick=${() => reprocesar(false)}>Reprocesar este ID</button>
         <button class="boton" onClick=${() => reprocesar(true)}>Reintentar imágenes con error</button>
         <button class="boton" disabled=${!imagenSeleccionada}
@@ -1460,7 +1549,18 @@ function VistaDetalle({ nombre }) {
         </div>`)}
       </div>`}
 
-    ${comp.faltantes && comp.faltantes.length > 0 && html`
+    ${qrsDetalle.length > 0 && html`<div class="tarjeta" style=${{ marginTop: 12 }}>
+      <h3>Información QR</h3>
+      ${qrsDetalle.map((qr, i) => html`<div key=${`${qr.imagenNombre}-${i}`} class="evidencia-aprendizaje">
+        <span class="chip neutro">${qr.formato || qr.interpretacion?.formato || "texto"}</span>
+        <strong class="mono">${qr.payload_original || qr.payload || "QR sin payload legible"}</strong>
+        <small>${qr.imagenNombre} · ${qr.fase || qr.faseImagen || "—"}${qr.tor || qr.torImagen
+          ? ` · ${qr.tor || qr.torImagen}` : ""} ·
+          ${Object.keys(qr.campos_extraidos || qr.interpretacion?.campos || {}).length} campos mapeados</small>
+      </div>`)}
+    </div>`}
+
+    ${detalle.perfil !== "empresarial" && comp.faltantes && comp.faltantes.length > 0 && html`
       <div class="aviso">Tokens de la etiqueta NO encontrados en la referencia:
         ${comp.faltantes.map((t) => html`<code key=${t} class="mono">${t}</code>`)} — revisar.</div>`}
 
@@ -1504,14 +1604,41 @@ function VistaDetalle({ nombre }) {
               rows=${Math.min(8, Math.max(2, textoCorrecto.split("\n").length + 1))}
               onChange=${(e) => setTextoCorrecto(e.target.value)} placeholder="Escribe el texto correcto" />
           </label>
+          <label>Acción
+            <select class="campo" value=${accionSupervision}
+              onChange=${(e) => setAccionSupervision(e.target.value)}>
+              <option value="confirmar_entrenar">Confirmar y usar para entrenar</option>
+              <option value="corregir">Corregir sin lote visual</option>
+              <option value="aceptar">Aceptar lectura OCR</option>
+              <option value="ilegible">Marcar ilegible</option>
+              <option value="no_es_campo">No corresponde a un campo</option>
+              <option value="guardar_sin_entrenar">Guardar sin entrenar</option>
+            </select>
+          </label>
           <button class="boton boton-primario" disabled=${guardandoCorreccion || !textoCorrecto.trim()}>
-            ${guardandoCorreccion ? "Evaluando…" : "Confirmar y entrenar"}
+            ${guardandoCorreccion ? "Guardando…" : "Aplicar supervisión"}
           </button>
         </form>`
         : html`<p class="subtitulo-seccion">No hay texto OCR que corregir en esta imagen.</p>`}
       ${aprendizaje && html`<p class="subtitulo-seccion estado-modelo">
         Memorias confirmadas: <strong>${aprendizaje.memorias_imagen ?? aprendizaje.correcciones}</strong> · Modelo global activo:
         <span class="mono">${aprendizaje.modelo_activo?.version || "aún sin evidencia suficiente"}</span>
+        <br />Recortes visuales entrenables: <strong>${aprendizaje.muestras_entrenables || 0}</strong> ·
+        EasyOCR visual: <span class="mono">${aprendizaje.modelo_visual_activo?.version || "modelo base"}</span> ·
+        Estado: ${aprendizaje.entrenamiento_visual?.estado || "inactivo"}
+        <button type="button" class="boton boton-compacto" onClick=${entrenarVisual}
+          disabled=${aprendizaje.entrenamiento_visual?.estado === "entrenando"}>
+          Entrenar lote visual</button>
+        ${aprendizaje.ultimo_modelo_visual?.estado === "candidato_aprobado" && html`
+          <button type="button" class="boton boton-compacto" onClick=${activarUltimoVisual}>
+            Activar ${aprendizaje.ultimo_modelo_visual.version}</button>`}
+        ${aprendizaje.modelo_visual_activo && html`
+          <button type="button" class="boton boton-compacto" onClick=${restaurarVisual}>
+            Restaurar modelo anterior</button>`}
+        ${aprendizaje.ultimo_modelo_visual?.metricas && html`<br />Última evaluación:
+          CER ${Number(aprendizaje.ultimo_modelo_visual.metricas.candidata?.cer || 0).toFixed(3)} ·
+          WER ${Number(aprendizaje.ultimo_modelo_visual.metricas.candidata?.wer || 0).toFixed(3)} ·
+          Exactitud ${(Number(aprendizaje.ultimo_modelo_visual.metricas.candidata?.exactitud || 0) * 100).toFixed(1)}%`}
       </p>`}
       ${resultadoCorreccion?.ok && html`<div class="aviso">
         ${resultadoCorreccion.rotacion

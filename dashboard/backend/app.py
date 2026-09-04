@@ -32,6 +32,7 @@ import sys
 import threading
 import time
 import traceback
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path, PureWindowsPath
 from urllib.parse import quote, unquote
@@ -78,6 +79,8 @@ class SolicitudPipeline(BaseModel):
     sobrescribir_excel: bool = False
     tipo_st: str | None = Field(default=None, pattern="^(1ST|2ST|LEGACY)$")
     ruta_plantilla: str | None = Field(default=None, max_length=4096)
+    modo_ejecucion: str = Field(default="completo", pattern="^(completo|inventario|reanudar)$")
+    ruta_inventario: str | None = Field(default=None, max_length=4096)
 
 
 class SolicitudRegla(BaseModel):
@@ -90,6 +93,8 @@ class SolicitudReproceso(BaseModel):
     imagenes: list[str] = Field(default_factory=list, max_length=1000)
     modo_recorte: str | None = Field(default=None, pattern="^(auto|manual|completo)$")
     roi_manual: dict[str, float] | None = None
+    zoom_forzado: float | None = Field(default=None, ge=1.0, le=4.0)
+    roi_alcance: str = Field(default="etiqueta", pattern="^(proyecto|fase|etiqueta)$")
 
 
 class SolicitudCampoManual(BaseModel):
@@ -102,8 +107,10 @@ class SolicitudCorreccion(BaseModel):
     campo: str = Field(default="etiqueta", pattern="^(etiqueta|referencia)$")
     imagen_id: str | None = Field(default=None, max_length=128)
     texto_ocr: str = Field(min_length=1, max_length=4096)
-    texto_correcto: str = Field(min_length=1, max_length=4096)
+    texto_correcto: str = Field(default="", max_length=4096)
     bbox: list[int] | None = Field(default=None, min_length=4, max_length=4)
+    accion: str = Field(default="confirmar_entrenar", pattern=(
+        "^(aceptar|corregir|ilegible|no_es_campo|guardar_sin_entrenar|confirmar_entrenar)$"))
 
 
 class SolicitudAnotacionRegion(BaseModel):
@@ -141,8 +148,10 @@ class SolicitudRotacion(BaseModel):
 class SolicitudCorreccionExterna(BaseModel):
     prueba_id: str = Field(min_length=1, max_length=128)
     texto_ocr: str = Field(min_length=1, max_length=4096)
-    texto_correcto: str = Field(min_length=1, max_length=4096)
+    texto_correcto: str = Field(default="", max_length=4096)
     bbox: list[int] | None = Field(default=None, min_length=4, max_length=4)
+    accion: str = Field(default="confirmar_entrenar", pattern=(
+        "^(aceptar|corregir|ilegible|no_es_campo|guardar_sin_entrenar|confirmar_entrenar)$"))
 
 
 class SolicitudRegionExterna(BaseModel):
@@ -156,6 +165,8 @@ _pipeline_continuar = threading.Event()
 _pipeline_continuar.set()
 _pipeline_cancelar = threading.Event()
 _externas_lock = threading.Lock()
+_entrenamiento_lock = threading.Lock()
+_entrenamiento_estado = {"estado": "inactivo", "resultado": None, "error": None}
 _pipeline_estado: dict = {
     "estado": "inactivo", "fase": None, "mensaje": None, "ruta": None,
     "iniciado_en": None, "finalizado_en": None, "error": None, "resumen": None,
@@ -497,7 +508,10 @@ def _ejecutar_pipeline_fondo(ruta: Path, nombre_excel: str | None = None,
                              imagenes_filtradas: set[str] | None = None,
                              solo_errores: bool = False,
                              modo_recorte: str | None = None,
-                             roi_manual: dict[str, float] | None = None) -> None:
+                             roi_manual: dict[str, float] | None = None,
+                             modo_ejecucion: str = "completo",
+                             ruta_inventario: str | None = None,
+                             zoom_forzado: float | None = None) -> None:
     inicio = time.monotonic()
 
     def progreso(fase: str, mensaje: str, detalle: dict | None = None) -> None:
@@ -536,7 +550,9 @@ def _ejecutar_pipeline_fondo(ruta: Path, nombre_excel: str | None = None,
             control=_esperar_continuacion, tipo_st=tipo_st,
             ruta_plantilla=ruta_plantilla, casos_filtrados=casos_filtrados,
             imagenes_filtradas=imagenes_filtradas, solo_errores=solo_errores,
-            modo_recorte=modo_recorte, roi_manual=roi_manual)
+            modo_recorte=modo_recorte, roi_manual=roi_manual,
+            modo_ejecucion=modo_ejecucion, ruta_inventario=ruta_inventario,
+            zoom_forzado=zoom_forzado)
         _cache.update({"mtime": None, "datos": None})
         _actualizar_pipeline(
             estado="completado", fase="completado", mensaje="Procesamiento terminado",
@@ -702,7 +718,65 @@ def estado_pipeline():
 
 @app.get("/api/aprendizaje")
 def estado_aprendizaje():
-    return GestorAprendizaje(CONFIG).estado()
+    return {**GestorAprendizaje(CONFIG).estado(),
+            "entrenamiento_visual": dict(_entrenamiento_estado)}
+
+
+@app.post("/api/aprendizaje/entrenar-visual", status_code=202)
+def iniciar_entrenamiento_visual():
+    if not _entrenamiento_lock.acquire(blocking=False):
+        raise HTTPException(409, "Ya existe un entrenamiento visual activo.")
+    _entrenamiento_estado.update({"estado": "entrenando", "resultado": None, "error": None,
+                                  "iniciado_en": datetime.now().isoformat(timespec="seconds")})
+
+    def trabajo():
+        try:
+            from entrenamiento_easyocr import entrenar_lote
+            try:
+                resultado = entrenar_lote(CONFIG)
+            except RuntimeError as exc:
+                if "out of memory" not in str(exc).lower():
+                    raise
+                config_cpu = deepcopy(CONFIG)
+                config_cpu.setdefault("fase1", {})["dispositivo"] = "cpu"
+                resultado = entrenar_lote(config_cpu)
+                resultado["advertencia"] = (
+                    "La GPU se quedó sin memoria; el lote se reintentó automáticamente en CPU.")
+            _entrenamiento_estado.update({"estado": resultado.get("estado", "terminado"),
+                                          "resultado": resultado, "error": None})
+            from ocr_engine import _MOTORES
+            _MOTORES.clear()
+        except Exception as exc:
+            _entrenamiento_estado.update({"estado": "error", "resultado": None,
+                                          "error": f"{type(exc).__name__}: {exc}"})
+        finally:
+            _entrenamiento_estado["finalizado_en"] = datetime.now().isoformat(timespec="seconds")
+            _entrenamiento_lock.release()
+
+    threading.Thread(target=trabajo, daemon=True).start()
+    return {"aceptado": True, "estado": "entrenando"}
+
+
+@app.post("/api/aprendizaje/modelos-visuales/{version}/activar")
+def activar_modelo_visual(version: str):
+    try:
+        resultado = GestorAprendizaje(CONFIG).activar_modelo_visual(version)
+        from ocr_engine import _MOTORES
+        _MOTORES.clear()
+        return resultado
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@app.post("/api/aprendizaje/rollback-visual")
+def rollback_modelo_visual(solicitud: SolicitudRollback):
+    try:
+        resultado = GestorAprendizaje(CONFIG).rollback_modelo_visual(solicitud.version)
+        from ocr_engine import _MOTORES
+        _MOTORES.clear()
+        return resultado
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @app.post("/api/aprendizaje/correcciones")
@@ -738,9 +812,30 @@ def corregir_lectura(solicitud: SolicitudCorreccion):
         raise HTTPException(503, "La raíz de imágenes no está disponible en este equipo.")
     ruta_local = _resolver_imagen(str(item["ruta"]), datos, raiz)
     try:
-        resultado = gestor.registrar_correccion(
-            solicitud.texto_ocr, solicitud.texto_correcto,
-            ruta_imagen=str(ruta_local), bbox=token.get("bbox"), fuente="dashboard")
+        correcto = (solicitud.texto_ocr if solicitud.accion == "aceptar"
+                    else solicitud.texto_correcto)
+        if solicitud.accion in {"aceptar", "ilegible", "no_es_campo", "guardar_sin_entrenar"}:
+            muestra = gestor.registrar_muestra_visual(
+                ruta_local, solicitud.prueba_id, solicitud.texto_ocr, correcto,
+                token.get("bbox"), accion=solicitud.accion, entrenable=False,
+                campo=solicitud.campo, fase=item.get("fase"), tor=item.get("tor"),
+                confianza=token.get("confianza"), modelo_origen=ocr.get("modelo_visual_version")
+                or ocr.get("motor"), metadatos={k: fila.get(k) for k in
+                ("tipo_st", "module_version", "temperature_condition", "inflator_type")})
+            resultado = {"registrada": True, "tipo": "supervision_visual",
+                         "muestra_visual": muestra, "entrenamiento": None}
+        else:
+            if not correcto.strip():
+                raise ValueError("Escribe el texto correcto antes de confirmar.")
+            resultado = gestor.registrar_correccion(
+                solicitud.texto_ocr, correcto, ruta_imagen=str(ruta_local),
+                bbox=token.get("bbox"), fuente="dashboard", caso_id=solicitud.prueba_id,
+                accion=solicitud.accion,
+                entrenar_visual=solicitud.accion == "confirmar_entrenar",
+                campo=solicitud.campo, fase=item.get("fase"), tor=item.get("tor"),
+                confianza=token.get("confianza"), modelo_origen=ocr.get("modelo_visual_version")
+                or ocr.get("motor"), metadatos={k: fila.get(k) for k in
+                ("tipo_st", "module_version", "temperature_condition", "inflator_type")})
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     gestor.actualizar_revision("carpeta", solicitud.prueba_id, estado="parcial")
@@ -788,7 +883,12 @@ def anotar_region_no_detectada(solicitud: SolicitudAnotacionRegion):
             solicitud.texto_correcto, solicitud.bbox,
             ruta_imagen=str(ruta_local), carpeta_id=_id_fila(fila),
             carpeta_nombre=fila.get("nombre"),
-            imagen_nombre=item.get("nombre") or ruta_local.name)
+            imagen_nombre=item.get("nombre") or ruta_local.name,
+            fase=item.get("fase"), tor=item.get("tor"),
+            modelo_origen=(item.get("resultado_ocr") or {}).get("modelo_visual_version")
+            or (item.get("resultado_ocr") or {}).get("motor"),
+            metadatos={k: fila.get(k) for k in
+                       ("tipo_st", "module_version", "temperature_condition", "inflator_type")})
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     gestor.actualizar_revision("carpeta", solicitud.prueba_id, estado="parcial")
@@ -1055,9 +1155,26 @@ def corregir_prueba_externa(solicitud: SolicitudCorreccionExterna):
         raise HTTPException(
             400, "La lectura OCR no coincide de forma única; vuelve a seleccionarla.")
     try:
-        resultado = gestor.registrar_correccion(
-            solicitud.texto_ocr, solicitud.texto_correcto,
-            ruta_imagen=fila["ruta"], bbox=token.get("bbox"), fuente="dashboard_externo")
+        correcto = (solicitud.texto_ocr if solicitud.accion == "aceptar"
+                    else solicitud.texto_correcto)
+        if solicitud.accion in {"aceptar", "ilegible", "no_es_campo", "guardar_sin_entrenar"}:
+            muestra = gestor.registrar_muestra_visual(
+                fila["ruta"], solicitud.prueba_id, solicitud.texto_ocr, correcto,
+                token.get("bbox"), accion=solicitud.accion, entrenable=False,
+                confianza=token.get("confianza"), modelo_origen=fila.get("modelo_visual_version")
+                or fila.get("motor"), metadatos={"origen": "externa"})
+            resultado = {"registrada": True, "tipo": "supervision_visual",
+                         "muestra_visual": muestra, "entrenamiento": None}
+        else:
+            if not correcto.strip():
+                raise ValueError("Escribe el texto correcto antes de confirmar.")
+            resultado = gestor.registrar_correccion(
+                solicitud.texto_ocr, correcto, ruta_imagen=fila["ruta"],
+                bbox=token.get("bbox"), fuente="dashboard_externo",
+                caso_id=solicitud.prueba_id, accion=solicitud.accion,
+                entrenar_visual=solicitud.accion == "confirmar_entrenar",
+                confianza=token.get("confianza"), modelo_origen=fila.get("modelo_visual_version")
+                or fila.get("motor"), metadatos={"origen": "externa"})
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     gestor.actualizar_revision("externa", solicitud.prueba_id, estado="parcial")
@@ -1103,7 +1220,9 @@ def anotar_region_externa(solicitud: SolicitudRegionExterna):
         resultado = gestor.registrar_region(
             solicitud.texto_correcto, solicitud.bbox, ruta_imagen=str(ruta),
             carpeta_id=solicitud.prueba_id, carpeta_nombre="Pruebas complejas",
-            imagen_nombre=fila.get("imagen"), fuente="dashboard_externo")
+            imagen_nombre=fila.get("imagen"), fuente="dashboard_externo",
+            modelo_origen=fila.get("modelo_visual_version") or fila.get("motor"),
+            metadatos={"origen": "externa"})
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     gestor.actualizar_revision("externa", solicitud.prueba_id, estado="parcial")
@@ -1141,6 +1260,14 @@ def iniciar_pipeline(solicitud: SolicitudPipeline):
         if not plantilla.is_file() or plantilla.suffix.lower() != ".xlsx":
             raise HTTPException(400, "La plantilla debe ser un archivo .xlsx accesible.")
         ruta_plantilla = str(plantilla)
+    ruta_inventario = (solicitud.ruta_inventario or "").strip().strip('"\'') or None
+    if ruta_inventario:
+        inventario = Path(ruta_inventario).expanduser()
+        inventario = ((RAIZ_PROYECTO / inventario).resolve() if not inventario.is_absolute()
+                      else inventario.resolve())
+        if solicitud.modo_ejecucion == "reanudar" and not inventario.is_file():
+            raise HTTPException(400, "El inventario indicado no existe.")
+        ruta_inventario = str(inventario)
 
     capacidad = _capacidad_pipeline()
     if not capacidad["listo"]:
@@ -1163,13 +1290,18 @@ def iniciar_pipeline(solicitud: SolicitudPipeline):
             "imagen_actual": None,
             "recursos": capacidad.get("recursos"), "nombre_excel": nombre_excel,
             "tipo_st": solicitud.tipo_st, "ruta_plantilla": ruta_plantilla,
+            "modo_ejecucion": solicitud.modo_ejecucion,
+            "ruta_inventario": ruta_inventario,
             "actualizado_en": datetime.now().isoformat(timespec="milliseconds"),
         })
 
-    hilo = threading.Thread(
-        target=_ejecutar_pipeline_fondo,
-        args=(ruta, nombre_excel, solicitud.sobrescribir_excel,
-              solicitud.tipo_st, ruta_plantilla), daemon=True)
+    hilo = threading.Thread(target=_ejecutar_pipeline_fondo, kwargs={
+        "ruta": ruta, "nombre_excel": nombre_excel,
+        "sobrescribir_excel": solicitud.sobrescribir_excel,
+        "tipo_st": solicitud.tipo_st, "ruta_plantilla": ruta_plantilla,
+        "modo_ejecucion": solicitud.modo_ejecucion,
+        "ruta_inventario": ruta_inventario,
+    }, daemon=True)
     hilo.start()
     return {"aceptado": True, "ruta": str(ruta), "estado": "procesando"}
 
@@ -1385,7 +1517,8 @@ def corregir_campo_caso(clave: str, campo: str, solicitud: SolicitudCampoManual)
     fila.setdefault("comparacion", {})["resultado"] = (
         "discrepancia" if fila["conflictos"] else
         "coincidencia_parcial" if fila["campos_faltantes"] else "coincidencia_total")
-    fila["comparacion"]["faltantes"] = fila["campos_faltantes"]
+    # En el perfil empresarial son claves de plantilla, no tokens OCR.
+    fila["comparacion"]["faltantes"] = []
     fila.setdefault("historial_acciones", []).append({
         "tipo": "correccion_campo", "campo": campo, "valor": valor,
         "usuario": solicitud.usuario, "fecha": ahora_iso,
@@ -1441,6 +1574,16 @@ def reprocesar_caso(clave: str, solicitud: SolicitudReproceso):
     rutas_validas = {i.get("ruta") for i in fila.get("imagenes", [])}
     if imagenes and not imagenes <= rutas_validas:
         raise HTTPException(400, "Se solicitó una imagen que no pertenece al caso.")
+    if solicitud.modo_recorte == "manual" and solicitud.roi_manual:
+        objetivo = next((i for i in fila.get("imagenes", [])
+                         if not imagenes or i.get("ruta") in imagenes), None)
+        if objetivo:
+            proyecto = str(datos.get("raiz") or "proyecto")
+            clave_roi = (Path(objetivo.get("ruta", "imagen")).name
+                         if solicitud.roi_alcance == "etiqueta" else proyecto)
+            GestorAprendizaje(CONFIG).guardar_roi_preferida(
+                solicitud.roi_alcance, clave_roi, objetivo.get("fase"),
+                solicitud.roi_manual, solicitud.zoom_forzado)
     with _pipeline_lock:
         if _pipeline_estado["estado"] in {"procesando", "pausado"}:
             raise HTTPException(409, "Ya hay un procesamiento activo.")
@@ -1454,11 +1597,14 @@ def reprocesar_caso(clave: str, solicitud: SolicitudReproceso):
         })
         plantilla = datos.get("ruta_plantilla") or _pipeline_estado.get("ruta_plantilla")
         nombre_excel = _pipeline_estado.get("nombre_excel")
-    hilo = threading.Thread(
-        target=_ejecutar_pipeline_fondo,
-        args=(Path(datos["raiz"]), nombre_excel, True, fila.get("tipo_st"), plantilla,
-              {fila["case_key"]}, imagenes or None, solicitud.solo_errores,
-              solicitud.modo_recorte, solicitud.roi_manual), daemon=True)
+    hilo = threading.Thread(target=_ejecutar_pipeline_fondo, kwargs={
+        "ruta": Path(datos["raiz"]), "nombre_excel": nombre_excel,
+        "sobrescribir_excel": True, "tipo_st": fila.get("tipo_st"),
+        "ruta_plantilla": plantilla, "casos_filtrados": {fila["case_key"]},
+        "imagenes_filtradas": imagenes or None, "solo_errores": solicitud.solo_errores,
+        "modo_recorte": solicitud.modo_recorte, "roi_manual": solicitud.roi_manual,
+        "modo_ejecucion": "completo", "zoom_forzado": solicitud.zoom_forzado,
+    }, daemon=True)
     hilo.start()
     return {"aceptado": True, "case_key": fila["case_key"],
             "imagenes": len(imagenes), "solo_errores": solicitud.solo_errores}

@@ -26,6 +26,8 @@ COLUMNAS_TRAZABILIDAD = [
     "estado_imagen", "texto_crudo", "confianza_ocr", "coordenadas_roi",
     "zoom_aplicado", "modo_recorte", "dispositivo", "tiempo_deteccion",
     "tiempo_ocr", "campos_detectados", "requiere_revision", "mensaje_error",
+    "qr_detectado", "payload_qr", "poligono_qr", "fuente_campo",
+    "modelo_ocr", "correccion_confirmada", "dataset_entrenamiento", "estado_cache",
 ]
 
 
@@ -149,7 +151,7 @@ def _actualizar_resumen(libro, ultima_fila: int) -> None:
         for celda in fila:
             if isinstance(celda.value, str) and celda.value.startswith("="):
                 celda.value = re.sub(
-                    r"(Captura_pruebas!\$[A-Z]+\$6:\$[A-Z]+\$)205\b",
+                    r"(Captura_pruebas!\$[A-Z]+\$6:\$[A-Z]+\$)\d+\b",
                     rf"\g<1>{ultima_fila}", celda.value)
 
 
@@ -208,9 +210,10 @@ def generar_desde_plantilla(ruta_plantilla: str | Path, ruta_salida: str | Path,
                 for nombre in COLUMNAS_TRAZABILIDAD
             ])
     traza.freeze_panes = "A2"
-    traza.auto_filter.ref = f"A1:U{max(traza.max_row, 1)}"
+    ultima_traza = get_column_letter(len(COLUMNAS_TRAZABILIDAD))
+    traza.auto_filter.ref = f"A1:{ultima_traza}{max(traza.max_row, 1)}"
     if traza.max_row >= 2:
-        tabla = Table(displayName="TablaTrazabilidadOCR", ref=f"A1:U{traza.max_row}")
+        tabla = Table(displayName="TablaTrazabilidadOCR", ref=f"A1:{ultima_traza}{traza.max_row}")
         tabla.tableStyleInfo = TableStyleInfo(name="TableStyleMedium2", showRowStripes=True)
         traza.add_table(tabla)
     for fila in traza.iter_rows(min_row=2):

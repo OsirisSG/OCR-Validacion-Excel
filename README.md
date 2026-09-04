@@ -20,6 +20,7 @@ por separado y seleccionarse en `config.yaml` cuando la plataforma lo soporte.
 - Detección de regiones, cuatro orientaciones y realce de texto grabado.
 - Selección automática CUDA/MPS/CPU con fallback seguro y CPU para preprocesamiento.
 - Aprendizaje incremental supervisado con versiones, evaluación y rollback.
+- Dataset visual auditable y entrenamiento EasyOCR por lotes, separado del OCR normal.
 - Comparación etiqueta ↔ referencia por tokens alfanuméricos.
 - Semáforo configurable desde YAML.
 - Excel maestro con estructura completa y matriz de cumplimiento.
@@ -183,13 +184,14 @@ python pipeline.py "datos_prueba/Lote_Pruebas"
 
 El comando ejecuta:
 
-1. Fase 0: descubrimiento de estructura.
-2. Fases 1–2: OCR y validación cruzada.
-3. Fase 3: generación del Excel.
+1. Fase A: inventario persistente, sin cargar EasyOCR.
+2. Fase B: QR, detección, zoom/ROI, OCR y consolidación.
+3. Generación del Excel y cola de revisión.
 
 Produce localmente:
 
 - `estructura_detectada.json`
+- `inventario_proyecto.json`
 - `validacion_resultados.json`
 - `resultado_maestro.xlsx`
 
@@ -206,7 +208,15 @@ Si no aparece, usa `--tipo-st 1ST`, `--tipo-st 2ST` o `--tipo-st LEGACY`.
 El Excel empresarial conserva las hojas de la plantilla, escribe una fila por ID
 en `Captura_pruebas` y añade `Trazabilidad_OCR`, una fila por fotografía.
 
-El caché reanudable queda en `.cache_ocr/imagenes.json`. Las reglas empresariales
+También puedes separar el trabajo:
+
+```bash
+python pipeline.py "/ruta/Proyecto_1ST" --modo inventario
+python pipeline.py "/ruta/Proyecto_1ST" --modo reanudar --inventario inventario_proyecto.json
+```
+
+El caché reanudable queda en `.cache_ocr/imagenes.sqlite3` (transacciones y WAL;
+la primera apertura importa el JSON histórico). Las reglas empresariales
 se guardan en `base_conocimiento.json`: nacen como propuestas después de tres IDs
 y 90 % de consenso, y sólo rellenan campos después de confirmarse. Las memorias
 OCR supervisadas existentes continúan en `.aprendizaje/aprendizaje.sqlite3`.
@@ -214,13 +224,16 @@ OCR supervisadas existentes continúan en `.aprendizaje/aprendizaje.sqlite3`.
 Estos artefactos se regeneran y no se versionan porque contienen rutas absolutas
 del equipo que ejecutó el pipeline.
 
+El contrato funcional consolidado vive en `docs/documento_maestro.md`.
+
 ## Ejecutar el dashboard
 
 La forma más sencilla detecta el sistema, el entorno virtual y el acelerador
 disponible, muestra un diagnóstico y abre el navegador:
 
 - macOS/Linux: doble clic en `iniciar.command` o ejecuta `./iniciar.command`.
-- Windows: doble clic en `iniciar.bat`.
+- Windows: doble clic en `Iniciar_OCR.bat`. Crea `.venv_ocr` sólo si hace falta,
+  comprueba el puerto y espera a que `/api/estado` responda.
 - Cualquier sistema: `python iniciar.py`.
 
 También se puede usar el arranque directo con el entorno virtual activado:
@@ -228,6 +241,19 @@ También se puede usar el arranque directo con el entorno virtual activado:
 ```bash
 python dashboard/backend/app.py
 ```
+
+Opciones de Windows:
+
+```powershell
+.\iniciar_ocr.ps1 -SinAbrir
+.\iniciar_ocr.ps1 -Diagnostico
+```
+
+Las correcciones marcadas “Confirmar y usar para entrenar” se guardan como
+recortes en `.aprendizaje/dataset_visual/recortes`. El botón “Entrenar lote
+visual” ajusta el reconocedor EasyOCR cuando existen suficientes ejemplos de al
+menos tres IDs; separa entrenamiento, validación y prueba por ID. Un candidato
+se activa sólo si mejora sin degradar el conjunto de prueba y puede restaurarse.
 
 Abre en el navegador:
 
@@ -428,17 +454,15 @@ OCR-Validacion-Excel/
 
 ## Limitaciones actuales
 
-- La validación compara OCR de etiqueta contra OCR de referencia; todavía no
-  compara formalmente los componentes del nombre de carpeta contra el OCR.
-- La comparación final selecciona una imagen de etiqueta y una referencia; no
-  une todavía tokens repartidos entre varias fotografías.
+- El flujo legacy conserva su comparación etiqueta/referencia. El empresarial
+  consolida todas las fotografías del ID y contrasta ruta, QR y OCR.
 - HEIC/HEIF, RAW, PDF y GIF animado requieren conversión previa.
 - Texto manuscrito complejo, superficies curvas, reflejos y desenfoque pueden
   requerir datos propios y fine-tuning.
 - Solo se permite una ejecución simultánea del pipeline desde el dashboard.
 - Por ahora los videos se inventarían y se advierten, pero nunca se envían al OCR.
-- Instalar un grupo opcional no implica que su integración funcional ya esté
-  implementada.
+- El entrenamiento visual necesita suficientes recortes confirmados de IDs
+  distintos; antes de ese umbral permanece correctamente en espera.
 
 ## Documentación para mantenimiento
 
@@ -475,16 +499,8 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 ```
 
 El alcance `Process` es temporal: el cambio desaparece al cerrar esa ventana de
-PowerShell. Si administras tu propio equipo y prefieres habilitar de forma
-persistente los scripts locales y los scripts remotos firmados, puedes usar:
-
-```powershell
-Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
-```
-
-Este último comando modifica la política del usuario actual. No lo ejecutes en
-un equipo administrado por una organización sin consultar antes sus políticas
-de seguridad.
+PowerShell. `Iniciar_OCR.bat` ya aplica únicamente este alcance y no modifica la
+política permanente del equipo.
 
 ### “Ningún motor de OCR disponible”
 

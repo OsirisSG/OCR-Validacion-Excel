@@ -129,6 +129,28 @@ def test_guarda_region_sin_lectura_ocr_y_la_agrupa(tmp_path):
     assert gestor.estado()["anotaciones_regiones"] == 1
 
 
+def test_dataset_visual_guarda_recorte_exacto_y_evade_duplicados(tmp_path):
+    import cv2
+    import numpy as np
+
+    imagen = tmp_path / "foto.png"
+    matriz = np.zeros((80, 160, 3), dtype=np.uint8)
+    matriz[20:50, 30:110] = 255
+    assert cv2.imwrite(str(imagen), matriz)
+    gestor = _gestor(tmp_path)
+    primera = gestor.registrar_muestra_visual(
+        imagen, "ID-1", "AB-I23", "AB-123", [30, 20, 80, 30],
+        accion="confirmar_entrenar", entrenable=True, fase="VOR", tor="TOR 2",
+        confianza=.72, modelo_origen="easyocr-base")
+    segunda = gestor.registrar_muestra_visual(
+        imagen, "ID-1", "AB-I23", "AB-123", [30, 20, 80, 30],
+        accion="confirmar_entrenar", entrenable=True)
+    recorte = cv2.imread(primera["ruta_recorte"])
+    assert recorte.shape[:2] == (30, 80)
+    assert segunda["duplicada"] is True
+    assert gestor.estado()["muestras_entrenables"] == 1
+
+
 def test_revision_es_reversible_y_no_borra_resultados(tmp_path):
     gestor = _gestor(tmp_path)
 

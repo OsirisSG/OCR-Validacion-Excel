@@ -69,10 +69,12 @@ fase1:
       variantes_respaldo: [adaptativa, clahe, relieve]
       confianza_codigo_suficiente: 0.70
   qr:
-    # Detector de ancla: "cv2" (sin dependencias extra) o "pyzbar" (si está
-    # instalado junto a las DLL de zbar). Solo se usa para GEOMETRÍA (bbox),
-    # nunca se decodifica el contenido del QR.
+    # OpenCV detecta y decodifica localmente; una URL se conserva como texto y
+    # nunca se abre. Los alias opcionales sólo pueden apuntar a claves estables.
     detector: cv2
+    lado_maximo_deteccion: 1400
+    escala_respaldo: 2.0
+    aliases: {}
     # Validación de candidatos a QR: cuadratura y tamaño relativo a la imagen.
     ratio_cuadrado_min: 0.70
     ratio_cuadrado_max: 1.30
@@ -125,7 +127,7 @@ fase3:
 
 # Flujo por ID para proyectos con <ID> <VERSION> <INFLADOR> <TEMPERATURA>.
 empresarial:
-  archivo_cache: .cache_ocr/imagenes.json
+  archivo_cache: .cache_ocr/imagenes.sqlite3
   base_conocimiento: base_conocimiento.json
   reglas_minimo_ids: 3
   reglas_consenso_minimo: 0.90
@@ -170,6 +172,17 @@ aprendizaje:
   dominancia_minima: 0.80
   # Desde este volumen se reserva automáticamente 20% de imágenes como holdout.
   minimo_correcciones_validacion: 20
+  visual:
+    # Entrenamiento real del reconocedor CTC de EasyOCR. CRAFT no se modifica.
+    minimo_muestras: 12
+    minimo_ids: 5
+    proporcion_validacion: 0.20  # separación por ID, nunca por recorte aleatorio
+    epocas: 3
+    batch: 8
+    learning_rate: 0.00001
+    alto: 64
+    ancho: 320
+    max_longitud: 64
 
 # Banco local de imágenes difíciles. Se mantiene fuera de Git porque las
 # fuentes externas pueden no autorizar su redistribución.

@@ -42,7 +42,8 @@ from configuracion import RAIZ_PROYECTO, cargar_config
 from estructura import carpetas_hoja
 from flujo_empresarial import (BaseConocimiento, CAMPOS_REQUERIDOS_DEFAULT,
                                CacheOCR, EXTENSIONES_IMAGEN, ahora,
-                               consolidar_caso, extraer_candidatos_texto)
+                               consolidar_caso, evidencias_desde_qr,
+                               extraer_candidatos_texto)
 from ocr_engine import cargar_imagen, extraer_texto, extraer_texto_empresarial
 
 _RE_TOKEN_CODIGO = re.compile(r"^([A-Za-z]+)(\d+)$")
@@ -299,6 +300,7 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
                              solo_errores: bool = False,
                              modo_recorte: str | None = None,
                              roi_manual: dict[str, float] | None = None,
+                             zoom_forzado: float | None = None,
                              al_caso: Callable[[dict], None] | None = None) -> dict:
     """Procesa todos los casos empresariales y consolida una sola salida por ID."""
     config = config or cargar_config()
@@ -312,25 +314,28 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
     if casos_filtrados:
         casos = [c for c in casos if c["case_key"] in casos_filtrados]
     cfg_emp = config.get("empresarial", {})
-    directorio_aprendizaje = Path(config.get("aprendizaje", {}).get("directorio", ".aprendizaje"))
-    if not directorio_aprendizaje.is_absolute():
-        directorio_aprendizaje = RAIZ_PROYECTO / directorio_aprendizaje
-    db_aprendizaje = directorio_aprendizaje / "aprendizaje.sqlite3"
+    gestor_aprendizaje = GestorAprendizaje(config)
+    estado_modelos = gestor_aprendizaje.estado()
     cache = CacheOCR(
         RAIZ_PROYECTO / cfg_emp.get("archivo_cache", ".cache_ocr/imagenes.json"),
         {"fase1": config.get("fase1", {}), "ocr": config.get("ocr", {}),
          "normalizacion": config.get("normalizacion", {}),
-         "aprendizaje_mtime_ns": db_aprendizaje.stat().st_mtime_ns if db_aprendizaje.exists() else 0})
+         "modelo_correccion": (estado_modelos.get("modelo_activo") or {}).get("version"),
+         "modelo_visual": (estado_modelos.get("modelo_visual_activo") or {}).get("version")})
     conocimiento = BaseConocimiento(
         RAIZ_PROYECTO / cfg_emp.get("base_conocimiento", "base_conocimiento.json"),
         cfg_emp.get("reglas_minimo_ids", 3), cfg_emp.get("reglas_consenso_minimo", 0.90))
     todas_las_fotos = [f for c in casos for f in (
         c.get("fotos", []) if c.get("estructura_valida") else _imagenes_legacy_caso(c))]
     anotaciones_por_ruta: dict[str, list[dict]] = defaultdict(list)
-    for anotacion in GestorAprendizaje(config).listar_anotaciones(
+    for anotacion in gestor_aprendizaje.listar_anotaciones(
             [f["ruta"] for f in todas_las_fotos]):
         if anotacion.get("ruta_imagen"):
             anotaciones_por_ruta[str(anotacion["ruta_imagen"])].append(anotacion)
+    muestras_por_ruta: dict[str, list[dict]] = defaultdict(list)
+    for muestra in gestor_aprendizaje.listar_muestras_visuales(
+            [f["ruta"] for f in todas_las_fotos]):
+        muestras_por_ruta[str(muestra.get("ruta_imagen"))].append(muestra)
     destino = Path(archivo_salida) if archivo_salida else RAIZ_PROYECTO / "validacion_resultados.json"
     resultados: list[dict] = []
     resultados_previos: list[dict] = []
@@ -377,6 +382,9 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
             al_caso(deepcopy(caso))
         fotos = caso.get("fotos", []) if caso.get("estructura_valida") else _imagenes_legacy_caso(caso)
         trazabilidad, evidencias, imagenes_salida, alertas = [], [], [], []
+        if not fotos:
+            alertas.append({"codigo": "SIN_IMAGENES", "nivel": "warning",
+                            "mensaje": "El ID no contiene fotografías NACH/VOR procesables."})
         con_texto = sin_texto = errores = 0
         for foto in fotos:
             if control:
@@ -388,6 +396,7 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
             except OSError:
                 resultado = None
             desde_cache = resultado is not None
+            estado_cache = "leida" if desde_cache else "omitida"
             if imagenes_filtradas and ruta in imagenes_filtradas:
                 resultado = None
                 desde_cache = False
@@ -398,9 +407,18 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
             if resultado is None:
                 try:
                     if caso.get("estructura_valida"):
+                        preferencia_roi = gestor_aprendizaje.roi_preferida(
+                            str(estructura.get("raiz") or "proyecto"),
+                            str(foto.get("fase") or "VOR"), Path(ruta).name)
+                        roi_foto = roi_manual or ((preferencia_roi or {}).get("roi"))
+                        modo_foto = caso.get("modo_recorte")
+                        if preferencia_roi and modo_recorte is None:
+                            modo_foto = "manual"
                         resultado = extraer_texto_empresarial(
                             ruta, config, fase=foto.get("fase", "VOR"),
-                            modo_recorte=caso.get("modo_recorte"))
+                            modo_recorte=modo_foto, roi_manual=roi_foto,
+                            zoom_forzado=(zoom_forzado if zoom_forzado is not None else
+                                          (preferencia_roi or {}).get("zoom")))
                     else:
                         resultado = extraer_texto(ruta, config)
                         resultado.update({"estado_imagen": "procesada_con_texto" if
@@ -409,24 +427,34 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
                                           "modo_recorte": "completo", "tiempo_deteccion_seg": None,
                                           "tiempo_ocr_seg": None, "numero_regiones": None,
                                           "zoom_aplicado": 1.0})
-                    cache.guardar(ruta, resultado)
+                    estado_cache = cache.guardar(ruta, resultado).get("estado", "desconocida")
                 except Exception as exc:
                     resultado = {"imagen": ruta, "tokens": [], "lineas_texto": [],
                                  "texto_completo": "", "estado_imagen": "error_ocr",
                                  "error": f"{type(exc).__name__}: {exc}", "modo_recorte":
                                  "auto" if caso.get("estructura_valida") else "completo"}
                     try:
-                        cache.guardar(ruta, resultado)
-                    except OSError:
-                        pass
+                        estado_cache = cache.guardar(ruta, resultado).get("estado", "desconocida")
+                    except OSError as cache_exc:
+                        estado_cache = "error_cache"
+                        alertas.append({"codigo": "ERROR_CACHE", "nivel": "warning",
+                                        "imagen": Path(ruta).name,
+                                        "mensaje": f"OCR conservado en memoria: {cache_exc}"})
+            if estado_cache == "error_cache":
+                alertas.append({"codigo": "ERROR_CACHE", "nivel": "warning",
+                                "imagen": Path(ruta).name,
+                                "mensaje": "No se pudo confirmar la escritura del caché; se reintentará."})
             estado_imagen = resultado.get("estado_imagen", "procesada_con_texto")
-            if estado_imagen == "procesada_con_texto":
+            if estado_imagen in {"procesada_con_texto", "procesada_con_qr"}:
                 con_texto += 1
             elif estado_imagen == "descartada_sin_texto":
                 sin_texto += 1
             else:
                 errores += 1
-                alertas.append({"codigo": "ERROR_OCR", "nivel": "error",
+                es_corrupta = "ValueError" in str(resultado.get("error", "")) and \
+                    "decodificar" in str(resultado.get("error", "")).lower()
+                alertas.append({"codigo": "IMAGEN_CORRUPTA" if es_corrupta else "ERROR_OCR",
+                                "nivel": "error",
                                 "imagen": Path(ruta).name,
                                 "mensaje": resultado.get("error", "No se pudo leer la imagen.")})
             confianza = resultado.get("confianza_media") or 0.0
@@ -434,11 +462,27 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
             evidencias.extend(extraer_candidatos_texto(
                 resultado.get("texto_completo", ""), foto_contexto,
                 caso.get("metadata_ruta", {})))
+            evidencias.extend(evidencias_desde_qr(
+                resultado.get("qrs", []), foto_contexto,
+                config.get("fase1", {}).get("qr", {}).get("aliases")))
+            for qr in resultado.get("qrs", []):
+                interpretacion = qr.get("interpretacion", {})
+                qr.update({
+                    "qr_detectado": True, "payload_original": qr.get("payload", ""),
+                    "formato": interpretacion.get("formato", "desconocido"),
+                    "imagen": foto.get("ruta_relativa") or ruta,
+                    "fase": foto.get("fase"), "tor": foto.get("tor"),
+                    "valido_esquema": bool(interpretacion.get("campos")),
+                    "campos_extraidos": interpretacion.get("campos", {}),
+                })
             for anotacion in anotaciones_por_ruta.get(str(ruta), []):
                 evidencias.extend(extraer_candidatos_texto(
                     anotacion.get("texto_correcto", ""),
                     {**foto_contexto, "fuente": "manual", "confianza_ocr": 1.0},
                     caso.get("metadata_ruta", {})))
+            qrs_foto = resultado.get("qrs", [])
+            evidencias_foto = [e for e in evidencias
+                               if e.get("imagen") == foto.get("ruta_relativa")]
             trazabilidad.append({
                 "test_number": caso.get("metadata_ruta", {}).get("test_number"),
                 "tipo_st": caso.get("tipo_st"),
@@ -460,6 +504,18 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
                                              if e.get("imagen") == foto.get("ruta_relativa")}),
                 "requiere_revision": bool(resultado.get("error")),
                 "mensaje_error": resultado.get("error"), "desde_cache": desde_cache,
+                "estado_cache": estado_cache,
+                "qr_payloads": [q.get("payload") for q in resultado.get("qrs", [])
+                                if q.get("payload")],
+                "qr_detectado": bool(qrs_foto),
+                "payload_qr": [q.get("payload_original") or q.get("payload") for q in qrs_foto],
+                "poligono_qr": [q.get("poligono") for q in qrs_foto],
+                "fuente_campo": sorted({f"{e.get('clave')}:{e.get('fuente')}"
+                                         for e in evidencias_foto}),
+                "modelo_ocr": resultado.get("modelo_visual_version") or resultado.get("motor"),
+                "correccion_confirmada": bool(anotaciones_por_ruta.get(str(ruta))),
+                "dataset_entrenamiento": [m.get("ruta_recorte")
+                                           for m in muestras_por_ruta.get(str(ruta), [])],
             })
             imagenes_salida.append({"id": hashlib.sha256(ruta.encode()).hexdigest()[:16],
                                     "nombre": Path(ruta).name, "ruta": ruta,
@@ -481,6 +537,14 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
             if al_imagen:
                 eta = statistics.median(duraciones) * max(total_imagenes - procesadas, 0)
                 al_imagen(procesadas, total_imagenes, ruta, round(eta, 1))
+
+        recuperacion_cache = cache.recuperar_pendientes()
+        fallos_cache = [item for item in recuperacion_cache
+                        if item.get("estado") == "error_cache"]
+        if fallos_cache:
+            alertas.append({"codigo": "ERROR_CACHE", "nivel": "warning",
+                            "mensaje": (f"Persisten {len(fallos_cache)} escrituras OCR en memoria; "
+                                        "se reintentará en la siguiente ejecución.")})
 
         previo = next((r for r in resultados_existentes
                        if r.get("case_key") == caso.get("case_key")), {})
@@ -517,6 +581,15 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
                     "con_texto": con_texto, "sin_texto": sin_texto,
                     "errores": errores,
                     "porcentaje": round(100 * len(trazabilidad) / len(fotos), 2) if fotos else 100.0}
+        alertas_agrupadas: dict[tuple[str, str], dict] = {}
+        for alerta in alertas:
+            clave_alerta = (alerta.get("codigo", "ADVERTENCIA"), alerta.get("mensaje", ""))
+            grupo = alertas_agrupadas.setdefault(clave_alerta, {
+                **alerta, "imagenes": [], "cantidad": 0})
+            grupo["cantidad"] += 1
+            if alerta.get("imagen") and alerta["imagen"] not in grupo["imagenes"]:
+                grupo["imagenes"].append(alerta["imagen"])
+        alertas = list(alertas_agrupadas.values())
         estado = ("con_conflictos" if consolidado["conflictos"] else
                   "procesada_con_advertencias" if consolidado["campos_faltantes"] or errores else
                   "procesada")
@@ -549,11 +622,12 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
                 "resultado": "coincidencia_total" if not consolidado["conflictos"] and
                 not consolidado["campos_faltantes"] else
                 "discrepancia" if consolidado["conflictos"] else "coincidencia_parcial",
-                "ratio": None, "coincidentes": [], "faltantes": consolidado["campos_faltantes"]},
+                "ratio": None, "coincidentes": [], "faltantes": []},
             "confianza_ocr_pct": (round(statistics.mean(
                 [t["confianza_ocr"] for t in trazabilidad if t.get("confianza_ocr") is not None]) * 100, 2)
                 if any(t.get("confianza_ocr") is not None for t in trazabilidad) else None),
-            "qr_detectado": False, "observaciones": (["procesado por fallback legacy del caso"]
+            "qr_detectado": any(i.get("resultado_ocr", {}).get("qrs") for i in imagenes_salida),
+            "observaciones": (["procesado por fallback legacy del caso"]
                                                        if not caso["estructura_valida"] else []),
             "historial_ejecuciones": [*previo.get("historial_ejecuciones", []), {
                 "iniciado_en": datetime.fromtimestamp(
@@ -789,7 +863,8 @@ def _compacto(resultado_ocr: dict | None) -> dict | None:
         "variante_texto_completo", "dimensiones_originales",
         "intentos_ocr", "motor", "dispositivo", "advertencias_motor",
         "dimensiones", "estado_imagen", "modo_recorte", "tiempo_deteccion_seg",
-        "tiempo_ocr_seg", "numero_regiones", "zoom_aplicado", "roi_usado", "error")}
+        "tiempo_ocr_seg", "numero_regiones", "zoom_aplicado", "roi_usado", "error",
+        "qrs", "recortes", "modelo_visual_version")}
 
 
 def _imagen_salida(item: dict, rol: str) -> dict:

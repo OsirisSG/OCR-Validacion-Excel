@@ -1,6 +1,7 @@
 """El instalador debe elegir un solo PyTorch óptimo y conservar CPU de respaldo."""
 
 import instalar
+from pathlib import Path
 
 
 def test_apple_silicon_elige_mps_incluido_en_pypi(monkeypatch):
@@ -37,3 +38,13 @@ def test_sin_acelerador_elige_rueda_cpu(monkeypatch):
 
     assert plan.acelerador == "cpu"
     assert plan.indices == ("https://download.pytorch.org/whl/cpu",)
+
+
+def test_inicio_windows_usa_bypass_entorno_y_espera_api():
+    raiz = Path(instalar.__file__).resolve().parent
+    bat = (raiz / "Iniciar_OCR.bat").read_text(encoding="utf-8")
+    ps1 = (raiz / "iniciar_ocr.ps1").read_text(encoding="utf-8")
+    assert "-ExecutionPolicy Bypass" in bat
+    assert "Set-ExecutionPolicy -Scope Process" in ps1
+    assert ".venv_ocr" in ps1 and "instalar.py" in ps1
+    assert "/api/estado" in ps1 and "SinAbrir" in ps1 and "Diagnostico" in ps1

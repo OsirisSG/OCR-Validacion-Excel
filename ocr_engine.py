@@ -115,11 +115,12 @@ class MotorEasyOCR:
         self.hilos_cpu = configurar_cpu(rendimiento.get("hilos_cpu"))
         self.dispositivo = self.recursos["seleccionado"]
         self.advertencias = [self.recursos["warning"]] if self.recursos.get("warning") else []
+        self.modelo_visual = cfg_fase1.get("_modelo_visual_activo")
         gpu = False if self.dispositivo == "cpu" else self.dispositivo
         try:
             self._reader = easyocr.Reader(
                 [self._lang], gpu=gpu, verbose=False,
-                quantize=self.dispositivo == "cpu")
+                quantize=self.dispositivo == "cpu" and not self.modelo_visual)
         except Exception as exc:
             if self.dispositivo == "cpu":
                 raise
@@ -128,20 +129,39 @@ class MotorEasyOCR:
                 f"({type(exc).__name__}); se inició en CPU.")
             self.dispositivo = "cpu"
             self._reader = easyocr.Reader(
-                [self._lang], gpu=False, verbose=False, quantize=True)
+                [self._lang], gpu=False, verbose=False,
+                quantize=not bool(self.modelo_visual))
         # La fuente de verdad es el dispositivo que EasyOCR realmente aceptó.
         self.dispositivo = str(getattr(self._reader, "device", self.dispositivo))
-        self._batch_size = int(rendimiento.get(
+        solicitado_batch = int(rendimiento.get(
             "batch_cpu" if self.dispositivo == "cpu" else "batch_gpu", 1))
+        self._batch_size = (solicitado_batch if self.dispositivo == "cpu" else
+                            min(solicitado_batch, int(self.recursos.get(
+                                "batch_gpu_sugerido", solicitado_batch))))
         self._workers = int(rendimiento.get("workers_easyocr", 0))
         self._allowlist = cfg_fase1.get("caracteres_permitidos") or None
+        if self.modelo_visual:
+            try:
+                import torch
+                ruta_pesos = Path(self.modelo_visual["ruta_pesos"])
+                self._reader.recognizer.load_state_dict(torch.load(
+                    ruta_pesos, map_location=self.dispositivo, weights_only=True))
+            except Exception as exc:
+                self.advertencias.append(
+                    f"No se pudo cargar el modelo visual {self.modelo_visual.get('version')} "
+                    f"({type(exc).__name__}); se usó EasyOCR base.")
+                self.modelo_visual = None
 
     def _fallback_cpu(self, causa: Exception) -> None:
         self.advertencias.append(
             f"La inferencia en {self.dispositivo.upper()} falló ({type(causa).__name__}); "
             "EasyOCR continuó en CPU.")
         self._reader = self._easyocr.Reader(
-            [self._lang], gpu=False, verbose=False, quantize=True)
+            [self._lang], gpu=False, verbose=False, quantize=not bool(self.modelo_visual))
+        if self.modelo_visual:
+            import torch
+            self._reader.recognizer.load_state_dict(torch.load(
+                self.modelo_visual["ruta_pesos"], map_location="cpu", weights_only=True))
         self.dispositivo = "cpu"
         self._batch_size = 1
 
@@ -217,18 +237,22 @@ def obtener_motor(config: dict | None = None):
     config = config or cargar_config()
     f1 = config.get("fase1", {})
     recursos = detectar_recursos(f1.get("dispositivo", "auto"))
+    from aprendizaje import GestorAprendizaje
+    modelo_visual = GestorAprendizaje(config).modelo_visual_activo()
     for clave in ("motor", "motor_fallback"):
         nombre = f1.get(clave) if clave == "motor" else f1.get("motor_fallback")
         if not nombre:
             continue
-        llave = (nombre, recursos["seleccionado"] if nombre == "easyocr" else "auto")
+        llave = (nombre, recursos["seleccionado"] if nombre == "easyocr" else "auto",
+                 (modelo_visual or {}).get("version") if nombre == "easyocr" else None)
         if llave in _MOTORES:
             return _MOTORES[llave], f1
         clase = {"paddle": MotorPaddle, "easyocr": MotorEasyOCR}.get(nombre)
         if clase is None:
             continue
         try:
-            _MOTORES[llave] = clase(f1)
+            cfg_motor = {**f1, "_modelo_visual_activo": modelo_visual}
+            _MOTORES[llave] = clase(cfg_motor)
             return _MOTORES[llave], f1
         except Exception as exc:  # ImportError u otro fallo de arranque del motor
             print(f"[ocr_engine] motor '{nombre}' no disponible ({exc}); probando fallback",
@@ -249,48 +273,93 @@ def cargar_imagen(imagen_path: str | Path) -> np.ndarray:
     return img
 
 
-def detectar_qr(imagen_bgr: np.ndarray, cfg_qr: dict) -> tuple | None:
-    """
-    Localiza el QR (solo geometría; el contenido JAMÁS se decodifica).
-    Detector cv2 por defecto; pyzbar opcional si está en config y instalado.
-    Valida cuadratura y tamaño para descartar falsos positivos del detector.
-    """
-    gris = cv2.cvtColor(imagen_bgr, cv2.COLOR_BGR2GRAY)
-    alto, ancho = gris.shape
+def detectar_qrs(imagen_bgr: np.ndarray, cfg_qr: dict) -> list[dict]:
+    """Detecta y decodifica uno o varios QR, siempre de forma local y pasiva."""
+    alto, ancho = imagen_bgr.shape[:2]
     lado_max = max(alto, ancho)
-    candidatos: list[tuple] = []
+    detector = cv2.QRCodeDetector()
+    resultados: list[dict] = []
+    lado_thumb = max(320, int(cfg_qr.get("lado_maximo_deteccion", 1400)))
+    escala_thumb = min(1.0, lado_thumb / max(lado_max, 1))
+    miniatura = (cv2.resize(imagen_bgr, None, fx=escala_thumb, fy=escala_thumb,
+                            interpolation=cv2.INTER_AREA)
+                 if escala_thumb < 0.999 else imagen_bgr)
 
-    if cfg_qr.get("detector") == "pyzbar":
+    def agregar(payload: str, puntos, escala: float, intento: str) -> None:
+        if puntos is None:
+            return
+        pts = np.asarray(puntos, dtype=np.float32).reshape(-1, 2) / max(escala, 1e-9)
+        x1, y1 = pts.min(axis=0)
+        x2, y2 = pts.max(axis=0)
+        bbox = (max(0, int(x1)), max(0, int(y1)),
+                max(1, int(x2 - x1)), max(1, int(y2 - y1)))
+        w, h = bbox[2], bbox[3]
+        ratio = w / max(h, 1)
+        if not (float(cfg_qr.get("ratio_cuadrado_min", 0.55)) <= ratio <=
+                float(cfg_qr.get("ratio_cuadrado_max", 1.55))):
+            return
+        if max(w, h) > float(cfg_qr.get("tamano_max_frac", 0.9)) * lado_max:
+            return
+        if not str(payload or "").strip() and min(w, h) < int(cfg_qr.get("tamano_min_px", 24)):
+            return
+        payload_limpio = str(payload or "").strip()
+        for existente in resultados:
+            eb = existente.get("bbox")
+            if existente.get("payload") != payload_limpio or eb is None:
+                continue
+            ex, ey, ew, eh = eb
+            ix1, iy1 = max(bbox[0], ex), max(bbox[1], ey)
+            ix2, iy2 = min(bbox[0] + w, ex + ew), min(bbox[1] + h, ey + eh)
+            inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+            union = w * h + ew * eh - inter
+            if union and inter / union >= 0.5:
+                return
+        resultados.append({"payload": payload_limpio, "bbox": bbox,
+                           "poligono": pts.round(2).tolist(), "intento": intento})
+
+    for imagen, escala, nombre in ((miniatura, escala_thumb, "miniatura"),
+                                    (imagen_bgr, 1.0, "completa")):
         try:
-            from pyzbar.pyzbar import decode as pyzbar_decode
-            for r in pyzbar_decode(gris):
-                x, y, w, h = r.rect
-                candidatos.append((x, y, w, h))
-        except ImportError:
-            pass  # cae silenciosamente a cv2
+            ok, textos, puntos, _ = detector.detectAndDecodeMulti(imagen)
+            if ok and puntos is not None:
+                for payload, poligono in zip(textos or (), puntos):
+                    agregar(payload, poligono, escala, nombre + "_multiple")
+        except (cv2.error, ValueError):
+            pass
+        try:
+            payload, puntos, _ = detector.detectAndDecode(imagen)
+            if puntos is not None:
+                agregar(payload, puntos, escala, nombre + "_unico")
+        except (cv2.error, ValueError):
+            pass
+        if resultados and any(r["payload"] for r in resultados):
+            break
 
-    if not candidatos:
-        encontrado, cajas = cv2.QRCodeDetector().detect(gris)
-        if encontrado and cajas is not None:
-            for caja in np.asarray(cajas).reshape(-1, 4, 2):
-                x1, y1 = caja.min(axis=0)
-                x2, y2 = caja.max(axis=0)
-                candidatos.append((int(x1), int(y1), int(x2 - x1), int(y2 - y1)))
+    # Los QR pequeños o girados pueden detectarse sólo tras ampliar/rotar.
+    if not any(r["payload"] for r in resultados):
+        factor = max(1.0, float(cfg_qr.get("escala_respaldo", 2.0)))
+        base = cv2.resize(imagen_bgr, None, fx=factor, fy=factor,
+                          interpolation=cv2.INTER_CUBIC)
+        for angulo in (0, 90, 180, 270):
+            intento = _rotar_recto(base, angulo)
+            try:
+                payload, puntos, _ = detector.detectAndDecode(intento)
+            except cv2.error:
+                continue
+            if payload and puntos is not None:
+                # En respaldo importa preservar el payload; la caja rotada se
+                # marca como aproximada para no emplearla como ROI espacial.
+                resultados.append({"payload": payload.strip(), "bbox": None,
+                                   "poligono": None, "intento": f"respaldo_{angulo}",
+                                   "bbox_aproximada": True})
+                break
+    return resultados
 
-    rmin = float(cfg_qr.get("ratio_cuadrado_min", 0.7))
-    rmax = float(cfg_qr.get("ratio_cuadrado_max", 1.3))
-    tmin = int(cfg_qr.get("tamano_min_px", 40))
-    tmax = float(cfg_qr.get("tamano_max_frac", 0.6))
-    for (x, y, w, h) in candidatos:
-        if w <= 0 or h <= 0:
-            continue
-        ratio = w / h
-        if not (rmin <= ratio <= rmax):
-            continue
-        if w < tmin or h < tmin or max(w, h) > tmax * lado_max:
-            continue
-        return (x, y, w, h)
-    return None
+
+def detectar_qr(imagen_bgr: np.ndarray, cfg_qr: dict) -> tuple | None:
+    """Compatibilidad: devuelve la primera caja QR disponible."""
+    return next((tuple(qr["bbox"]) for qr in detectar_qrs(imagen_bgr, cfg_qr)
+                 if qr.get("bbox") is not None), None)
 
 
 def estimar_skew(gris: np.ndarray) -> float:
@@ -881,7 +950,8 @@ def _recorte_perspectiva(imagen: np.ndarray, puntos) -> np.ndarray:
 
 def extraer_texto_empresarial(imagen_path: str, config: dict | None = None,
                               fase: str = "VOR", modo_recorte: str | None = None,
-                              roi_manual: dict | None = None) -> dict:
+                              roi_manual: dict | None = None,
+                              zoom_forzado: float | None = None) -> dict:
     """Ruta rápida: CRAFT en miniatura y reconocimiento sólo de los recortes detectados.
 
     Si no existen cajas se retorna ``descartada_sin_texto`` sin invocar al
@@ -896,15 +966,28 @@ def extraer_texto_empresarial(imagen_path: str, config: dict | None = None,
     inicio_total = time.monotonic()
     if modo == "completo":
         resultado = extraer_texto(imagen_path, config)
+        imagen_qr = cargar_imagen(imagen_path)
+        qrs = detectar_qrs(imagen_qr, f1.get("qr", {}))
         resultado.update({"estado_imagen": ("procesada_con_texto" if resultado.get("lineas_texto")
-                                             or resultado.get("tokens") else "descartada_sin_texto"),
+                                             or resultado.get("tokens") else
+                                             "procesada_con_qr" if any(q.get("payload") for q in qrs)
+                                             else "descartada_sin_texto"),
                           "modo_recorte": "completo", "tiempo_deteccion_seg": 0.0,
                           "tiempo_ocr_seg": round(time.monotonic() - inicio_total, 4),
-                          "numero_regiones": 1, "zoom_aplicado": 1.0})
+                          "numero_regiones": 1, "zoom_aplicado": 1.0,
+                          "modelo_visual_version": getattr(motor := obtener_motor(config)[0],
+                                                            "modelo_visual", None).get("version")
+                          if getattr(motor, "modelo_visual", None) else None,
+                          "qrs": qrs,
+                          "recortes": [{"bbox": (0, 0, imagen_qr.shape[1], imagen_qr.shape[0]),
+                                        "dimensiones_antes": (imagen_qr.shape[1], imagen_qr.shape[0]),
+                                        "dimensiones_despues": (imagen_qr.shape[1], imagen_qr.shape[0]),
+                                        "zoom": 1.0}]})
         return resultado
 
-    motor, _ = obtener_motor(config)
     imagen_original = cargar_imagen(imagen_path)
+    qrs = detectar_qrs(imagen_original, f1.get("qr", {}))
+    motor, _ = obtener_motor(config)
     alto, ancho = imagen_original.shape[:2]
     manual_cfg = roi_manual or cfg.get("roi_manual", {}).get(str(fase).upper())
     if modo == "manual":
@@ -928,13 +1011,17 @@ def extraer_texto_empresarial(imagen_path: str, config: dict | None = None,
         offset_manual = (0, 0)
     tiempo_deteccion = time.monotonic() - inicio_total
     if not cajas:
+        tiene_qr = any(q.get("payload") for q in qrs)
         return {"imagen": str(imagen_path), "motor": motor.nombre,
                 "dispositivo": getattr(motor, "dispositivo", "cpu"), "tokens": [],
                 "lineas_texto": [], "texto_completo": "", "confianza_media": None,
                 "dimensiones_originales": (ancho, alto), "dimensiones": (ancho, alto),
-                "estado_imagen": "descartada_sin_texto", "modo_recorte": modo,
+                "estado_imagen": "procesada_con_qr" if tiene_qr else "descartada_sin_texto",
+                "modo_recorte": modo,
                 "tiempo_deteccion_seg": round(tiempo_deteccion, 4), "tiempo_ocr_seg": 0.0,
                 "numero_regiones": 0, "zoom_aplicado": 1.0, "intentos_ocr": [],
+                "qrs": qrs, "recortes": [],
+                "modelo_visual_version": ((getattr(motor, "modelo_visual", None) or {}).get("version")),
                 "advertencias_motor": list(getattr(motor, "advertencias", []))}
 
     margen = max(0.0, float(cfg.get("margen_recorte", 0.12)))
@@ -942,6 +1029,7 @@ def extraer_texto_empresarial(imagen_path: str, config: dict | None = None,
     altura_objetivo = int(cfg.get("altura_objetivo_recorte", 160))
     lineas = []
     zooms = []
+    recortes_log = []
     inicio_ocr = time.monotonic()
     for caja in cajas:
         x, y, w, h = caja.get("bbox", caja)
@@ -961,10 +1049,16 @@ def extraer_texto_empresarial(imagen_path: str, config: dict | None = None,
                 recorte = imagen_original[y:y + h, x:x + w]
         if recorte.size == 0:
             continue
-        zoom = min(zoom_max, max(zoom_min, altura_objetivo / max(recorte.shape[0], 1)))
+        zoom_calculado = altura_objetivo / max(recorte.shape[0], 1)
+        zoom = min(zoom_max, max(zoom_min,
+                   float(zoom_forzado) if zoom_forzado is not None else zoom_calculado))
         zooms.append(zoom)
         preparada = (cv2.resize(recorte, None, fx=zoom, fy=zoom, interpolation=cv2.INTER_CUBIC)
                      if zoom > 1.01 else recorte)
+        recortes_log.append({"bbox": (x, y, w, h),
+                             "dimensiones_antes": (recorte.shape[1], recorte.shape[0]),
+                             "dimensiones_despues": (preparada.shape[1], preparada.shape[0]),
+                             "zoom": round(zoom, 3)})
         lecturas = motor.leer_texto_completo(preparada)
         for lectura in lecturas:
             lx, ly, lw, lh = lectura["bbox"]
@@ -992,6 +1086,12 @@ def extraer_texto_empresarial(imagen_path: str, config: dict | None = None,
             preparada = aplicar_variante(recorte, "clahe", f1.get("preprocesamiento", {}))
             kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], dtype=np.float32)
             preparada = cv2.filter2D(preparada, -1, kernel)
+            zoom_respaldo = min(zoom_max, max(zoom_min,
+                float(zoom_forzado) if zoom_forzado is not None
+                else altura_objetivo / max(preparada.shape[0], 1)))
+            if zoom_respaldo > 1.01:
+                preparada = cv2.resize(preparada, None, fx=zoom_respaldo,
+                                       fy=zoom_respaldo, interpolation=cv2.INTER_CUBIC)
             angulo = 180 if preparada.shape[1] >= preparada.shape[0] else 90
             preparada = _rotar_recto(preparada, angulo)
             for lectura in motor.leer_texto_completo(preparada):
@@ -1020,7 +1120,8 @@ def extraer_texto_empresarial(imagen_path: str, config: dict | None = None,
             "modo_recorte": modo, "tiempo_deteccion_seg": round(tiempo_deteccion, 4),
             "tiempo_ocr_seg": round(time.monotonic() - inicio_ocr, 4),
             "numero_regiones": len(cajas), "zoom_aplicado": round(max(zooms or [1.0]), 3),
-            "intentos_ocr": intentos,
+            "intentos_ocr": intentos, "qrs": qrs, "recortes": recortes_log,
+            "modelo_visual_version": ((getattr(motor, "modelo_visual", None) or {}).get("version")),
             "advertencias_motor": list(getattr(motor, "advertencias", []))}
 
 

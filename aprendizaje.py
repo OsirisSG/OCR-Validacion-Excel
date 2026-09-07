@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import re
 import sqlite3
 import uuid
@@ -45,22 +46,112 @@ def hash_archivo(ruta: str | Path) -> str:
     return h.hexdigest()
 
 
-def rotar_bbox(bbox, grados: int, ancho_imagen: int,
+def dimensiones_rotadas(ancho: int, alto: int, grados: float) -> tuple[int, int]:
+    """Dimensiones del lienzo expandido tras un giro horario sin recortar."""
+    angulo = float(grados) % 360
+    if abs(angulo) < 1e-6:
+        return int(ancho), int(alto)
+    if abs(angulo - 90) < 1e-6 or abs(angulo - 270) < 1e-6:
+        return int(alto), int(ancho)
+    if abs(angulo - 180) < 1e-6:
+        return int(ancho), int(alto)
+    radianes = math.radians(angulo)
+    coseno, seno = abs(math.cos(radianes)), abs(math.sin(radianes))
+    return (int(math.ceil(ancho * coseno + alto * seno)),
+            int(math.ceil(ancho * seno + alto * coseno)))
+
+
+def rotar_bbox(bbox, grados: float, ancho_imagen: int,
                alto_imagen: int) -> list[int] | None:
-    """Rota una caja x/y/ancho/alto en el mismo sentido horario que la imagen."""
+    """Rota una caja con la imagen y conserva todo en un lienzo expandido."""
     if bbox is None:
         return None
     x, y, ancho, alto = (int(round(float(v))) for v in bbox)
-    grados = int(grados) % 360
-    if grados == 0:
+    grados = float(grados) % 360
+    if abs(grados) < 1e-6:
         return [x, y, ancho, alto]
-    if grados == 90:
+    if abs(grados - 90) < 1e-6:
         return [alto_imagen - y - alto, x, alto, ancho]
-    if grados == 180:
+    if abs(grados - 180) < 1e-6:
         return [ancho_imagen - x - ancho, alto_imagen - y - alto, ancho, alto]
-    if grados == 270:
+    if abs(grados - 270) < 1e-6:
         return [y, ancho_imagen - x - ancho, alto, ancho]
-    raise ValueError("La rotación de coordenadas debe ser múltiplo de 90°.")
+
+    radianes = math.radians(grados)
+    coseno, seno = math.cos(radianes), math.sin(radianes)
+    centro_x, centro_y = ancho_imagen / 2.0, alto_imagen / 2.0
+    esquinas_imagen = ((0, 0), (ancho_imagen, 0),
+                       (ancho_imagen, alto_imagen), (0, alto_imagen))
+
+    def girar(punto_x: float, punto_y: float) -> tuple[float, float]:
+        dx, dy = punto_x - centro_x, punto_y - centro_y
+        return coseno * dx - seno * dy, seno * dx + coseno * dy
+
+    limites = [girar(px, py) for px, py in esquinas_imagen]
+    minimo_x = min(px for px, _ in limites)
+    minimo_y = min(py for _, py in limites)
+    puntos = [girar(px, py) for px, py in (
+        (x, y), (x + ancho, y), (x + ancho, y + alto), (x, y + alto))]
+    xs = [px - minimo_x for px, _ in puntos]
+    ys = [py - minimo_y for _, py in puntos]
+    nuevo_ancho, nuevo_alto = dimensiones_rotadas(ancho_imagen, alto_imagen, grados)
+    izquierda = max(0, int(math.floor(min(xs))))
+    arriba = max(0, int(math.floor(min(ys))))
+    derecha = min(nuevo_ancho, int(math.ceil(max(xs))))
+    abajo = min(nuevo_alto, int(math.ceil(max(ys))))
+    return [izquierda, arriba, max(1, derecha - izquierda), max(1, abajo - arriba)]
+
+
+def transformar_bbox_entre_rotaciones(bbox, grados_desde: float, grados_hasta: float,
+                                      ancho_fuente: int, alto_fuente: int) -> list[int] | None:
+    """Proyecta una caja entre dos vistas giradas de la misma imagen fuente.
+
+    A diferencia de encadenar giros sobre lienzos ya expandidos, esta conversión
+    vuelve al sistema de la fotografía original. Así un giro libre puede cambiarse
+    o restablecerse sin acumular márgenes ni desplazamientos.
+    """
+    if bbox is None:
+        return None
+    ancho_fuente, alto_fuente = int(ancho_fuente), int(alto_fuente)
+
+    def parametros(grados: float):
+        radianes = math.radians(float(grados) % 360)
+        coseno, seno = math.cos(radianes), math.sin(radianes)
+        centro_x, centro_y = ancho_fuente / 2.0, alto_fuente / 2.0
+        esquinas = ((0, 0), (ancho_fuente, 0),
+                    (ancho_fuente, alto_fuente), (0, alto_fuente))
+        rotadas = [
+            (coseno * (px - centro_x) - seno * (py - centro_y),
+             seno * (px - centro_x) + coseno * (py - centro_y))
+            for px, py in esquinas
+        ]
+        return coseno, seno, centro_x, centro_y, min(p[0] for p in rotadas), min(
+            p[1] for p in rotadas)
+
+    cos_desde, sen_desde, cx, cy, min_x_desde, min_y_desde = parametros(grados_desde)
+    cos_hasta, sen_hasta, _, _, min_x_hasta, min_y_hasta = parametros(grados_hasta)
+
+    def convertir(px: float, py: float) -> tuple[float, float]:
+        # Coordenada de la vista inicial -> coordenada centrada de la fuente.
+        rx, ry = px + min_x_desde, py + min_y_desde
+        dx = cos_desde * rx + sen_desde * ry
+        dy = -sen_desde * rx + cos_desde * ry
+        # Fuente -> vista destino.
+        destino_x = cos_hasta * dx - sen_hasta * dy - min_x_hasta
+        destino_y = sen_hasta * dx + cos_hasta * dy - min_y_hasta
+        return destino_x, destino_y
+
+    x, y, ancho, alto = (float(valor) for valor in bbox)
+    puntos = [convertir(px, py) for px, py in (
+        (x, y), (x + ancho, y), (x + ancho, y + alto), (x, y + alto))]
+    xs, ys = [p[0] for p in puntos], [p[1] for p in puntos]
+    ancho_destino, alto_destino = dimensiones_rotadas(
+        ancho_fuente, alto_fuente, grados_hasta)
+    izquierda = max(0, int(math.floor(min(xs))))
+    arriba = max(0, int(math.floor(min(ys))))
+    derecha = min(ancho_destino, int(math.ceil(max(xs))))
+    abajo = min(alto_destino, int(math.ceil(max(ys))))
+    return [izquierda, arriba, max(1, derecha - izquierda), max(1, abajo - arriba)]
 
 
 def _alinear(a: str, b: str) -> list[tuple[str | None, str | None]]:
@@ -231,7 +322,7 @@ class GestorAprendizaje:
             );
             CREATE TABLE IF NOT EXISTS rotaciones_imagen (
                 imagen_hash TEXT PRIMARY KEY, ruta_imagen TEXT,
-                grados INTEGER NOT NULL DEFAULT 0,
+                grados REAL NOT NULL DEFAULT 0,
                 fuente TEXT NOT NULL DEFAULT 'dashboard', actualizado_en TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS alertas_atendidas (
@@ -398,7 +489,7 @@ class GestorAprendizaje:
         return {"id": muestra_id, "ruta_recorte": str(ruta_recorte),
                 "bbox": caja, "accion": accion, "entrenable": entrenable}
 
-    def rotacion_preferida(self, ruta_imagen: str | Path | None) -> int:
+    def rotacion_preferida(self, ruta_imagen: str | Path | None) -> float:
         """Rotación humana, en sentido horario, para la próxima lectura OCR."""
         if not ruta_imagen or not self.db.exists() or not Path(ruta_imagen).is_file():
             return 0
@@ -409,7 +500,7 @@ class GestorAprendizaje:
         with self._conectar() as con:
             fila = con.execute(
                 "SELECT grados FROM rotaciones_imagen WHERE imagen_hash=?", (imagen_hash,)).fetchone()
-        return int(fila["grados"]) % 360 if fila else 0
+        return round(float(fila["grados"]) % 360, 3) if fila else 0.0
 
     def modelo_visual_activo(self) -> dict | None:
         if not self.db.exists():
@@ -461,13 +552,11 @@ class GestorAprendizaje:
         return {"anterior": activo["version"] if activo else None,
                 "activo": destino["version"]}
 
-    def actualizar_rotacion(self, ruta_imagen: str | Path, grados: int,
+    def actualizar_rotacion(self, ruta_imagen: str | Path, grados: float,
                             fuente: str = "dashboard") -> dict:
         if not Path(ruta_imagen).is_file():
             raise ValueError("La imagen ya no está disponible.")
-        grados = int(grados) % 360
-        if grados not in {0, 90, 180, 270}:
-            raise ValueError("La rotación debe ser 0°, 90°, 180° o 270°.")
+        grados = round(float(grados) % 360, 3)
         imagen_hash = hash_archivo(ruta_imagen)
         with self._conectar() as con:
             con.execute("""
@@ -481,11 +570,14 @@ class GestorAprendizaje:
         return {"imagen_hash": imagen_hash, "grados": grados,
                 "aplicar_en_siguiente_ocr": True, "actualizado_en": _ahora()}
 
-    def rotar_evidencias_imagen(self, ruta_imagen: str | Path, grados: int,
-                                dimensiones: tuple[int, int]) -> dict:
+    def rotar_evidencias_imagen(self, ruta_imagen: str | Path, grados: float,
+                                dimensiones: tuple[int, int], *,
+                                grados_desde: float | None = None,
+                                grados_hasta: float | None = None,
+                                dimensiones_fuente: tuple[int, int] | None = None) -> dict:
         """Mantiene alineadas correcciones y regiones al girar su vista OCR."""
-        grados = int(grados) % 360
-        if grados == 0 or not self.db.exists():
+        grados = float(grados) % 360
+        if abs(grados) < 1e-6 or not self.db.exists():
             return {"evidencias_rotadas": 0}
         ancho, alto = (int(dimensiones[0]), int(dimensiones[1]))
         imagen_hash = hash_archivo(ruta_imagen)
@@ -499,7 +591,11 @@ class GestorAprendizaje:
                     bbox = json.loads(fila["bbox_json"])
                     if bbox is None:
                         continue
-                    girada = rotar_bbox(bbox, grados, ancho, alto)
+                    girada = (transformar_bbox_entre_rotaciones(
+                        bbox, grados_desde, grados_hasta, *dimensiones_fuente)
+                        if (grados_desde is not None and grados_hasta is not None
+                            and dimensiones_fuente is not None)
+                        else rotar_bbox(bbox, grados, ancho, alto))
                     con.execute(f"UPDATE {tabla} SET bbox_json=? WHERE id=?",
                                 (json.dumps(girada), fila["id"]))
                     actualizadas += 1

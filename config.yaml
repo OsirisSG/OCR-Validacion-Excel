@@ -117,9 +117,19 @@ fase2:
 
 fase3:
   archivo_salida: resultado_maestro.xlsx
-  # Ruta opcional a la plantilla empresarial. También puede elegirse desde el
-  # dashboard o con --plantilla; no se fija una ruta local para mantener portabilidad.
+  # Una ruta fija sigue siendo una anulación opcional para CLI. El dashboard
+  # detecta la plantilla por estructura y, si no encuentra una compatible, usa
+  # el generador integrado sin detener el procesamiento.
   plantilla_empresarial: null
+  deteccion_plantillas:
+    activar: true
+    directorios: [plantillas]
+    estrategias:
+      - nombre: empresarial_1st_2st
+        perfiles: [empresarial]
+        tipos_st: [1ST, 2ST]
+        marcadores_ruta: []
+        patrones_archivo: ["*plantilla*.xlsx", "*captura*.xlsx", "*template*.xlsx"]
   hoja_estructura: "Estructura completa"
   hoja_matriz: "Matriz de cumplimiento"
   hoja_textos: "Textos por imagen"

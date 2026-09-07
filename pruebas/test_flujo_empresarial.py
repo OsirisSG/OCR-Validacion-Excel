@@ -11,10 +11,22 @@ import ocr_engine
 import validacion
 from estructura import guardar_estructura, mapear_estructura
 from flujo_empresarial import (BaseConocimiento, CacheOCR, case_key,
+                               clasificar_codigo_operativo,
                                consolidar_caso, detectar_tipos_st,
                                descubrir_casos, evidencias_desde_qr,
                                interpretar_payload_qr, normalizar_numero_parte,
                                normalizar_temperatura, parsear_nombre_caso)
+
+
+def test_clasificacion_conservadora_distingue_codigos_de_prosa_y_valores():
+    assert clasificar_codigo_operativo("RWD") == {
+        "valido": True, "texto": "RWD", "normalizado": "RDW",
+        "tipo": "catalogo", "razon": "Coincide con el catálogo de versión de módulo.",
+    }
+    assert clasificar_codigo_operativo("ETQ-2024-A1-V3")["valido"] is True
+    assert clasificar_codigo_operativo("1234567")["tipo"] == "serial_numerico"
+    assert clasificar_codigo_operativo("prueba de etiqueta lateral")["tipo"] == "oracion"
+    assert clasificar_codigo_operativo("23 ms")["valido"] is False
 
 
 def _caso(raiz: Path, nombre="232561 RDW OGL HT", temperatura="HT", completo=True):
@@ -179,8 +191,10 @@ class _MotorFalso:
         self.cajas = cajas
         self.reconocimientos = 0
         self.formas = []
+        self.formas_deteccion = []
 
     def detectar(self, _imagen):
+        self.formas_deteccion.append(_imagen.shape[:2])
         return self.cajas
 
     def leer_texto_completo(self, _imagen):
@@ -228,6 +242,28 @@ def test_zoom_forzado_cambia_dimensiones_que_recibe_easyocr(monkeypatch, tmp_pat
     assert motor.formas[0] == (50, 200)
     assert salida["recortes"][0]["dimensiones_antes"] == (80, 20)
     assert salida["recortes"][0]["dimensiones_despues"] == (200, 50)
+
+
+def test_rotacion_manual_libre_se_aplica_antes_del_ocr_empresarial(monkeypatch, tmp_path):
+    from aprendizaje import GestorAprendizaje, dimensiones_rotadas
+
+    ruta = tmp_path / "rotacion.png"
+    cv2.imwrite(str(ruta), np.zeros((100, 200, 3), dtype=np.uint8))
+    motor = _MotorFalso([])
+    config = {
+        "fase1": {"umbral_confianza_texto_completo": .25},
+        "ocr": {"modo_recorte": "auto"},
+        "aprendizaje": {"activar": True, "directorio": str(tmp_path / "aprendizaje")},
+    }
+    GestorAprendizaje(config).actualizar_rotacion(ruta, 30)
+    monkeypatch.setattr(ocr_engine, "obtener_motor", lambda config=None: (motor, config["fase1"]))
+
+    salida = ocr_engine.extraer_texto_empresarial(str(ruta), config)
+
+    ancho, alto = dimensiones_rotadas(200, 100, 30)
+    assert motor.formas_deteccion[0] == (alto, ancho)
+    assert salida["rotacion_manual_aplicada_grados"] == 30
+    assert salida["orientacion_manual_prioritaria"] is True
 
 
 def test_validacion_empresarial_procesa_todas_y_reanuda_desde_cache(monkeypatch, tmp_path):

@@ -69,6 +69,63 @@ CAMPOS_NUNCA_HEREDAR = {
     "housing_sidewall_stress_whitening", "housing_inner_stress_whitening",
 }
 
+REGLAS_CODIGO_VISIBLES = (
+    "Los catálogos RDW/NAR, NOM/OGL/UGL y HT/RT/NT se aceptan por coincidencia exacta.",
+    "Los números de parte deben tener bloques de letras o números separados y al menos un dígito.",
+    "Un serial numérico necesita por lo menos cinco dígitos.",
+    "Las oraciones, números cortos, unidades sueltas y símbolos aislados no llenan campos.",
+    "Un valor sólo se consolida si coincide con una regla de campo, la ruta, un QR válido o evidencia corroborada.",
+)
+
+
+def clasificar_codigo_operativo(texto: str) -> dict:
+    """Distingue códigos aprovechables de prosa o valores OCR espurios."""
+    original = str(texto or "").strip()
+    mayus = re.sub(r"\s+", " ", original.upper().replace("−", "-")).strip()
+    if not mayus:
+        return {"valido": False, "texto": original, "normalizado": "",
+                "tipo": "vacio", "razon": "No contiene caracteres."}
+    catalogos = {
+        "RWD": ("RDW", "versión de módulo"), "ROW": ("RDW", "versión de módulo"),
+        "N4R": ("NAR", "versión de módulo"), "RDW": ("RDW", "versión de módulo"),
+        "NAR": ("NAR", "versión de módulo"), "NOM": ("NOM", "tipo de inflador"),
+        "OGL": ("OGL", "tipo de inflador"), "UGL": ("UGL", "tipo de inflador"),
+        "HT": ("HT", "temperatura"), "RT": ("RT", "temperatura"),
+        "NT": ("NT", "temperatura"),
+    }
+    if mayus in catalogos:
+        normalizado, nombre = catalogos[mayus]
+        return {"valido": True, "texto": original, "normalizado": normalizado,
+                "tipo": "catalogo", "razon": f"Coincide con el catálogo de {nombre}."}
+    numero_parte = normalizar_numero_parte(mayus)
+    if numero_parte:
+        return {"valido": True, "texto": original, "normalizado": numero_parte,
+                "tipo": "numero_parte", "razon": "Cumple el formato de número de parte."}
+    compacto = re.sub(r"[^A-Z0-9._/-]", "", mayus)
+    palabras = re.findall(r"[A-ZÁÉÍÓÚÑ]+", mayus)
+    digitos = sum(caracter.isdigit() for caracter in compacto)
+    letras = sum(caracter.isalpha() for caracter in compacto)
+    if len(palabras) >= 3 and digitos == 0:
+        return {"valido": False, "texto": original, "normalizado": compacto,
+                "tipo": "oracion", "razon": "Es texto descriptivo, no un código."}
+    if digitos == 0:
+        return {"valido": False, "texto": original, "normalizado": compacto,
+                "tipo": "texto", "razon": "No tiene dígitos ni coincide con un catálogo."}
+    if re.fullmatch(r"[+-]?\d+(?:[.,]\d+)?(?:\s*(?:MS|°?C))?", mayus):
+        if re.fullmatch(r"\d{5,}", mayus):
+            return {"valido": True, "texto": original, "normalizado": mayus,
+                    "tipo": "serial_numerico", "razon": "Es una secuencia de al menos cinco dígitos."}
+        return {"valido": False, "texto": original, "normalizado": mayus,
+                "tipo": "valor_numerico", "razon": "Es un valor aislado; requiere una etiqueta de campo."}
+    if len(compacto) < 4:
+        return {"valido": False, "texto": original, "normalizado": compacto,
+                "tipo": "fragmento", "razon": "Es demasiado corto para considerarlo código."}
+    if letras and digitos and re.fullmatch(r"[A-Z0-9._/-]+", compacto):
+        return {"valido": True, "texto": original, "normalizado": compacto,
+                "tipo": "alfanumerico", "razon": "Combina letras y números con separadores permitidos."}
+    return {"valido": False, "texto": original, "normalizado": compacto,
+            "tipo": "ruido", "razon": "No coincide con una regla de código conocida."}
+
 ALIAS_QR_DEFAULT = {
     "test": "test_number", "test_number": "test_number", "id": "test_number",
     "date": "test_date", "test_date": "test_date", "fecha": "test_date",

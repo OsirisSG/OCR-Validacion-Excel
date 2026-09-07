@@ -50,6 +50,30 @@ perspectiva y zoom real, reconoce, normaliza y consolida una fila por ID. Los
 faltantes no detienen el lote y dos valores incompatibles reales producen un
 conflicto auditable.
 
+La revisión distingue dos herramientas que no deben confundirse:
+
+- El zoom de vista sólo cambia la presentación en el navegador.
+- El zoom OCR recorta una región de interés y vuelve a analizar sus píxeles.
+
+La rotación manual acepta cualquier ángulo, expande el lienzo para no cortar la
+fotografía y prevalece sobre orientación y deskew automáticos. Al restablecerla a
+0° se recupera la geometría automática original. Seleccionar una fotografía en
+el detalle activa de inmediato sus herramientas de edición.
+
+La plantilla empresarial se resuelve automáticamente mediante estrategias
+configurables (perfil, tipo 1ST/2ST, marcadores de ruta y patrones de archivo).
+Agregar un estilo futuro consiste en declarar otra estrategia en `config.yaml`;
+si ninguna plantilla compatible aparece se usa el formato integrado.
+
+## Códigos operativos
+
+La salida principal prioriza códigos normalizados y corroborables, no oraciones.
+Se aceptan catálogos conocidos, números de parte estructurados, seriales numéricos
+de longitud suficiente y códigos alfanuméricos que contienen letras y números.
+Se descartan de esa salida las frases, unidades sueltas, palabras sin dígitos,
+fragmentos demasiado cortos y ruido; la lectura completa permanece disponible
+para revisión y cada decisión conserva una razón visible.
+
 ## Prioridad de fuentes
 
 1. Corrección manual confirmada.
@@ -75,4 +99,3 @@ y el entrenamiento usa un bloqueo separado del OCR normal.
 Windows 11 con Python 3.12 de 64 bits es el objetivo principal; macOS y Linux
 se mantienen compatibles. Los scripts de arranque sólo aplican Bypass de
 PowerShell al proceso actual.
-

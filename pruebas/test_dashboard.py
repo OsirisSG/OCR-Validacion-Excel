@@ -11,6 +11,7 @@ from dashboard.backend.app import (_aplicar_correcciones_publicas,
                                    _dimensiones_ocr_desde_archivo,
                                    _imagen_transformada, _orientacion_base_publica,
                                    _rotar_resultado_existente, app)
+from aprendizaje import dimensiones_rotadas
 
 
 cliente = TestClient(app)
@@ -47,6 +48,14 @@ def test_estado_config_y_frontend():
     assert isinstance(aprendizaje.json()["correcciones"], int)
     assert aprendizaje.json()["almacenamiento"]["base_datos"].endswith(
         ".aprendizaje/aprendizaje.sqlite3")
+
+    frontend = (backend.RAIZ_PROYECTO / "dashboard" / "frontend" / "app.js").read_text(
+        encoding="utf-8")
+    assert "Zoom de vista · sólo pantalla" in frontend
+    assert "Zoom OCR · mejora la lectura" in frontend
+    assert "Ángulo manual" in frontend
+    assert "La plantilla se detecta automáticamente" in frontend
+    assert 'id="ruta-plantilla"' not in frontend
 
 
 def test_pipeline_rechaza_rutas_invalidas_o_demasiado_amplias():
@@ -230,6 +239,12 @@ def test_vista_orientada_rota_y_rechaza_archivo_corrupto(tmp_path):
     decodificada = cv2.imdecode(np.frombuffer(respuesta.body, dtype=np.uint8), cv2.IMREAD_COLOR)
     assert decodificada.shape[:2] == (40, 20)
 
+    libre = _imagen_transformada(ruta, rotacion=30)
+    libre_decodificada = cv2.imdecode(
+        np.frombuffer(libre.body, dtype=np.uint8), cv2.IMREAD_COLOR)
+    ancho, alto = dimensiones_rotadas(40, 20, 30)
+    assert libre_decodificada.shape[:2] == (alto, ancho)
+
     corrupta = tmp_path / "corrupta.jpg"
     corrupta.write_bytes(b"no-es-imagen")
     try:
@@ -253,6 +268,51 @@ def test_giro_inmediato_actualiza_cajas_y_dimensiones_ocr():
     assert ocr["dimensiones"] == [100, 200]
     assert ocr["tokens"][0]["bbox"] == [40, 10, 40, 30]
     assert ocr["rotacion_manual_aplicada_grados"] == 90
+
+
+def test_giro_manual_libre_reemplaza_y_restaura_orientacion_automatica():
+    original = [10, 20, 30, 40]
+    ocr = {
+        "dimensiones": [200, 100], "rotacion_manual_aplicada_grados": 0,
+        "orientacion_texto_base_grados": 180, "deskew_texto_aplicado_grados": 2.5,
+        "tokens": [{"texto": "ABC123", "bbox": list(original)}], "lineas_texto": [],
+        "orientacion_texto_grados": 182.5,
+    }
+
+    giro = _rotar_resultado_existente(ocr, 27.5)
+    assert round(giro["delta"], 1) == 207.5
+    assert ocr["orientacion_manual_prioritaria"] is True
+    assert ocr["orientacion_texto_base_grados"] == 0
+    assert ocr["deskew_texto_aplicado_grados"] == 0
+    assert ocr["rotacion_manual_aplicada_grados"] == 27.5
+    assert ocr["tokens"][0]["bbox"] != original
+
+    _rotar_resultado_existente(ocr, 0)
+    assert ocr["orientacion_manual_prioritaria"] is False
+    assert ocr["orientacion_texto_base_grados"] == 180
+    assert ocr["deskew_texto_aplicado_grados"] == 2.5
+    assert ocr["dimensiones"] == [200, 100]
+    assert ocr["tokens"][0]["bbox"] == original
+
+
+def test_giro_libre_posterior_parte_del_angulo_manual_ya_aplicado():
+    ocr = {
+        "dimensiones_originales": [200, 100],
+        "dimensiones": list(dimensiones_rotadas(200, 100, 27.5)),
+        "rotacion_manual_aplicada_grados": 27.5,
+        "orientacion_manual_prioritaria": True,
+        "orientacion_texto_base_grados": 0,
+        "tokens": [{"texto": "ABC123", "bbox": [40, 30, 60, 20]}],
+        "lineas_texto": [],
+    }
+
+    giro = _rotar_resultado_existente(ocr, 40)
+
+    assert round(giro["delta"], 1) == 12.5
+    assert ocr["dimensiones"] == list(dimensiones_rotadas(200, 100, 40))
+    _rotar_resultado_existente(ocr, 0)
+    assert ocr["dimensiones"] == [200, 100]
+    assert ocr["orientacion_manual_prioritaria"] is False
 
 
 def test_giro_recupera_dimensiones_de_imagen_si_el_ocr_no_las_guardo(tmp_path):

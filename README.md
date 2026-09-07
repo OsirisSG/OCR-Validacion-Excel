@@ -18,6 +18,10 @@ por separado y seleccionarse en `config.yaml` cuando la plataforma lo soporte.
 - Detección de nombres conformes y carpetas anómalas.
 - OCR sobre imágenes completas con deskew, binarización y QR opcional.
 - Detección de regiones, cuatro orientaciones y realce de texto grabado.
+- Giro manual de ángulo libre, con prioridad explícita sobre la orientación automática.
+- Zoom visual separado del recorte/zoom OCR que vuelve a analizar una región real.
+- Detección automática y extensible de plantilla según la estructura del lote.
+- Clasificación visible de códigos útiles y descarte explicable de frases o valores espurios.
 - Selección automática CUDA/MPS/CPU con fallback seguro y CPU para preprocesamiento.
 - Aprendizaje incremental supervisado con versiones, evaluación y rollback.
 - Dataset visual auditable y entrenamiento EasyOCR por lotes, separado del OCR normal.
@@ -195,7 +199,10 @@ Produce localmente:
 - `validacion_resultados.json`
 - `resultado_maestro.xlsx`
 
-Para una estructura empresarial, indica la plantilla con las 36 claves estables:
+Para una estructura empresarial, el sistema busca automáticamente una plantilla
+compatible con las 36 claves estables en la raíz, en `plantillas/`, en la carpeta
+superior y en las rutas configuradas. Si no encuentra una, usa el formato
+integrado. `--plantilla` queda disponible como anulación explícita para scripts:
 
 ```bash
 python pipeline.py "/ruta/Proyecto_1ST" \
@@ -269,8 +276,9 @@ El dashboard ofrece tres vistas principales:
   acciones para completar/reabrir y eliminación reversible.
 - **Detalle:** todas las imágenes de la carpeta, texto completo con su layout y
   corrección de tokens, líneas o bloques multilinea. También permite dibujar una
-  región y transcribir texto que el OCR omitió por completo. Incluye controles
-  de giro de 90°, informa cuando el OCR enderezó una imagen y muestra la lista
+  región y transcribir texto que el OCR omitió por completo. Al elegir una imagen
+  se activa su edición. Incluye giro manual de cualquier ángulo —que tiene
+  prioridad sobre el enderezado automático—, informa la orientación aplicada y muestra la lista
   conjunta de correcciones y textos omitidos usados como aprendizaje supervisado.
 - **Procesar carpeta:** ejecuta las Fases 0–3 desde una ruta local, acepta la ruta
   con o sin comillas, permite nombrar el Excel, elegir si se sobrescribe el
@@ -284,6 +292,12 @@ Listado y abren su propio detalle con el mismo estuche de revisión de las
 carpetas normales. Se puede seleccionar un renglón, pulsar su caja directamente
 sobre la imagen, dibujar una región omitida, transcribirla, girar la fotografía,
 consultar el historial supervisado y enviar tanto OCR como texto manual al Excel.
+
+El **zoom de vista** sólo amplía la fotografía en pantalla y no altera el OCR. El
+**zoom OCR** permite recortar una región de interés y volver a procesar únicamente
+esa zona; ese recorte sí cambia la lectura. El detalle prioriza una lista deduplicada
+de códigos útiles. Las frases, unidades sueltas y fragmentos sin estructura quedan
+en las lecturas completas plegables y cada descarte muestra una regla comprensible.
 
 Para un lote grande, usa una ruta local en **Procesar carpeta**. Los archivos no
 se suben ni se duplican en el navegador. Durante la ejecución aparecen un reloj

@@ -854,9 +854,13 @@ def _compacto(resultado_ocr: dict | None) -> dict | None:
     if resultado_ocr is None:
         return None
     return {k: resultado_ocr.get(k) for k in (
-        "tokens", "lineas_texto", "texto_completo", "qr_bbox",
+        "tokens", "lineas_texto", "texto_completo", "codigos_detectados",
+        "reglas_codigo", "qr_bbox",
         "confianza_media", "num_lineas_ocr",
-        "rotacion_manual_aplicada_grados", "orientacion_base_grados",
+        "rotacion_manual_aplicada_grados", "orientacion_manual_prioritaria",
+        "orientacion_automatica_preservada_grados",
+        "deskew_automatico_preservado_grados", "geometria_automatica_preservada",
+        "orientacion_base_grados",
         "deskew_aplicado_grados", "orientacion_corregida_grados",
         "orientacion_texto_base_grados", "deskew_texto_aplicado_grados",
         "orientacion_texto_grados", "variante_preprocesamiento",

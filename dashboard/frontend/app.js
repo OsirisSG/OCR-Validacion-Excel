@@ -294,7 +294,6 @@ function VistaCarga() {
     () => cargarRutasRecientes()[0]?.nombre_excel || "");
   const [sobrescribirExcel, setSobrescribirExcel] = useState(false);
   const [tipoSt, setTipoSt] = useState("");
-  const [rutaPlantilla, setRutaPlantilla] = useState("");
   const [modoEjecucion, setModoEjecucion] = useState("completo");
   const [rutaInventario, setRutaInventario] = useState("");
   const [estado, setEstado] = useState(undefined);
@@ -348,7 +347,7 @@ function VistaCarga() {
       await enviarJSON("/api/pipeline", {
         ruta: ruta.trim(), nombre_excel: nombreExcel.trim() || null,
         sobrescribir_excel: sobrescribirExcel,
-        tipo_st: tipoSt || null, ruta_plantilla: rutaPlantilla.trim() || null,
+        tipo_st: tipoSt || null, ruta_plantilla: null,
         modo_ejecucion: modoEjecucion,
         ruta_inventario: rutaInventario.trim() || null,
       });
@@ -380,6 +379,13 @@ function VistaCarga() {
   const etaViva = procesando && estado?.eta_segundos !== null && estado?.eta_segundos !== undefined
     ? Math.max(0, estado.eta_segundos - segundosDesdeActualizacion) : estado?.eta_segundos;
   const noLista = capacidad && !capacidad.listo;
+  const plantillaDetectada = estado?.resumen?.fases?.fase3?.plantilla
+    || estado?.resumen?.fases?.fase0?.plantilla;
+  const etiquetaPlantilla = plantillaDetectada
+    ? (plantillaDetectada.ruta
+      ? `${plantillaDetectada.estilo || "Plantilla detectada"} · ${plantillaDetectada.ruta}`
+      : "Formato integrado (no se encontró un XLSX compatible)")
+    : null;
   function elegirRutaGuardada(valor) {
     const elegida = rutasRecientes.find((item) => item.ruta === valor);
     if (!elegida) return;
@@ -491,12 +497,11 @@ function VistaCarga() {
       <input id="ruta-inventario" class="campo" type="text" maxLength=${4096}
         placeholder="C:\\proyecto\\inventario_proyecto.json" value=${rutaInventario}
         onInput=${(e) => setRutaInventario(e.target.value)} disabled=${activo || enviando} />
-      <label for="ruta-plantilla"><strong>Plantilla Excel empresarial</strong></label>
-      <p class="subtitulo-seccion">Ruta opcional al archivo .xlsx con las 36 claves estables; acepta comillas.</p>
-      <input id="ruta-plantilla" class="campo" type="text" maxLength=${4096}
-        placeholder="C:\\plantillas\\captura_pruebas.xlsx"
-        value=${rutaPlantilla} onInput=${(e) => setRutaPlantilla(e.target.value)}
-        disabled=${activo || enviando} />
+      <div class="nota-local">
+        <span aria-hidden="true">📄</span>
+        <span>La plantilla se detecta automáticamente según la estructura. Si no hay un XLSX compatible,
+          se usa el formato integrado sin detener el proceso.</span>
+      </div>
       <label class="control-ocultos opcion-sobrescribir">
         <input type="checkbox" checked=${sobrescribirExcel}
           onChange=${(e) => setSobrescribirExcel(e.target.checked)} disabled=${activo || enviando} />
@@ -540,6 +545,7 @@ function VistaCarga() {
         <dt>Procesamiento</dt><dd>${estado.recursos
           ? `${estado.recursos.seleccionado.toUpperCase()} para OCR · ${estado.recursos.cpu_hilos} hilos CPU disponibles`
           : "—"}</dd>
+        ${etiquetaPlantilla && html`<dt>Plantilla</dt><dd class="mono">${etiquetaPlantilla}</dd>`}
         <dt>Inicio</dt><dd>${fmtFecha(estado.iniciado_en)}</dd>
         <dt>Tiempo transcurrido</dt><dd class="reloj-vivo">${fmtDuracion(transcurridoVivo)}</dd>
         ${estado.finalizado_en && html`<dt>Finalización</dt><dd>${fmtFecha(estado.finalizado_en)}</dd>`}
@@ -1122,58 +1128,88 @@ function SelectorRegion({ item, valor, onChange, onSelectText }) {
   </div>`;
 }
 
-function PanelImagen({ titulo, item, vacio, onSelectText, edicionActiva, rotacionActiva, onRotate }) {
+function PanelImagen({ titulo, item, vacio, onSelectText, edicionActiva, rotacionActiva, onRotate,
+  onSelectImage, seleccionada = false }) {
   const [zoomVista, setZoomVista] = useState(100);
   const ocr = item?.resultado_ocr || {};
   const base = Number(ocr.orientacion_texto_base_grados ?? ocr.orientacion_base_grados) || 0;
   const ajuste = Number(ocr.deskew_texto_aplicado_grados ?? ocr.deskew_aplicado_grados) || 0;
   const preferida = Number(item?.rotacion_manual_preferida_grados) || 0;
+  const preferidaFirmada = preferida > 180 ? preferida - 360 : preferida;
+  const [anguloManual, setAnguloManual] = useState(preferidaFirmada);
+  useEffect(() => setAnguloManual(preferidaFirmada), [item?.id, preferida]);
   const enderezada = base !== 0 || Math.abs(ajuste) >= 0.05;
-  return html`<div class="tarjeta">
-    <h3 class="titulo-seccion" style=${{ marginTop: 0 }}>${titulo}</h3>
+  const codigos = (ocr.codigos_detectados || []).filter((codigo) => codigo.valido);
+  return html`<div class=${`tarjeta panel-imagen ${seleccionada ? "imagen-seleccionada" : ""}`}>
+    <div class="progreso-titulo">
+      <h3 class="titulo-seccion" style=${{ marginTop: 0 }}>${titulo}</h3>
+      ${onSelectImage && html`<button type="button" class="boton boton-compacto"
+        onClick=${() => onSelectImage(item)}>${seleccionada && edicionActiva ? "Editando" : "Seleccionar y editar"}</button>`}
+    </div>
     ${item
       ? html`<div class="controles-zoom">
-          <label>Zoom de vista
+          <label>Zoom de vista · sólo pantalla
             <input type="range" min="50" max="300" step="10" value=${zoomVista}
               onInput=${(e) => setZoomVista(Number(e.target.value))} />
           </label>
           <strong>${zoomVista}%</strong>
           <button type="button" class="boton boton-compacto" onClick=${() => setZoomVista(100)}>Restablecer</button>
+          <small>No cambia lo que lee el OCR.</small>
         </div>
         <div class="imagen-marco imagen-marco-zoom">
           <img style=${{ width: `${zoomVista}%`, maxWidth: "none" }}
             src=${item.ruta_api_visual || item.ruta_api} alt=${`Imagen: ${item.ruta}`} loading="lazy" />
         </div>
         <div class="estado-rotacion">
-          ${enderezada ? html`<span class="chip rotacion-auto">✓ Enderezada automáticamente:
+          ${preferida !== 0 ? html`<span class="chip rotacion-manual">Rotación manual prioritaria: ${preferidaFirmada}°</span>`
+            : enderezada ? html`<span class="chip rotacion-auto">✓ Enderezada automáticamente:
             ${base}°${Math.abs(ajuste) >= 0.05 ? ` + ajuste ${ajuste.toFixed(1)}°` : ""}</span>`
             : html`<span class="chip neutro">Orientación automática: sin cambio</span>`}
-          ${preferida !== 0 && html`<span class="chip rotacion-manual">Rotación manual: ${preferida}°</span>`}
           ${item.rotacion_pendiente && html`<span class="subtitulo-seccion">
             Se usará en el próximo OCR; la vista ya está girada.</span>`}
         </div>
         ${rotacionActiva && html`<div class="controles-rotacion" aria-label="Rotar imagen">
           <button type="button" class="boton boton-compacto"
-            onClick=${() => onRotate?.(item, (preferida + 270) % 360)}>↶ 90°</button>
+            onClick=${() => setAnguloManual(Math.max(-180, anguloManual - 90))}>↶ 90°</button>
           <button type="button" class="boton boton-compacto"
-            onClick=${() => onRotate?.(item, (preferida + 90) % 360)}>↷ 90°</button>
-          <button type="button" class="boton boton-compacto" disabled=${preferida === 0}
+            onClick=${() => setAnguloManual(Math.min(180, anguloManual + 90))}>↷ 90°</button>
+          <label>Ángulo manual
+            <input type="range" min="-180" max="180" step="1" value=${anguloManual}
+              onInput=${(e) => setAnguloManual(Number(e.target.value))} />
+          </label>
+          <input class="campo campo-angulo" type="number" min="-180" max="180" step="0.1"
+            value=${anguloManual} aria-label="Ángulo manual en grados"
+            onInput=${(e) => setAnguloManual(Math.max(-180, Math.min(180, Number(e.target.value))))} />
+          <button type="button" class="boton boton-primario boton-compacto"
+            disabled=${Math.abs(anguloManual - preferidaFirmada) < 0.01}
+            onClick=${() => onRotate?.(item, anguloManual)}>Aplicar giro</button>
+          <button type="button" class="boton boton-compacto" disabled=${preferida === 0 && anguloManual === 0}
             onClick=${() => onRotate?.(item, 0)}>Restablecer</button>
         </div>`}
-        <div class="texto-detectado">
-          <div class="progreso-titulo"><strong>Texto completo detectado</strong>
-            <span class="subtitulo-seccion">${(ocr.lineas_texto || []).length} renglones</span></div>
-          <pre>${ocr.texto_completo || "Sin texto legible"}</pre>
+        <div class="codigos-utiles">
+          <div class="progreso-titulo"><strong>Códigos útiles</strong>
+            <span class="subtitulo-seccion">${codigos.length} aceptados</span></div>
+          ${codigos.length ? html`<ul class="tokens-lista">${codigos.map((codigo, i) => html`
+            <li key=${`${codigo.normalizado}-${i}`} class="token-fila codigo-valido">
+              <span><strong class="mono">${codigo.normalizado}</strong><small>${codigo.razon}</small></span>
+              <span class="chip neutro">${codigo.tipo.replaceAll("_", " ")}</span>
+            </li>`)}</ul>` : html`<p class="subtitulo-seccion">No hay códigos corroborables en esta lectura.</p>`}
         </div>
-        <ul class="tokens-lista">
-          ${unidadesOcr(ocr).filter((u) => u.tipo_unidad !== "bloque completo").map((t) => html`
-          <li key=${t.unidad_id} class=${`token-fila ${unidadConfirmada(t, item.correcciones) ? "token-confirmado" : ""}`}>
-            <button type="button" class="token-texto-boton mono" disabled=${!edicionActiva}
-              title=${edicionActiva ? "Usar este texto en la corrección" : "Activa la edición para corregir"}
-              onClick=${() => onSelectText?.(item, t)}>${textoVisible(t)}</button>
-            <span class="conf">${t.confianza == null ? "—" : `${(t.confianza * 100).toFixed(1)}%`}</span>
-          </li>`)}
-        </ul>
+        <details class="lecturas-secundarias"><summary>Ver texto completo y todas las lecturas OCR</summary>
+          <div class="texto-detectado"><pre>${ocr.texto_completo || "Sin texto legible"}</pre></div>
+          <ul class="tokens-lista">
+            ${unidadesOcr(ocr).filter((u) => u.tipo_unidad !== "bloque completo").map((t) => html`
+            <li key=${t.unidad_id} class=${`token-fila ${unidadConfirmada(t, item.correcciones) ? "token-confirmado" : ""}`}>
+              <button type="button" class="token-texto-boton mono" disabled=${!edicionActiva}
+                title=${edicionActiva ? "Usar este texto en la corrección" : "Selecciona esta imagen para editar"}
+                onClick=${() => onSelectText?.(item, t)}>${textoVisible(t)}</button>
+              <span class="conf">${t.confianza == null ? "—" : `${(t.confianza * 100).toFixed(1)}%`}</span>
+            </li>`)}
+          </ul>
+          ${(ocr.reglas_codigo || []).length > 0 && html`<details><summary>Reglas de aceptación de códigos</summary>
+            <ul>${ocr.reglas_codigo.map((regla) => html`<li key=${regla}>${regla}</li>`)}</ul>
+          </details>`}
+        </details>
         ${(item.anotaciones || []).length > 0 && html`<div class="anotaciones-manuales">
           <strong>Texto añadido manualmente</strong>
           ${(item.anotaciones || []).map((a) => html`<div key=${a.id} class="anotacion-manual">
@@ -1203,6 +1239,7 @@ function VistaDetalle({ nombre }) {
   const [resultadoRegion, setResultadoRegion] = useState(null);
   const [modoRecorte, setModoRecorte] = useState("auto");
   const [zoomOcr, setZoomOcr] = useState(1.5);
+  const [roiOcr, setRoiOcr] = useState(null);
   const [alcanceRoi, setAlcanceRoi] = useState("etiqueta");
   const [campoManual, setCampoManual] = useState("");
   const [valorManual, setValorManual] = useState("");
@@ -1219,6 +1256,7 @@ function VistaDetalle({ nombre }) {
     setTextoCorrecto(valor);
     setResultadoCorreccion(null);
     setRegion(null);
+    setRoiOcr(null);
     setTextoRegion("");
     setResultadoRegion(null);
     setModoEdicion(false);
@@ -1259,8 +1297,15 @@ function VistaDetalle({ nombre }) {
     setTextoCorrecto(valor);
     setResultadoCorreccion(null);
     setRegion(null);
+    setRoiOcr(null);
     setTextoRegion("");
     setResultadoRegion(null);
+    if (!revisionCompletada) {
+      setModoEdicion(true);
+      window.setTimeout(() => document.querySelector(".aprendizaje-panel")?.scrollIntoView({
+        behavior: "smooth", block: "start",
+      }), 0);
+    }
   }
   function seleccionarUnidad(imagen, unidad) {
     const candidatas = unidadesOcr(imagen?.resultado_ocr || {});
@@ -1353,11 +1398,11 @@ function VistaDetalle({ nombre }) {
       let roiManual = null;
       if (modoRecorte === "manual") {
         const dimensiones = ocrSeleccionado.dimensiones || ocrSeleccionado.dimensiones_originales;
-        if (!region || !dimensiones?.[0] || !dimensiones?.[1]) {
+        if (!roiOcr || !dimensiones?.[0] || !dimensiones?.[1]) {
           throw new Error("Para el modo manual, selecciona primero una región sobre la imagen.");
         }
-        roiManual = { x: region[0] / dimensiones[0], y: region[1] / dimensiones[1],
-          ancho: region[2] / dimensiones[0], alto: region[3] / dimensiones[1] };
+        roiManual = { x: roiOcr[0] / dimensiones[0], y: roiOcr[1] / dimensiones[1],
+          ancho: roiOcr[2] / dimensiones[0], alto: roiOcr[3] / dimensiones[1] };
       }
       const resultado = await enviarJSON(`/api/casos/${encodeURIComponent(detalle.id)}/reprocesar`, {
         solo_errores: soloErrores,
@@ -1484,7 +1529,7 @@ function VistaDetalle({ nombre }) {
           <option value="manual">ROI manual seleccionada</option>
           <option value="completo">Imagen completa</option>
         </select>
-        <label class="control-zoom-ocr">Zoom OCR: <strong>${Number(zoomOcr).toFixed(1)}×</strong>
+        <label class="control-zoom-ocr">Zoom OCR · mejora la lectura: <strong>${Number(zoomOcr).toFixed(1)}×</strong>
           <input type="range" min="1" max="3" step="0.1" value=${zoomOcr}
             onInput=${(e) => setZoomOcr(Number(e.target.value))} />
         </label>
@@ -1494,11 +1539,14 @@ function VistaDetalle({ nombre }) {
           <option value="fase">Guardar para esta fase NACH/VOR</option>
           <option value="proyecto">Guardar para todo el proyecto</option>
         </select>`}
-        ${modoRecorte === "manual" && region && html`<span class="subtitulo-seccion">
-          Vista previa OCR: ${region[2]}×${region[3]} px →
-          ${Math.round(region[2] * zoomOcr)}×${Math.round(region[3] * zoomOcr)} px
+        ${modoRecorte === "manual" && roiOcr && html`<span class="subtitulo-seccion">
+          Recorte enviado al OCR: ${roiOcr[2]}×${roiOcr[3]} px →
+          ${Math.round(roiOcr[2] * zoomOcr)}×${Math.round(roiOcr[3] * zoomOcr)} px
         </span>`}
-        <button class="boton" onClick=${() => reprocesar(false)}>Reprocesar este ID</button>
+        ${modoRecorte === "manual"
+          ? html`<button class="boton boton-primario" disabled=${!roiOcr}
+              onClick=${() => reprocesar(false, true)}>Reprocesar imagen visible con esta ROI</button>`
+          : html`<button class="boton" onClick=${() => reprocesar(false)}>Reprocesar este ID</button>`}
         <button class="boton" onClick=${() => reprocesar(true)}>Reintentar imágenes con error</button>
         <button class="boton" disabled=${!imagenSeleccionada}
           onClick=${() => reprocesar(false, true)}>Reprocesar imagen visible</button>
@@ -1506,6 +1554,11 @@ function VistaDetalle({ nombre }) {
         ${detalle.archivo_excel && html`<a class="boton" href="/api/resultados/excel" target="_blank">
           Abrir resultado Excel</a>`}
       </div>
+      ${modoRecorte === "manual" && html`<div class="roi-ocr-panel">
+        <strong>1. Encierra únicamente la zona que debe leer el OCR</strong>
+        <p class="subtitulo-seccion">Este recorte sí modifica el análisis. Después pulsa “Reprocesar imagen visible”.</p>
+        <${SelectorRegion} item=${imagenSeleccionada} valor=${roiOcr} onChange=${setRoiOcr} />
+      </div>`}
       <form class="formulario-correccion" onSubmit=${guardarCampoManual}
         style=${{ marginTop: 14 }}>
         <label><strong>Corregir campo consolidado</strong>
@@ -1703,12 +1756,21 @@ function VistaDetalle({ nombre }) {
         : "Activa “Editar y revisar” para corregir texto o marcar una zona omitida."}</p>
     </div>`}
 
+    <div class="selector-imagenes" aria-label="Imágenes del ID">
+      ${imagenesDetalle.map((imagen) => html`<button type="button" key=${imagen.id || imagen.ruta}
+        class=${`boton boton-imagen ${imagen.id === imagenSeleccionada?.id ? "activa" : ""}`}
+        onClick=${() => cambiarImagen(imagen.id)}>
+        ${imagen.nombre || imagen.ruta.split(/[\\/]/).pop()}
+        <small>${(imagen.fase || imagen.rol || "imagen").replaceAll("_", " ")}</small>
+      </button>`)}
+    </div>
     <div class="detalle-grid detalle-todas-imagenes">
-      ${imagenesDetalle.map((imagen) => html`<${PanelImagen} key=${imagen.id || imagen.ruta}
-        titulo=${`${(imagen.rol || "imagen").replaceAll("_", " ")} · ${imagen.nombre || imagen.ruta.split(/[\\/]/).pop()}`}
-        item=${imagen} vacio="Imagen no disponible." edicionActiva=${modoEdicion && !revisionCompletada}
-        rotacionActiva=${!revisionCompletada}
-        onSelectText=${seleccionarUnidad} onRotate=${rotarImagen} />`)}
+      <${PanelImagen} key=${imagenSeleccionada?.id || imagenSeleccionada?.ruta}
+        titulo=${`${(imagenSeleccionada?.rol || "imagen").replaceAll("_", " ")} · ${imagenSeleccionada?.nombre || imagenSeleccionada?.ruta?.split(/[\\/]/).pop() || "Imagen"}`}
+        item=${imagenSeleccionada} vacio="Imagen no disponible."
+        seleccionada=${true} edicionActiva=${modoEdicion && !revisionCompletada}
+        rotacionActiva=${!revisionCompletada} onSelectImage=${(imagen) => cambiarImagen(imagen.id)}
+        onSelectText=${seleccionarUnidad} onRotate=${rotarImagen} />
     </div>
 
     <a class="volver" href="#/tabla">← Volver al listado</a>

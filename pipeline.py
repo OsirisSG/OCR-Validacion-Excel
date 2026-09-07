@@ -142,9 +142,13 @@ def ejecutar_pipeline(ruta_raiz: str | Path, config: dict | None = None,
             calcular_hash=bool(config.get("empresarial", {}).get("inventario_hash", False)),
             al_caso=caso_inventariado,
         )
+    from plantilla_empresarial import detectar_plantilla_automatica
+    seleccion_plantilla = detectar_plantilla_automatica(
+        ruta_raiz, estructura, config, explicita=ruta_plantilla)
+    ruta_plantilla = seleccion_plantilla.get("ruta")
     if usar_empresarial and ruta_plantilla:
         from plantilla_empresarial import cargar_contrato
-        contrato = cargar_contrato(Path(str(ruta_plantilla).strip().strip('"\'')))
+        contrato = cargar_contrato(Path(ruta_plantilla))
         config = deepcopy(config)
         requeridos = [clave for clave, regla in contrato["esquema"].items()
                       if str(regla.get("requerido") or "").lower() in {"sí", "si"}]
@@ -163,6 +167,7 @@ def ejecutar_pipeline(ruta_raiz: str | Path, config: dict | None = None,
         "tipos_st": estructura.get("tipos_st", []),
         "casos_validos": estructura.get("casos_validos", 0),
         "casos_incompletos": estructura.get("casos_incompletos", 0),
+        "plantilla": seleccion_plantilla,
     }
     resumen["fases"]["fase_a"] = {
         "artifacto": inventario.get("archivo_salida") if inventario else str(ruta_estructura),
@@ -267,7 +272,8 @@ def ejecutar_pipeline(ruta_raiz: str | Path, config: dict | None = None,
         validacion["ruta_plantilla"] = str(ruta_plantilla) if ruta_plantilla else None
         with open(validacion["archivo_salida"], "w", encoding="utf-8") as archivo:
             json.dump(validacion, archivo, ensure_ascii=False, indent=2)
-    resumen["fases"]["fase3"] = {"artifacto": str(ruta_excel)}
+    resumen["fases"]["fase3"] = {
+        "artifacto": str(ruta_excel), "plantilla": seleccion_plantilla}
     resumen["duracion_segundos"] = round(time.time() - t0, 1)
     progreso("completado", "Resultados y Excel actualizados", {
         "porcentaje": 100, "eta_segundos": 0, "restantes": 0,

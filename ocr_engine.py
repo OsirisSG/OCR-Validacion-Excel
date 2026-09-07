@@ -42,6 +42,7 @@ import statistics
 import sys
 import time
 import warnings
+from copy import deepcopy
 from pathlib import Path
 
 import cv2
@@ -777,17 +778,28 @@ _RE_NUMERICO_LARGO = re.compile(r"^\d{5,}$")
 
 def _candidatos_codigo(lineas: list[dict], umbral_espacio_px: int) -> list[dict]:
     """Códigos mixtos o secuencias numéricas largas, sin formato empresarial fijo."""
+    from flujo_empresarial import clasificar_codigo_operativo
     candidatos = []
     for token in segmentar_tokens(lineas, umbral_espacio_px):
-        limpio = re.sub(r"[^A-Z0-9]", "", token["texto"].upper())
-        texto_crudo = re.sub(r"[^A-Za-z0-9]", "", token["texto"])
-        posible_relieve = (token.get("origen") == "region" and len(limpio) >= 5 and
-                            any(c.islower() for c in texto_crudo) and
-                            any(c.isupper() for c in texto_crudo))
-        if ((len(limpio) >= 4 and _RE_ALFANUMERICO.match(limpio)) or
-                _RE_NUMERICO_LARGO.match(limpio) or posible_relieve):
-            candidatos.append(token)
+        evaluacion = clasificar_codigo_operativo(token["texto"])
+        if evaluacion["valido"]:
+            candidatos.append({**token, "clasificacion_codigo": evaluacion})
     return candidatos
+
+
+def _resumen_codigos(tokens: list[dict]) -> list[dict]:
+    from flujo_empresarial import clasificar_codigo_operativo
+    salida = []
+    vistos = set()
+    for token in tokens:
+        evaluacion = clasificar_codigo_operativo(token.get("texto", ""))
+        firma = (evaluacion["normalizado"], evaluacion["tipo"])
+        if firma in vistos:
+            continue
+        vistos.add(firma)
+        salida.append({**evaluacion, "bbox": token.get("bbox"),
+                       "confianza": token.get("confianza")})
+    return salida
 
 
 def _puntuar_pasada(pasada: dict, umbral_espacio_px: int) -> tuple:
@@ -814,6 +826,25 @@ def _rotar_recto(imagen_bgr: np.ndarray, grados: int) -> np.ndarray:
     if grados == 270:
         return cv2.rotate(imagen_bgr, cv2.ROTATE_90_COUNTERCLOCKWISE)
     raise ValueError(f"La orientación debe ser múltiplo de 90°, no {grados}")
+
+
+def rotar_imagen_libre(imagen_bgr: np.ndarray, grados: float) -> np.ndarray:
+    """Gira en sentido horario cualquier ángulo y expande el lienzo sin recortar."""
+    angulo = float(grados) % 360
+    if abs(angulo) < 1e-6:
+        return imagen_bgr
+    if any(abs(angulo - recto) < 1e-6 for recto in (90, 180, 270)):
+        return _rotar_recto(imagen_bgr, int(round(angulo)))
+    alto, ancho = imagen_bgr.shape[:2]
+    matriz = cv2.getRotationMatrix2D((ancho / 2.0, alto / 2.0), -angulo, 1.0)
+    coseno, seno = abs(matriz[0, 0]), abs(matriz[0, 1])
+    nuevo_ancho = int(np.ceil(alto * seno + ancho * coseno))
+    nuevo_alto = int(np.ceil(alto * coseno + ancho * seno))
+    matriz[0, 2] += nuevo_ancho / 2.0 - ancho / 2.0
+    matriz[1, 2] += nuevo_alto / 2.0 - alto / 2.0
+    return cv2.warpAffine(
+        imagen_bgr, matriz, (nuevo_ancho, nuevo_alto), flags=cv2.INTER_CUBIC,
+        borderMode=cv2.BORDER_REPLICATE)
 
 
 def _seleccionar_pasada(imagen: np.ndarray, f1: dict, motor) -> tuple[dict, list[dict]]:
@@ -985,10 +1016,14 @@ def extraer_texto_empresarial(imagen_path: str, config: dict | None = None,
                                         "zoom": 1.0}]})
         return resultado
 
-    imagen_original = cargar_imagen(imagen_path)
+    imagen_fuente = cargar_imagen(imagen_path)
+    from aprendizaje import GestorAprendizaje
+    rotacion_manual = GestorAprendizaje(config).rotacion_preferida(imagen_path)
+    imagen_original = rotar_imagen_libre(imagen_fuente, rotacion_manual)
     qrs = detectar_qrs(imagen_original, f1.get("qr", {}))
     motor, _ = obtener_motor(config)
     alto, ancho = imagen_original.shape[:2]
+    alto_fuente, ancho_fuente = imagen_fuente.shape[:2]
     manual_cfg = roi_manual or cfg.get("roi_manual", {}).get(str(fase).upper())
     if modo == "manual":
         imagen_deteccion, caja_manual = _roi_proporcional(imagen_original, manual_cfg)
@@ -1012,10 +1047,21 @@ def extraer_texto_empresarial(imagen_path: str, config: dict | None = None,
     tiempo_deteccion = time.monotonic() - inicio_total
     if not cajas:
         tiene_qr = any(q.get("payload") for q in qrs)
+        from flujo_empresarial import REGLAS_CODIGO_VISIBLES
         return {"imagen": str(imagen_path), "motor": motor.nombre,
                 "dispositivo": getattr(motor, "dispositivo", "cpu"), "tokens": [],
+                "codigos_detectados": [], "reglas_codigo": list(REGLAS_CODIGO_VISIBLES),
                 "lineas_texto": [], "texto_completo": "", "confianza_media": None,
-                "dimensiones_originales": (ancho, alto), "dimensiones": (ancho, alto),
+                "dimensiones_originales": (ancho_fuente, alto_fuente),
+                "dimensiones": (ancho, alto),
+                "rotacion_manual_aplicada_grados": rotacion_manual,
+                "orientacion_manual_prioritaria": bool(rotacion_manual),
+                "orientacion_base_grados": 0,
+                "orientacion_texto_base_grados": 0,
+                "deskew_aplicado_grados": 0.0,
+                "deskew_texto_aplicado_grados": 0.0,
+                "orientacion_corregida_grados": rotacion_manual,
+                "orientacion_texto_grados": rotacion_manual,
                 "estado_imagen": "procesada_con_qr" if tiene_qr else "descartada_sin_texto",
                 "modo_recorte": modo,
                 "tiempo_deteccion_seg": round(tiempo_deteccion, 4), "tiempo_ocr_seg": 0.0,
@@ -1092,8 +1138,10 @@ def extraer_texto_empresarial(imagen_path: str, config: dict | None = None,
             if zoom_respaldo > 1.01:
                 preparada = cv2.resize(preparada, None, fx=zoom_respaldo,
                                        fy=zoom_respaldo, interpolation=cv2.INTER_CUBIC)
-            angulo = 180 if preparada.shape[1] >= preparada.shape[0] else 90
-            preparada = _rotar_recto(preparada, angulo)
+            angulo = 0 if rotacion_manual else (
+                180 if preparada.shape[1] >= preparada.shape[0] else 90)
+            if angulo:
+                preparada = _rotar_recto(preparada, angulo)
             for lectura in motor.leer_texto_completo(preparada):
                 if float(lectura.get("confianza") or 0) >= umbral:
                     respaldo.append({**lectura, "region_bbox": (x, y, w, h), "origen": "region"})
@@ -1109,13 +1157,25 @@ def extraer_texto_empresarial(imagen_path: str, config: dict | None = None,
     cantidad_tokens = len(tokens)
     corregidas = aplicar_modelo_tokens([*tokens, *reconstruidas], config, imagen_path)
     tokens, reconstruidas = corregidas[:cantidad_tokens], corregidas[cantidad_tokens:]
+    from flujo_empresarial import REGLAS_CODIGO_VISIBLES
     confianzas = [float(l["confianza"]) for l in lineas]
     return {"imagen": str(imagen_path), "motor": motor.nombre,
             "dispositivo": getattr(motor, "dispositivo", "cpu"), "tokens": tokens,
+            "codigos_detectados": _resumen_codigos(tokens),
+            "reglas_codigo": list(REGLAS_CODIGO_VISIBLES),
             "lineas_texto": reconstruidas,
             "texto_completo": "\n".join(l["texto"] for l in reconstruidas),
             "confianza_media": round(float(np.mean(confianzas)), 4) if confianzas else None,
-            "dimensiones_originales": (ancho, alto), "dimensiones": (ancho, alto),
+            "dimensiones_originales": (ancho_fuente, alto_fuente),
+            "dimensiones": (ancho, alto),
+            "rotacion_manual_aplicada_grados": rotacion_manual,
+            "orientacion_manual_prioritaria": bool(rotacion_manual),
+            "orientacion_base_grados": 0,
+            "orientacion_texto_base_grados": 0,
+            "deskew_aplicado_grados": 0.0,
+            "deskew_texto_aplicado_grados": 0.0,
+            "orientacion_corregida_grados": rotacion_manual,
+            "orientacion_texto_grados": rotacion_manual,
             "estado_imagen": "procesada_con_texto" if lineas else "descartada_sin_texto",
             "modo_recorte": modo, "tiempo_deteccion_seg": round(tiempo_deteccion, 4),
             "tiempo_ocr_seg": round(time.monotonic() - inicio_ocr, 4),
@@ -1138,14 +1198,24 @@ def extraer_texto(imagen_path: str, config: dict | None = None) -> dict:
     imagen_original = cargar_imagen(imagen_path)
     from aprendizaje import GestorAprendizaje, aplicar_modelo_tokens
     rotacion_manual = GestorAprendizaje(config).rotacion_preferida(imagen_path)
-    imagen = _rotar_recto(imagen_original, rotacion_manual)
+    imagen = rotar_imagen_libre(imagen_original, rotacion_manual)
+    f1_ejecucion = f1
+    if rotacion_manual:
+        # Una decisión humana fija el marco de lectura: no se suma otra
+        # orientación ni un deskew automático sobre la imagen ya colocada.
+        f1_ejecucion = deepcopy(f1)
+        preparacion = f1_ejecucion.setdefault("preprocesamiento", {})
+        preparacion["deskew"] = False
+        busqueda = preparacion.setdefault("busqueda_adaptativa", {})
+        busqueda["orientaciones"] = [0]
+        busqueda["modo"] = "adaptativo"
 
-    pasada, intentos = _seleccionar_pasada(imagen, f1, motor)
+    pasada, intentos = _seleccionar_pasada(imagen, f1_ejecucion, motor)
 
     tokens = segmentar_tokens(pasada["lineas"], int(f1.get("umbral_espacio_px", 40)))
     if f1.get("extraer_texto_completo", True):
         lineas_crudas_texto, orientacion_texto = _extraer_pasada_texto_completo(
-            imagen, f1, motor,
+            imagen, f1_ejecucion, motor,
             int(pasada.get("orientacion_texto_base", 0)),
             str(pasada.get("variante_texto_completo", pasada["variante"])),
         )
@@ -1168,6 +1238,7 @@ def extraer_texto(imagen_path: str, config: dict | None = None) -> dict:
         [*tokens, *lineas_texto], config, imagen_path)
     tokens = unidades_corregidas[:cantidad_tokens]
     lineas_texto = unidades_corregidas[cantidad_tokens:]
+    from flujo_empresarial import REGLAS_CODIGO_VISIBLES
     confianzas = [t["confianza"] for t in tokens]
     h_original, w_original = imagen_original.shape[:2]
     h, w = imagen.shape[:2]
@@ -1182,10 +1253,13 @@ def extraer_texto(imagen_path: str, config: dict | None = None) -> dict:
         "dispositivo": getattr(motor, "dispositivo", "cpu"),
         "advertencias_motor": list(getattr(motor, "advertencias", [])),
         "tokens": tokens,
+        "codigos_detectados": _resumen_codigos(tokens),
+        "reglas_codigo": list(REGLAS_CODIGO_VISIBLES),
         "lineas_texto": lineas_texto,
         "texto_completo": "\n".join(l["texto"] for l in lineas_texto),
         "qr_bbox": tuple(pasada["qr"]) if pasada["qr"] is not None else None,
         "rotacion_manual_aplicada_grados": rotacion_manual,
+        "orientacion_manual_prioritaria": bool(rotacion_manual),
         "orientacion_base_grados": base_codigo,
         "deskew_aplicado_grados": -deskew_codigo_reportado,
         "orientacion_corregida_grados": (

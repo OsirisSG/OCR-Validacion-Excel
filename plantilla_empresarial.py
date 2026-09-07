@@ -6,6 +6,7 @@ import re
 from copy import copy
 from datetime import date, datetime
 from pathlib import Path
+from typing import Iterable
 
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
@@ -29,6 +30,99 @@ COLUMNAS_TRAZABILIDAD = [
     "qr_detectado", "payload_qr", "poligono_qr", "fuente_campo",
     "modelo_ocr", "correccion_confirmada", "dataset_entrenamiento", "estado_cache",
 ]
+
+
+def _coincide_estrategia(estrategia: dict, estructura: dict, ruta_raiz: Path) -> bool:
+    """Evalúa marcadores declarativos para añadir estilos sin cambiar Python."""
+    perfil = "empresarial" if estructura.get("casos_empresariales") else "legacy"
+    perfiles = {str(valor).lower() for valor in estrategia.get("perfiles", [])}
+    if perfiles and perfil not in perfiles:
+        return False
+    tipos = {str(valor).upper() for valor in estrategia.get("tipos_st", [])}
+    detectados = {str(valor).upper() for valor in estructura.get("tipos_st", [])}
+    if estructura.get("tipo_st"):
+        detectados.add(str(estructura["tipo_st"]).upper())
+    if tipos and not tipos.intersection(detectados):
+        return False
+    texto_ruta = "/".join(ruta_raiz.parts).upper()
+    marcadores = [str(valor).upper() for valor in estrategia.get("marcadores_ruta", [])]
+    return not marcadores or any(marcador in texto_ruta for marcador in marcadores)
+
+
+def _raices_plantillas(ruta_raiz: Path, directorios: Iterable[str]) -> list[Path]:
+    raiz_codigo = Path(__file__).resolve().parent
+    candidatas = [ruta_raiz, ruta_raiz / "plantillas", ruta_raiz.parent,
+                  raiz_codigo / "plantillas"]
+    for declarada in directorios:
+        ruta = Path(str(declarada)).expanduser()
+        candidatas.append((raiz_codigo / ruta).resolve() if not ruta.is_absolute()
+                          else ruta.resolve())
+    salida = []
+    for ruta in candidatas:
+        ruta = ruta.resolve()
+        if ruta.is_dir() and ruta not in salida:
+            salida.append(ruta)
+    return salida
+
+
+def detectar_plantilla_automatica(ruta_raiz: str | Path, estructura: dict,
+                                  config: dict, explicita: str | Path | None = None) -> dict:
+    """Selecciona una plantilla compatible o el generador integrado.
+
+    Las estrategias viven en ``fase3.deteccion_plantillas.estrategias``. Un
+    estilo futuro sólo necesita declarar perfil/tipo, marcadores de ruta y
+    patrones de archivo; cada XLSX se valida antes de ser seleccionado.
+    """
+    raiz = Path(ruta_raiz).expanduser().resolve()
+    cfg = config.get("fase3", {}).get("deteccion_plantillas", {})
+    configurada = config.get("fase3", {}).get("plantilla_empresarial")
+    for ruta, fuente in ((explicita, "explícita"), (configurada, "configuración")):
+        if not ruta:
+            continue
+        candidata = Path(str(ruta).strip().strip('"\'')).expanduser()
+        candidata = ((Path(__file__).resolve().parent / candidata).resolve()
+                     if not candidata.is_absolute() else candidata.resolve())
+        if not candidata.is_file():
+            if fuente == "explícita":
+                raise ValueError("La plantilla indicada no existe o no es accesible.")
+            continue
+        cargar_contrato(candidata)
+        return {"ruta": str(candidata), "estilo": "plantilla_empresarial",
+                "fuente": fuente, "estrategia": "seleccion_directa"}
+
+    if not cfg.get("activar", True) or not estructura.get("casos_empresariales"):
+        return {"ruta": None, "estilo": "generador_estandar", "fuente": "integrada",
+                "estrategia": "sin_plantilla_externa"}
+
+    estrategias = cfg.get("estrategias") or [{
+        "nombre": "empresarial_1st_2st", "perfiles": ["empresarial"],
+        "tipos_st": ["1ST", "2ST"],
+        "patrones_archivo": ["*plantilla*.xlsx", "*captura*.xlsx", "*template*.xlsx"],
+    }]
+    raices = _raices_plantillas(raiz, cfg.get("directorios", []))
+    rechazadas = []
+    for estrategia in estrategias:
+        if not _coincide_estrategia(estrategia, estructura, raiz):
+            continue
+        patrones = estrategia.get("patrones_archivo", ["*.xlsx"])
+        vistas = set()
+        for carpeta in raices:
+            for patron in patrones:
+                for candidata in sorted(carpeta.glob(str(patron))):
+                    resuelta = candidata.resolve()
+                    if resuelta in vistas or not resuelta.is_file():
+                        continue
+                    vistas.add(resuelta)
+                    try:
+                        cargar_contrato(resuelta)
+                    except (OSError, ValueError, KeyError) as exc:
+                        rechazadas.append({"ruta": str(resuelta), "motivo": str(exc)})
+                        continue
+                    return {"ruta": str(resuelta), "estilo": "plantilla_empresarial",
+                            "fuente": "estructura", "estrategia": estrategia.get(
+                                "nombre", "configurada"), "rechazadas": rechazadas}
+    return {"ruta": None, "estilo": "generador_estandar", "fuente": "integrada",
+            "estrategia": "estructura_sin_xlsx_compatible", "rechazadas": rechazadas}
 
 
 def cargar_contrato(ruta_plantilla: str | Path) -> dict:

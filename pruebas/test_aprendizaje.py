@@ -1,4 +1,4 @@
-from aprendizaje import GestorAprendizaje, rotar_bbox
+from aprendizaje import GestorAprendizaje, dimensiones_rotadas, rotar_bbox
 
 
 def _gestor(tmp_path, **cambios):
@@ -187,6 +187,24 @@ def test_rotacion_de_cajas_conserva_su_posicion_visual():
     assert rotar_bbox(caja, 90, 200, 100) == [40, 10, 40, 30]
     assert rotar_bbox(caja, 180, 200, 100) == [160, 40, 30, 40]
     assert rotar_bbox(caja, 270, 200, 100) == [20, 160, 40, 30]
+
+
+def test_rotacion_libre_expande_lienzo_y_mantiene_caja_dentro():
+    assert dimensiones_rotadas(200, 100, 45) == (213, 213)
+    caja = rotar_bbox([10, 20, 30, 40], 45, 200, 100)
+    assert caja[2] > 30 and caja[3] > 40
+    assert 0 <= caja[0] < 213 and 0 <= caja[1] < 213
+    assert caja[0] + caja[2] <= 213
+    assert caja[1] + caja[3] <= 213
+
+
+def test_rotacion_manual_acepta_decimales(tmp_path):
+    imagen = tmp_path / "libre.jpg"
+    imagen.write_bytes(b"imagen-de-prueba")
+    gestor = GestorAprendizaje({"aprendizaje": {
+        "activar": True, "directorio": str(tmp_path / "aprendizaje")}})
+    gestor.actualizar_rotacion(imagen, -12.5)
+    assert gestor.rotacion_preferida(imagen) == 347.5
 
 
 def test_alerta_atendida_persiste_y_puede_filtrarse(tmp_path):

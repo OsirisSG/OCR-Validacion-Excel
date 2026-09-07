@@ -4,7 +4,8 @@ from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.worksheet.table import Table
 
 from flujo_empresarial import CLAVES_PLANTILLA
-from plantilla_empresarial import cargar_contrato, generar_desde_plantilla
+from plantilla_empresarial import (cargar_contrato, detectar_plantilla_automatica,
+                                   generar_desde_plantilla)
 
 
 def _plantilla(ruta):
@@ -49,6 +50,36 @@ def _plantilla(ruta):
     libro.save(ruta)
 
 
+def test_detecta_plantilla_compatible_por_estructura(tmp_path):
+    raiz = tmp_path / "Proyecto_1ST"
+    plantillas = raiz / "plantillas"
+    plantillas.mkdir(parents=True)
+    esperada = plantillas / "plantilla_captura_1st.xlsx"
+    _plantilla(esperada)
+    config = {"fase3": {"deteccion_plantillas": {
+        "activar": True,
+        "estrategias": [{
+            "nombre": "estilo_empresa", "perfiles": ["empresarial"],
+            "tipos_st": ["1ST"], "patrones_archivo": ["*plantilla*.xlsx"],
+        }],
+    }}}
+    estructura = {"casos_empresariales": [{}], "tipo_st": "1ST", "tipos_st": ["1ST"]}
+
+    resultado = detectar_plantilla_automatica(raiz, estructura, config)
+
+    assert resultado["ruta"] == str(esperada.resolve())
+    assert resultado["fuente"] == "estructura"
+    assert resultado["estrategia"] == "estilo_empresa"
+
+
+def test_sin_plantilla_compatible_usa_generador_integrado(tmp_path):
+    estructura = {"casos_empresariales": [{}], "tipo_st": "2ST", "tipos_st": ["2ST"]}
+    resultado = detectar_plantilla_automatica(
+        tmp_path, estructura, {"fase3": {"deteccion_plantillas": {"activar": True}}})
+    assert resultado["ruta"] is None
+    assert resultado["estilo"] == "generador_estandar"
+
+
 def _resultado(numero):
     campos = {clave: {"valor": None, "estado": "faltante"} for clave in CLAVES_PLANTILLA}
     campos.update({"test_number": {"valor": str(numero), "estado": "extraido_ruta"},
@@ -87,4 +118,3 @@ def test_una_fila_por_id_trazabilidad_y_formula_mas_alla_205(tmp_path):
     assert libro["Trazabilidad_OCR"].max_row == 202
     assert next(iter(captura.tables.values())).ref.endswith("AJ206")
     assert any("206" in str(dv.sqref) for dv in captura.data_validations.dataValidation)
-

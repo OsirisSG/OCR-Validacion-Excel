@@ -47,7 +47,9 @@ from fastapi.staticfiles import StaticFiles  # noqa: E402
 
 from configuracion import cargar_config, cargar_reglas, clasificar  # noqa: E402
 from aprendizaje import (GestorAprendizaje, hash_archivo, normalizar_codigo,
-                         rotar_bbox)  # noqa: E402
+                         dimensiones_rotadas, rotar_bbox,
+                         transformar_bbox_entre_rotaciones)  # noqa: E402
+from ocr_engine import rotar_imagen_libre  # noqa: E402
 from recursos import detectar_recursos  # noqa: E402
 from flujo_empresarial import BaseConocimiento, CLAVES_PLANTILLA  # noqa: E402
 
@@ -142,7 +144,7 @@ class SolicitudRotacion(BaseModel):
     tipo: str = Field(pattern="^(carpeta|externa)$")
     prueba_id: str = Field(min_length=1, max_length=128)
     imagen_id: str | None = Field(default=None, max_length=128)
-    grados: int = Field(ge=0, le=270)
+    grados: float = Field(ge=-360, le=360)
 
 
 class SolicitudCorreccionExterna(BaseModel):
@@ -298,7 +300,7 @@ def _alertas_pendientes(tipo: str, item_id: str, alertas: list[dict],
     return salida
 
 
-def _imagen_transformada(ruta: Path, rotacion: int = 0,
+def _imagen_transformada(ruta: Path, rotacion: float = 0,
                          ajuste: float = 0.0) -> Response:
     """Entrega una vista orientada igual que la usada por el OCR."""
     import cv2
@@ -308,15 +310,7 @@ def _imagen_transformada(ruta: Path, rotacion: int = 0,
     imagen = cv2.imdecode(datos, cv2.IMREAD_COLOR)
     if imagen is None:
         raise HTTPException(422, "La imagen está corrupta o no se puede decodificar.")
-    rotacion = int(rotacion) % 360
-    if rotacion == 90:
-        imagen = cv2.rotate(imagen, cv2.ROTATE_90_CLOCKWISE)
-    elif rotacion == 180:
-        imagen = cv2.rotate(imagen, cv2.ROTATE_180)
-    elif rotacion == 270:
-        imagen = cv2.rotate(imagen, cv2.ROTATE_90_COUNTERCLOCKWISE)
-    elif rotacion != 0:
-        raise HTTPException(400, "La rotación debe ser 0°, 90°, 180° o 270°.")
+    imagen = rotar_imagen_libre(imagen, float(rotacion))
     if abs(float(ajuste)) >= 0.05:
         alto, ancho = imagen.shape[:2]
         matriz = cv2.getRotationMatrix2D((ancho / 2, alto / 2), float(ajuste), 1.0)
@@ -340,17 +334,16 @@ def _dimensiones_ocr_desde_archivo(ruta: Path, ocr: dict) -> tuple[int, int]:
     if imagen is None:
         raise ValueError("La imagen está corrupta o no se puede decodificar.")
     alto_original, ancho_original = imagen.shape[:2]
-    manual = int(ocr.get("rotacion_manual_aplicada_grados") or 0) % 360
-    orientacion = (_orientacion_base_publica(ocr) + manual) % 360
-    if orientacion in {90, 270}:
-        return alto_original, ancho_original
-    return ancho_original, alto_original
+    manual = float(ocr.get("rotacion_manual_aplicada_grados") or 0) % 360
+    orientacion = (manual if ocr.get("orientacion_manual_prioritaria") else
+                   (_orientacion_base_publica(ocr) + manual) % 360)
+    return dimensiones_rotadas(ancho_original, alto_original, orientacion)
 
 
 def _rotar_resultado_existente(
-        ocr: dict, grados_nuevos: int,
+        ocr: dict, grados_nuevos: float,
         dimensiones_respaldo: tuple[int, int] | None = None) -> dict:
-    """Gira cajas OCR ya calculadas para que la corrección visual sea inmediata."""
+    """Gira cajas al instante; la geometría automática queda restaurable."""
     dimensiones = ocr.get("dimensiones") or []
     if len(dimensiones) == 2:
         ancho, alto = int(dimensiones[0]), int(dimensiones[1])
@@ -359,26 +352,101 @@ def _rotar_resultado_existente(
         ocr["dimensiones"] = [ancho, alto]
     else:
         raise ValueError("No fue posible obtener las dimensiones de la imagen para girarla.")
-    aplicados = int(ocr.get("rotacion_manual_aplicada_grados") or 0) % 360
-    delta = (int(grados_nuevos) - aplicados) % 360
-    if delta == 0:
-        ocr["rotacion_manual_aplicada_grados"] = int(grados_nuevos)
-        return {"delta": 0, "dimensiones_anteriores": (ancho, alto)}
+    dimensiones_anteriores = (ancho, alto)
+    aplicados = float(ocr.get("rotacion_manual_aplicada_grados") or 0) % 360
+    nuevos = round(float(grados_nuevos) % 360, 3)
+    prioridad_manual = bool(ocr.get("orientacion_manual_prioritaria"))
+    base_automatica = (_orientacion_base_publica(ocr) if not prioridad_manual else
+                       float(ocr.get("orientacion_automatica_preservada_grados") or 0))
+    actual = aplicados if prioridad_manual else (aplicados + base_automatica) % 360
+    claves_orientacion = (
+        "orientacion_base_grados", "orientacion_texto_base_grados",
+        "deskew_aplicado_grados", "deskew_texto_aplicado_grados",
+        "orientacion_corregida_grados", "orientacion_texto_grados", "orientacion_grados")
+
+    def capturar_geometria() -> dict:
+        dimensiones_fuente = ocr.get("dimensiones_originales") or [ancho, alto]
+        return {
+            "dimensiones": list(ocr.get("dimensiones") or [ancho, alto]),
+            "dimensiones_fuente": [int(dimensiones_fuente[0]), int(dimensiones_fuente[1])],
+            "angulo_referencia": actual,
+            "referencia_automatica": not prioridad_manual,
+            "tokens": [deepcopy(unidad.get("bbox")) for unidad in ocr.get("tokens") or []],
+            "lineas_texto": [deepcopy(unidad.get("bbox"))
+                              for unidad in ocr.get("lineas_texto") or []],
+            "qr_bbox": deepcopy(ocr.get("qr_bbox")), "roi_usado": deepcopy(ocr.get("roi_usado")),
+            "orientacion": {clave: ocr.get(clave) for clave in claves_orientacion},
+        }
+
+    def restaurar_geometria(guardada: dict) -> None:
+        ocr["dimensiones"] = list(guardada["dimensiones"])
+        for clave in ("tokens", "lineas_texto"):
+            for unidad, bbox in zip(ocr.get(clave) or [], guardada.get(clave) or []):
+                unidad["bbox"] = deepcopy(bbox)
+        ocr["qr_bbox"] = deepcopy(guardada.get("qr_bbox"))
+        ocr["roi_usado"] = deepcopy(guardada.get("roi_usado"))
+        for clave, valor in guardada.get("orientacion", {}).items():
+            if valor is None:
+                ocr.pop(clave, None)
+            else:
+                ocr[clave] = valor
+
+    guardada = ocr.get("geometria_automatica_preservada")
+    if not guardada:
+        if not prioridad_manual:
+            ocr["orientacion_automatica_preservada_grados"] = base_automatica
+            ocr["deskew_automatico_preservado_grados"] = float(
+                ocr.get("deskew_texto_aplicado_grados") or
+                ocr.get("deskew_aplicado_grados") or 0)
+        guardada = capturar_geometria()
+        ocr["geometria_automatica_preservada"] = guardada
+    else:
+        restaurar_geometria(guardada)
+    referencia = float(guardada.get("angulo_referencia", base_automatica)) % 360
+    fuente = guardada.get("dimensiones_fuente") or ocr.get("dimensiones_originales") or [ancho, alto]
+    ancho_fuente, alto_fuente = int(fuente[0]), int(fuente[1])
+    if nuevos:
+        objetivo = nuevos
+        delta_geometria = (objetivo - referencia) % 360
+        ocr["orientacion_manual_prioritaria"] = True
+        ocr["orientacion_base_grados"] = 0
+        ocr["orientacion_texto_base_grados"] = 0
+        ocr["deskew_aplicado_grados"] = 0.0
+        ocr["deskew_texto_aplicado_grados"] = 0.0
+    else:
+        objetivo = base_automatica
+        delta_geometria = (objetivo - referencia) % 360
+        ocr["orientacion_manual_prioritaria"] = False
+        ocr["orientacion_base_grados"] = int(round(base_automatica)) % 360
+        ocr["orientacion_texto_base_grados"] = int(round(base_automatica)) % 360
+        ajuste = float(ocr.get("deskew_automatico_preservado_grados") or 0)
+        ocr["deskew_aplicado_grados"] = ajuste
+        ocr["deskew_texto_aplicado_grados"] = ajuste
+    delta_evidencias = (objetivo - actual) % 360
+    if abs(delta_geometria) < 1e-6:
+        ocr["rotacion_manual_aplicada_grados"] = nuevos
+        return {"delta": delta_evidencias, "dimensiones_anteriores": dimensiones_anteriores,
+                "angulo_anterior": actual, "angulo_nuevo": objetivo,
+                "dimensiones_fuente": (ancho_fuente, alto_fuente)}
     for clave in ("tokens", "lineas_texto"):
         for unidad in ocr.get(clave) or []:
             if unidad.get("bbox") is not None:
-                unidad["bbox"] = rotar_bbox(unidad["bbox"], delta, ancho, alto)
+                unidad["bbox"] = transformar_bbox_entre_rotaciones(
+                    unidad["bbox"], referencia, objetivo, ancho_fuente, alto_fuente)
     for clave in ("qr_bbox", "roi_usado"):
         if ocr.get(clave) is not None:
-            ocr[clave] = rotar_bbox(ocr[clave], delta, ancho, alto)
-    if delta in {90, 270}:
-        ocr["dimensiones"] = [alto, ancho]
+            ocr[clave] = transformar_bbox_entre_rotaciones(
+                ocr[clave], referencia, objetivo, ancho_fuente, alto_fuente)
+    ocr["dimensiones"] = list(dimensiones_rotadas(
+        ancho_fuente, alto_fuente, objetivo))
     for clave in ("orientacion_corregida_grados", "orientacion_texto_grados",
                   "orientacion_grados"):
         if ocr.get(clave) is not None:
-            ocr[clave] = (float(ocr[clave]) + delta) % 360
-    ocr["rotacion_manual_aplicada_grados"] = int(grados_nuevos)
-    return {"delta": delta, "dimensiones_anteriores": (ancho, alto)}
+            ocr[clave] = objetivo % 360
+    ocr["rotacion_manual_aplicada_grados"] = nuevos
+    return {"delta": delta_evidencias, "dimensiones_anteriores": dimensiones_anteriores,
+            "angulo_anterior": actual, "angulo_nuevo": objetivo,
+            "dimensiones_fuente": (ancho_fuente, alto_fuente)}
 
 
 def _orientacion_base_publica(ocr: dict) -> int:
@@ -908,8 +976,6 @@ def rollback_aprendizaje(solicitud: SolicitudRollback):
 @app.post("/api/aprendizaje/rotaciones")
 def guardar_rotacion(solicitud: SolicitudRotacion):
     """Memoriza la orientación humana; el siguiente OCR la usa como punto de partida."""
-    if solicitud.grados not in {0, 90, 180, 270}:
-        raise HTTPException(400, "La rotación debe ser 0°, 90°, 180° o 270°.")
     gestor = GestorAprendizaje(CONFIG)
     ocr_objetivo = None
     documento_externo = None
@@ -957,7 +1023,9 @@ def guardar_rotacion(solicitud: SolicitudRotacion):
             ocr_objetivo, solicitud.grados, dimensiones_respaldo)
         resultado = gestor.actualizar_rotacion(ruta, solicitud.grados)
         resultado.update(gestor.rotar_evidencias_imagen(
-            ruta, giro["delta"], giro["dimensiones_anteriores"]))
+            ruta, giro["delta"], giro["dimensiones_anteriores"],
+            grados_desde=giro["angulo_anterior"], grados_hasta=giro["angulo_nuevo"],
+            dimensiones_fuente=giro["dimensiones_fuente"]))
         if solicitud.tipo == "carpeta":
             # Etiqueta/referencia son vistas resumidas de las mismas imágenes.
             for campo in ("etiqueta", "referencia"):
@@ -1014,20 +1082,25 @@ def _externas_publicas(incluir_ocultos: bool = False) -> dict:
         item["ruta_api"] = f"/api/externas/imagen/{quote(str(fila['imagen']), safe='')}"
         ruta_imagen = (directorio / fila["imagen"]).resolve()
         imagen_hash = hash_archivo(ruta_imagen) if ruta_imagen.is_file() else None
-        preferida = int((rotaciones.get(imagen_hash) or {}).get("grados", 0))
-        aplicada = int(fila.get("rotacion_manual_aplicada_grados") or 0)
+        preferida = float((rotaciones.get(imagen_hash) or {}).get("grados", 0)) % 360
+        aplicada = float(fila.get("rotacion_manual_aplicada_grados") or 0) % 360
         base = _orientacion_base_publica(fila)
         ajuste = float(fila.get("deskew_texto_aplicado_grados") or
                        fila.get("deskew_aplicado_grados") or 0)
         item["rotacion_manual_preferida_grados"] = preferida
         item["orientacion_texto_base_grados"] = base
-        item["rotacion_pendiente"] = preferida != aplicada
+        item["rotacion_pendiente"] = abs(preferida - aplicada) >= 0.01
+        rotacion_vista = preferida if preferida else base
+        ajuste_vista = 0.0 if preferida else ajuste
+        prioridad_aplicada = bool(fila.get("orientacion_manual_prioritaria"))
+        rotacion_ocr = aplicada if prioridad_aplicada else (aplicada + base) % 360
+        ajuste_ocr = 0.0 if prioridad_aplicada else ajuste
         item["ruta_api_visual"] = (
             f"/api/externas/imagen-orientada/{quote(str(fila['imagen']), safe='')}"
-            f"?rotacion={(preferida + base) % 360}&ajuste={ajuste}")
+            f"?rotacion={rotacion_vista}&ajuste={ajuste_vista}")
         item["ruta_api_orientada"] = (
             f"/api/externas/imagen-orientada/{quote(str(fila['imagen']), safe='')}"
-            f"?rotacion={(aplicada + base) % 360}&ajuste={ajuste}")
+            f"?rotacion={rotacion_ocr}&ajuste={ajuste_ocr}")
         item["correcciones"] = (correcciones_por_hash.get(hash_archivo(ruta_imagen), [])
                                 if ruta_imagen.is_file() else [])
         item["anotaciones"] = (anotaciones_por_hash.get(hash_archivo(ruta_imagen), [])
@@ -1120,7 +1193,7 @@ def imagen_externa(nombre: str):
 
 
 @app.get("/api/externas/imagen-orientada/{nombre}")
-def imagen_externa_orientada(nombre: str, rotacion: int = 0, ajuste: float = 0.0):
+def imagen_externa_orientada(nombre: str, rotacion: float = 0, ajuste: float = 0.0):
     from pruebas_externas import CASOS, rutas
     nombre = unquote(nombre)
     if nombre not in CASOS:
@@ -1695,22 +1768,27 @@ def detalle(clave: str):
                 publico["resultado_ocr"] = _aplicar_correcciones_publicas(
                     publico.get("resultado_ocr") or {}, publico["correcciones"])
                 rotacion = rotaciones.get(imagen_hash) or {}
-                preferida = int(rotacion.get("grados", 0))
+                preferida = float(rotacion.get("grados", 0)) % 360
                 ocr = publico.get("resultado_ocr") or {}
-                aplicada = int(ocr.get("rotacion_manual_aplicada_grados") or 0)
+                aplicada = float(ocr.get("rotacion_manual_aplicada_grados") or 0) % 360
                 base = _orientacion_base_publica(ocr)
                 ocr["orientacion_texto_base_grados"] = base
                 ajuste = float(ocr.get("deskew_texto_aplicado_grados") or
                                ocr.get("deskew_aplicado_grados") or 0)
                 ruta_codificada = quote(str(item["ruta"]), safe="")
                 publico["rotacion_manual_preferida_grados"] = preferida
-                publico["rotacion_pendiente"] = preferida != aplicada
+                publico["rotacion_pendiente"] = abs(preferida - aplicada) >= 0.01
+                rotacion_vista = preferida if preferida else base
+                ajuste_vista = 0.0 if preferida else ajuste
+                prioridad_aplicada = bool(ocr.get("orientacion_manual_prioritaria"))
+                rotacion_ocr = aplicada if prioridad_aplicada else (aplicada + base) % 360
+                ajuste_ocr = 0.0 if prioridad_aplicada else ajuste
                 publico["ruta_api_visual"] = (
                     f"/api/imagen/orientada?ruta={ruta_codificada}"
-                    f"&rotacion={(preferida + base) % 360}&ajuste={ajuste}")
+                    f"&rotacion={rotacion_vista}&ajuste={ajuste_vista}")
                 publico["ruta_api_orientada"] = (
                     f"/api/imagen/orientada?ruta={ruta_codificada}"
-                    f"&rotacion={(aplicada + base) % 360}&ajuste={ajuste}")
+                    f"&rotacion={rotacion_ocr}&ajuste={ajuste_ocr}")
             except (HTTPException, OSError):
                 pass
         detalle_json["imagenes"].append(publico)
@@ -1735,7 +1813,7 @@ def imagen(ruta: str):
 
 
 @app.get("/api/imagen/orientada")
-def imagen_orientada(ruta: str, rotacion: int = 0, ajuste: float = 0.0):
+def imagen_orientada(ruta: str, rotacion: float = 0, ajuste: float = 0.0):
     """Vista enderezada, restringida a las mismas imágenes registradas."""
     datos = _cargar_datos()
     if not datos:

@@ -295,13 +295,24 @@ function VistaCarga() {
   const [sobrescribirExcel, setSobrescribirExcel] = useState(false);
   const [tipoSt, setTipoSt] = useState("");
   const [modoEjecucion, setModoEjecucion] = useState("completo");
-  const [rutaInventario, setRutaInventario] = useState("");
+  const [plantillaId, setPlantillaId] = useState("");
+  const [plantillas, setPlantillas] = useState([]);
+  const [rutaNuevaPlantilla, setRutaNuevaPlantilla] = useState("");
+  const [nombreNuevaPlantilla, setNombreNuevaPlantilla] = useState("");
+  const [marcadoresNuevaPlantilla, setMarcadoresNuevaPlantilla] = useState("");
+  const [registrandoPlantilla, setRegistrandoPlantilla] = useState(false);
+  const [dialogoDetencion, setDialogoDetencion] = useState(false);
   const [estado, setEstado] = useState(undefined);
   const [errorEstado, setErrorEstado] = useState(null);
   const [enviando, setEnviando] = useState(false);
   const [errorEnvio, setErrorEnvio] = useState(null);
   const [reloj, setReloj] = useState(Date.now());
   const [capacidad, , errorCapacidad] = useApi("/api/pipeline/capacidad");
+
+  const refrescarPlantillas = useCallback(() => {
+    pedirJSON("/api/plantillas").then((dato) => setPlantillas(dato?.plantillas || []))
+      .catch(() => setPlantillas([]));
+  }, []);
 
   const refrescar = useCallback(() => {
     pedirJSON("/api/pipeline/estado")
@@ -311,9 +322,10 @@ function VistaCarga() {
 
   useEffect(() => {
     refrescar();
+    refrescarPlantillas();
     const id = setInterval(refrescar, 1200);
     return () => clearInterval(id);
-  }, [refrescar]);
+  }, [refrescar, refrescarPlantillas]);
 
   useEffect(() => {
     if (ruta || rutasRecientes.length) return;
@@ -347,9 +359,9 @@ function VistaCarga() {
       await enviarJSON("/api/pipeline", {
         ruta: ruta.trim(), nombre_excel: nombreExcel.trim() || null,
         sobrescribir_excel: sobrescribirExcel,
-        tipo_st: tipoSt || null, ruta_plantilla: null,
+        tipo_st: tipoSt || null, ruta_plantilla: null, plantilla_id: plantillaId || null,
         modo_ejecucion: modoEjecucion,
-        ruta_inventario: rutaInventario.trim() || null,
+        ruta_inventario: null,
       });
       const nueva = {
         ruta: ruta.trim(), nombre_excel: nombreExcel.trim(),
@@ -368,7 +380,8 @@ function VistaCarga() {
 
   const procesando = estado?.estado === "procesando";
   const pausado = estado?.estado === "pausado";
-  const activo = procesando || pausado;
+  const cancelando = estado?.estado === "cancelando";
+  const activo = procesando || pausado || cancelando;
   const porcentaje = Math.min(100, Math.max(0, Number(estado?.porcentaje) || 0));
   const parciales = estado?.resultados_parciales || [];
   const transcurridoVivo = procesando && estado.iniciado_en
@@ -410,12 +423,47 @@ function VistaCarga() {
     }
   }
   async function detener() {
+    setDialogoDetencion(true);
+  }
+  async function confirmarDetencion(accion) {
     setErrorEnvio(null);
     try {
-      await enviarJSON("/api/pipeline/cancelar", {});
+      await enviarJSON("/api/pipeline/cancelar", { accion });
+      setDialogoDetencion(false);
       refrescar();
     } catch (e) {
       setErrorEnvio(e.message);
+    }
+  }
+  async function reanudarCheckpoint() {
+    setErrorEnvio(null);
+    try {
+      await enviarJSON("/api/pipeline/reanudar", {});
+      refrescar();
+    } catch (e) {
+      setErrorEnvio(e.message);
+    }
+  }
+  async function registrarPlantilla(ev) {
+    ev.preventDefault();
+    if (!rutaNuevaPlantilla.trim()) return;
+    setRegistrandoPlantilla(true);
+    setErrorEnvio(null);
+    try {
+      const nueva = await enviarJSON("/api/plantillas", {
+        ruta: rutaNuevaPlantilla.trim(), nombre: nombreNuevaPlantilla.trim() || null,
+        tipos_st: tipoSt && tipoSt !== "LEGACY" ? [tipoSt] : [],
+        marcadores_ruta: marcadoresNuevaPlantilla.split(",").map((v) => v.trim()).filter(Boolean),
+      });
+      await refrescarPlantillas();
+      setPlantillaId(nueva.id);
+      setRutaNuevaPlantilla("");
+      setNombreNuevaPlantilla("");
+      setMarcadoresNuevaPlantilla("");
+    } catch (e) {
+      setErrorEnvio(e.message);
+    } finally {
+      setRegistrandoPlantilla(false);
     }
   }
   if (capacidad === undefined || estado === undefined) {
@@ -485,23 +533,50 @@ function VistaCarga() {
         <option value="LEGACY">Usar recorrido tradicional</option>
       </select>
       <label for="modo-ejecucion"><strong>Modo de ejecución</strong></label>
-      <p class="subtitulo-seccion">Puedes inventariar primero sin OCR y reanudar después desde ese archivo.</p>
+      <p class="subtitulo-seccion">Puedes preparar sólo el inventario o ejecutar el flujo completo.</p>
       <select id="modo-ejecucion" class="campo" value=${modoEjecucion}
         onChange=${(e) => setModoEjecucion(e.target.value)} disabled=${activo || enviando}>
         <option value="completo">Completo: inventario + OCR + Excel</option>
         <option value="inventario">Solo inventario (sin OCR)</option>
-        <option value="reanudar">Reanudar desde inventario</option>
       </select>
-      <label for="ruta-inventario"><strong>Archivo de inventario</strong></label>
-      <p class="subtitulo-seccion">Opcional. Por defecto se usa <span class="mono">inventario_proyecto.json</span>.</p>
-      <input id="ruta-inventario" class="campo" type="text" maxLength=${4096}
-        placeholder="C:\\proyecto\\inventario_proyecto.json" value=${rutaInventario}
-        onInput=${(e) => setRutaInventario(e.target.value)} disabled=${activo || enviando} />
-      <div class="nota-local">
-        <span aria-hidden="true">📄</span>
-        <span>La plantilla se detecta automáticamente según la estructura. Si no hay un XLSX compatible,
-          se usa el formato integrado sin detener el proceso.</span>
-      </div>
+      <section class="base-plantillas">
+        <label for="plantilla-registrada"><strong>Contrato Excel</strong></label>
+        <p class="subtitulo-seccion">Selecciona una plantilla registrada o permite que el sistema elija
+          una compatible sin mezclar sus columnas ni catálogos.</p>
+        <select id="plantilla-registrada" class="campo" value=${plantillaId}
+          onChange=${(e) => setPlantillaId(e.target.value)} disabled=${activo || enviando}>
+          <option value="">Detectar automáticamente / formato integrado</option>
+          ${plantillas.map((plantilla) => html`<option key=${plantilla.id} value=${plantilla.id}
+            disabled=${!plantilla.disponible}>${plantilla.nombre} · ${plantilla.claves} claves
+            ${plantilla.tipos_st?.length ? ` · ${plantilla.tipos_st.join("/")}` : ""}</option>`)}
+        </select>
+        <details class="registro-plantilla">
+          <summary>Registrar otra plantilla Excel</summary>
+          <div class="registro-plantilla-campos">
+            <label>Nombre para identificarla
+              <input class="campo" value=${nombreNuevaPlantilla} maxLength=${128}
+                onInput=${(e) => setNombreNuevaPlantilla(e.target.value)}
+                placeholder="Plantilla cliente / proyecto" disabled=${activo || registrandoPlantilla} />
+            </label>
+            <label>Ruta del archivo .xlsx
+              <input class="campo mono" value=${rutaNuevaPlantilla} maxLength=${4096}
+                onInput=${(e) => setRutaNuevaPlantilla(e.target.value)}
+                placeholder="C:\\plantillas\\captura.xlsx" disabled=${activo || registrandoPlantilla} />
+            </label>
+            <label>Identificadores de carpeta (opcionales)
+              <input class="campo" value=${marcadoresNuevaPlantilla} maxLength=${512}
+                onInput=${(e) => setMarcadoresNuevaPlantilla(e.target.value)}
+                placeholder="Cliente A, Proyecto X (separados por coma)"
+                disabled=${activo || registrandoPlantilla} />
+              <small>Permiten elegirla automáticamente por la estructura de la ruta.</small>
+            </label>
+            <button type="button" class="boton" onClick=${registrarPlantilla}
+              disabled=${activo || registrandoPlantilla || !rutaNuevaPlantilla.trim()}>
+              ${registrandoPlantilla ? "Validando contrato…" : "Registrar y seleccionar"}
+            </button>
+          </div>
+        </details>
+      </section>
       <label class="control-ocultos opcion-sobrescribir">
         <input type="checkbox" checked=${sobrescribirExcel}
           onChange=${(e) => setSobrescribirExcel(e.target.checked)} disabled=${activo || enviando} />
@@ -550,10 +625,15 @@ function VistaCarga() {
         <dt>Tiempo transcurrido</dt><dd class="reloj-vivo">${fmtDuracion(transcurridoVivo)}</dd>
         ${estado.finalizado_en && html`<dt>Finalización</dt><dd>${fmtFecha(estado.finalizado_en)}</dd>`}
       </dl>
-      ${activo && html`<button class=${`boton ${pausado ? "boton-primario" : ""}`}
+      ${(procesando || pausado) && html`<button class=${`boton ${pausado ? "boton-primario" : ""}`}
         onClick=${alternarPausa}>${pausado ? "Continuar procesamiento" : "Pausar después de esta imagen"}</button>`}
-      ${activo && html`<button class="boton boton-peligro" onClick=${detener}>
-        Detener después de esta imagen</button>`}
+      ${(procesando || pausado) && html`<button class="boton boton-peligro" onClick=${detener}>
+        Detener o cancelar…</button>`}
+      ${estado.reanudable && !activo && html`<button class="boton boton-primario"
+        onClick=${reanudarCheckpoint}>Reanudar avance guardado</button>`}
+      ${estado.ultimo_id_nombre && html`<p class="aviso checkpoint-aviso">
+        Avance confirmado hasta: <strong>${estado.ultimo_id_nombre}</strong>. Las imágenes sin cambios se recuperarán del caché.
+      </p>`}
       ${estado.error && html`<div class="mensaje-error" role="alert">
         <strong>Error:</strong> ${estado.error}
         ${estado.bitacora && html`<div class="mono">Bitácora: ${estado.bitacora}</div>`}
@@ -561,6 +641,21 @@ function VistaCarga() {
       ${estado.estado === "completado" && html`<a class="boton boton-primario" href="#/resumen">
         Ver resultados actualizados →</a>`}
     </div>
+
+    ${dialogoDetencion && html`<div class="modal-fondo" role="presentation"
+      onClick=${(e) => { if (e.target === e.currentTarget) setDialogoDetencion(false); }}>
+      <section class="modal-detencion" role="dialog" aria-modal="true" aria-labelledby="titulo-detencion">
+        <h3 id="titulo-detencion">¿Cómo deseas detener el análisis?</h3>
+        <p>Todo resultado terminado y el caché por imagen se conservarán para reanudar sin repetir OCR válido.</p>
+        <div class="acciones-modal">
+          <button type="button" class="boton" onClick=${() => setDialogoDetencion(false)}>Continuar</button>
+          <button type="button" class="boton boton-peligro"
+            onClick=${() => confirmarDetencion("conservar_avance")}>Cancelar y conservar avance</button>
+          <button type="button" class="boton boton-primario"
+            onClick=${() => confirmarDetencion("fin_id")}>Detener al finalizar la carpeta/ID actual</button>
+        </div>
+      </section>
+    </div>`}
 
     ${parciales.length > 0 && html`<section class="resultados-en-vivo">
       <div class="progreso-titulo">
@@ -605,6 +700,7 @@ function TarjetaExterna({ prueba, alActualizarRevision }) {
   const [textoRegion, setTextoRegion] = useState("");
   const [resultadoRegion, setResultadoRegion] = useState(null);
   const [guardandoRegion, setGuardandoRegion] = useState(false);
+  const [motivoSinDatos, setMotivoSinDatos] = useState("");
   const seleccionada = unidades.find((u) => u.unidad_id === unidadId) || unidades[0];
   const completada = prueba.revision?.estado === "completada";
   const itemExterno = {
@@ -614,7 +710,9 @@ function TarjetaExterna({ prueba, alActualizarRevision }) {
     resultado_ocr: prueba, anotaciones: prueba.anotaciones || [],
     correcciones: prueba.correcciones || [],
     rotacion_manual_preferida_grados: prueba.rotacion_manual_preferida_grados,
+    rotacion_manual_definida: prueba.rotacion_manual_definida,
     rotacion_pendiente: prueba.rotacion_pendiente,
+    revision_sin_datos: prueba.revision_sin_datos,
   };
   useEffect(() => {
     const sugerida = lecturaSugerida();
@@ -681,14 +779,30 @@ function TarjetaExterna({ prueba, alActualizarRevision }) {
       setGuardandoRegion(false);
     }
   }
-  async function rotar(grados) {
+  async function rotar(grados, usarAutomatico = false) {
     setGuardando(true);
     setRespuesta(null);
     try {
       const resultado = await enviarJSON("/api/aprendizaje/rotaciones", {
-        tipo: "externa", prueba_id: prueba.id, imagen_id: null, grados,
+        tipo: "externa", prueba_id: prueba.id, imagen_id: null, grados, usar_automatico: usarAutomatico,
       });
       setRespuesta({ ok: true, rotacion: true, resultado });
+      await alActualizarRevision();
+    } catch (error) {
+      setRespuesta({ ok: false, mensaje: error.message });
+    } finally {
+      setGuardando(false);
+    }
+  }
+  async function marcarSinDatos() {
+    setGuardando(true);
+    setRespuesta(null);
+    try {
+      const resultado = await enviarJSON("/api/imagenes/sin-datos", {
+        tipo: "externa", prueba_id: prueba.id, imagen_id: null,
+        motivo: motivoSinDatos.trim() || null,
+      });
+      setRespuesta({ ok: true, sinDatos: true, resultado });
       await alActualizarRevision();
     } catch (error) {
       setRespuesta({ ok: false, mensaje: error.message });
@@ -720,7 +834,7 @@ function TarjetaExterna({ prueba, alActualizarRevision }) {
     <${PanelImagen} titulo=${`${prueba.tipo} · ${prueba.imagen}`} item=${itemExterno}
       vacio="Imagen compleja no disponible." edicionActiva=${modoEdicion && !completada}
       rotacionActiva=${!completada} onSelectText=${(_item, unidad) => seleccionar(unidad)}
-      onRotate=${(_item, grados) => rotar(grados)} />
+      onRotate=${(_item, grados, usarAutomatico) => rotar(grados, usarAutomatico)} onMarkNoData=${marcarSinDatos} />
     <dl class="ficha ficha-externa">
       <dt>Esperado</dt><dd class="mono"><strong>${prueba.tipo === "codigo" ? prueba.esperado
         : `${(prueba.encontrados || []).length} de ${(prueba.esperados || []).length} fragmentos`}</strong></dd>
@@ -782,6 +896,12 @@ function TarjetaExterna({ prueba, alActualizarRevision }) {
       </form>` : html`<p class="subtitulo-seccion">No hay una lectura OCR previa; puedes añadirla como texto omitido.</p>`}
 
       <div class="separador-panel"></div>
+      <label class="motivo-sin-datos"><strong>Motivo opcional para “Imagen sin datos”</strong>
+        <input class="campo" value=${motivoSinDatos} maxLength=${512}
+          onInput=${(e) => setMotivoSinDatos(e.target.value)}
+          placeholder="Ej. fotografía de contexto, sin etiqueta ni código" />
+      </label>
+      <div class="separador-panel"></div>
       <div><p class="sobrelinea">TEXTO OMITIDO</p>
         <h3 class="titulo-seccion">Marcar una zona que el OCR no encontró</h3>
         <p class="subtitulo-seccion">Arrastra sobre la fotografía y transcribe todo el contenido,
@@ -831,6 +951,7 @@ function TarjetaExterna({ prueba, alActualizarRevision }) {
     ${respuesta?.ok && html`<div class="aviso">${respuesta.revision
       ? "Estado de revisión actualizado."
       : respuesta.rotacion ? respuesta.resultado.mensaje
+      : respuesta.sinDatos ? respuesta.resultado.mensaje
       : html`<strong>Corrección guardada y memorizada para esta imagen.</strong>
         ${respuesta.resultado.entrenamiento?.promovido
           ? " También se activó como regla global para imágenes nuevas."
@@ -1129,17 +1250,85 @@ function SelectorRegion({ item, valor, onChange, onSelectText }) {
 }
 
 function PanelImagen({ titulo, item, vacio, onSelectText, edicionActiva, rotacionActiva, onRotate,
-  onSelectImage, seleccionada = false }) {
+  onSelectImage, onMarkNoData, seleccionada = false }) {
   const [zoomVista, setZoomVista] = useState(100);
+  const [dimensionesNaturales, setDimensionesNaturales] = useState(null);
+  const marcoZoomRef = useRef(null);
+  const arrastreRef = useRef(null);
   const ocr = item?.resultado_ocr || {};
   const base = Number(ocr.orientacion_texto_base_grados ?? ocr.orientacion_base_grados) || 0;
   const ajuste = Number(ocr.deskew_texto_aplicado_grados ?? ocr.deskew_aplicado_grados) || 0;
   const preferida = Number(item?.rotacion_manual_preferida_grados) || 0;
-  const preferidaFirmada = preferida > 180 ? preferida - 360 : preferida;
-  const [anguloManual, setAnguloManual] = useState(preferidaFirmada);
-  useEffect(() => setAnguloManual(preferidaFirmada), [item?.id, preferida]);
+  const rotacionManualDefinida = Boolean(item?.rotacion_manual_definida);
+  const anguloFirmado = (valor) => {
+    const normalizado = ((Number(valor) || 0) % 360 + 360) % 360;
+    return normalizado > 180 ? normalizado - 360 : normalizado;
+  };
+  const anguloVistaGuardada = rotacionManualDefinida ? preferida : base + ajuste;
+  const anguloVistaFirmado = anguloFirmado(anguloVistaGuardada);
+  const preferidaFirmada = anguloFirmado(preferida);
+  const [anguloManual, setAnguloManual] = useState(anguloVistaFirmado);
+  useEffect(() => setAnguloManual(anguloVistaFirmado), [item?.id, anguloVistaFirmado]);
+  const giroPrevisualizado = anguloFirmado(anguloManual - anguloVistaFirmado);
+  const cambioPendiente = Math.abs(giroPrevisualizado) >= 0.01;
   const enderezada = base !== 0 || Math.abs(ajuste) >= 0.05;
   const codigos = (ocr.codigos_detectados || []).filter((codigo) => codigo.valido);
+  const limitarZoom = (valor) => Math.min(500, Math.max(25, Math.round(valor)));
+  function cambiarZoom(valor, evento) {
+    const marco = marcoZoomRef.current;
+    const nuevo = limitarZoom(valor);
+    if (!marco || !evento) return setZoomVista(nuevo);
+    const rect = marco.getBoundingClientRect();
+    const localX = evento.clientX - rect.left;
+    const localY = evento.clientY - rect.top;
+    const razonX = (marco.scrollLeft + localX) / Math.max(marco.scrollWidth, 1);
+    const razonY = (marco.scrollTop + localY) / Math.max(marco.scrollHeight, 1);
+    setZoomVista(nuevo);
+    requestAnimationFrame(() => {
+      marco.scrollLeft = razonX * marco.scrollWidth - localX;
+      marco.scrollTop = razonY * marco.scrollHeight - localY;
+    });
+  }
+  function alRueda(evento) {
+    evento.preventDefault();
+    cambiarZoom(zoomVista + (evento.deltaY < 0 ? 15 : -15), evento);
+  }
+  function iniciarArrastre(evento) {
+    const marco = marcoZoomRef.current;
+    if (!marco || evento.button !== 0 || zoomVista <= 100) return;
+    marco.setPointerCapture(evento.pointerId);
+    arrastreRef.current = { x: evento.clientX, y: evento.clientY,
+      izquierda: marco.scrollLeft, arriba: marco.scrollTop };
+    marco.classList.add("arrastrando");
+  }
+  function moverArrastre(evento) {
+    const marco = marcoZoomRef.current;
+    const inicio = arrastreRef.current;
+    if (!marco || !inicio) return;
+    marco.scrollLeft = inicio.izquierda - (evento.clientX - inicio.x);
+    marco.scrollTop = inicio.arriba - (evento.clientY - inicio.y);
+  }
+  function terminarArrastre() {
+    marcoZoomRef.current?.classList.remove("arrastrando");
+    arrastreRef.current = null;
+  }
+  function ajustarPantalla() {
+    const marco = marcoZoomRef.current;
+    if (!marco || !dimensionesNaturales) return setZoomVista(100);
+    const ancho = (marco.clientWidth - 12) / dimensionesNaturales[0];
+    const alto = (marco.clientHeight - 12) / dimensionesNaturales[1];
+    setZoomVista(limitarZoom(Math.min(ancho, alto, 1) * 100));
+    marco.scrollTo({ left: 0, top: 0 });
+  }
+  function restablecerYCentrar() {
+    setZoomVista(100);
+    requestAnimationFrame(() => {
+      const marco = marcoZoomRef.current;
+      if (!marco) return;
+      marco.scrollTo({ left: Math.max(0, (marco.scrollWidth - marco.clientWidth) / 2),
+        top: Math.max(0, (marco.scrollHeight - marco.clientHeight) / 2), behavior: "smooth" });
+    });
+  }
   return html`<div class=${`tarjeta panel-imagen ${seleccionada ? "imagen-seleccionada" : ""}`}>
     <div class="progreso-titulo">
       <h3 class="titulo-seccion" style=${{ marginTop: 0 }}>${titulo}</h3>
@@ -1148,20 +1337,32 @@ function PanelImagen({ titulo, item, vacio, onSelectText, edicionActiva, rotacio
     </div>
     ${item
       ? html`<div class="controles-zoom">
-          <label>Zoom de vista · sólo pantalla
-            <input type="range" min="50" max="300" step="10" value=${zoomVista}
-              onInput=${(e) => setZoomVista(Number(e.target.value))} />
-          </label>
+          <span>Zoom de vista · rueda o botones</span>
           <strong>${zoomVista}%</strong>
-          <button type="button" class="boton boton-compacto" onClick=${() => setZoomVista(100)}>Restablecer</button>
-          <small>No cambia lo que lee el OCR.</small>
+          <button type="button" class="boton boton-compacto" aria-label="Alejar imagen"
+            onClick=${() => cambiarZoom(zoomVista - 25)}>−</button>
+          <button type="button" class="boton boton-compacto" aria-label="Acercar imagen"
+            onClick=${() => cambiarZoom(zoomVista + 25)}>+</button>
+          <button type="button" class="boton boton-compacto" onClick=${ajustarPantalla}>Ajustar a pantalla</button>
+          <button type="button" class="boton boton-compacto" onClick=${restablecerYCentrar}>100%</button>
+          <small>La rueda amplía; arrastra para desplazarte y haz doble clic para centrar/restablecer. No cambia el OCR.</small>
         </div>
-        <div class="imagen-marco imagen-marco-zoom">
-          <img style=${{ width: `${zoomVista}%`, maxWidth: "none" }}
-            src=${item.ruta_api_visual || item.ruta_api} alt=${`Imagen: ${item.ruta}`} loading="lazy" />
+        <div class="imagen-marco imagen-marco-zoom" ref=${marcoZoomRef} onWheel=${alRueda}
+          onPointerDown=${iniciarArrastre} onPointerMove=${moverArrastre}
+          onPointerUp=${terminarArrastre} onPointerCancel=${terminarArrastre}
+          onDoubleClick=${restablecerYCentrar}>
+          <img class=${cambioPendiente ? "imagen-giro-previsualizado" : ""}
+            style=${{ width: dimensionesNaturales
+              ? `${dimensionesNaturales[0] * zoomVista / 100}px` : `${zoomVista}%`, maxWidth: "none",
+              transform: cambioPendiente ? `rotate(${giroPrevisualizado}deg)` : "none" }}
+            src=${item.ruta_api_visual || item.ruta_api} alt=${`Imagen: ${item.ruta}`} loading="lazy"
+            draggable="false" onLoad=${(e) => setDimensionesNaturales([
+              e.currentTarget.naturalWidth, e.currentTarget.naturalHeight])} />
         </div>
+        ${item.revision_sin_datos && html`<p class="aviso"><strong>Imagen revisada sin datos de texto.</strong>
+          ${item.revision_sin_datos.motivo || "Sin motivo adicional."}</p>`}
         <div class="estado-rotacion">
-          ${preferida !== 0 ? html`<span class="chip rotacion-manual">Rotación manual prioritaria: ${preferidaFirmada}°</span>`
+          ${rotacionManualDefinida ? html`<span class="chip rotacion-manual">Rotación manual prioritaria: ${preferidaFirmada}°</span>`
             : enderezada ? html`<span class="chip rotacion-auto">✓ Enderezada automáticamente:
             ${base}°${Math.abs(ajuste) >= 0.05 ? ` + ajuste ${ajuste.toFixed(1)}°` : ""}</span>`
             : html`<span class="chip neutro">Orientación automática: sin cambio</span>`}
@@ -1181,11 +1382,17 @@ function PanelImagen({ titulo, item, vacio, onSelectText, edicionActiva, rotacio
             value=${anguloManual} aria-label="Ángulo manual en grados"
             onInput=${(e) => setAnguloManual(Math.max(-180, Math.min(180, Number(e.target.value))))} />
           <button type="button" class="boton boton-primario boton-compacto"
-            disabled=${Math.abs(anguloManual - preferidaFirmada) < 0.01}
-            onClick=${() => onRotate?.(item, anguloManual)}>Aplicar giro</button>
-          <button type="button" class="boton boton-compacto" disabled=${preferida === 0 && anguloManual === 0}
-            onClick=${() => onRotate?.(item, 0)}>Restablecer</button>
+            disabled=${!cambioPendiente && rotacionManualDefinida}
+            onClick=${() => onRotate?.(item, anguloManual, false)}>Aplicar giro</button>
+          <button type="button" class="boton boton-compacto" disabled=${!rotacionManualDefinida}
+            onClick=${() => onRotate?.(item, 0, true)}>Usar automático</button>
+          ${cambioPendiente && html`<span class="chip vista-previa-rotacion">
+            Vista previa en tiempo real: ${anguloManual}° · pulsa Aplicar giro para guardarla
+          </span>`}
         </div>`}
+        ${edicionActiva && onMarkNoData && !item.revision_sin_datos && html`
+          <button type="button" class="boton boton-peligro boton-sin-datos"
+            onClick=${() => onMarkNoData(item)}>Imagen sin datos de texto</button>`}
         <div class="codigos-utiles">
           <div class="progreso-titulo"><strong>Códigos útiles</strong>
             <span class="subtitulo-seccion">${codigos.length} aceptados</span></div>
@@ -1243,6 +1450,7 @@ function VistaDetalle({ nombre }) {
   const [alcanceRoi, setAlcanceRoi] = useState("etiqueta");
   const [campoManual, setCampoManual] = useState("");
   const [valorManual, setValorManual] = useState("");
+  const [motivoSinDatos, setMotivoSinDatos] = useState("");
   useEffect(() => {
     const imagenes = detalle?.imagenes?.length ? detalle.imagenes
       : [detalle?.etiqueta, detalle?.referencia].filter(Boolean);
@@ -1287,7 +1495,7 @@ function VistaDetalle({ nombre }) {
     Object.entries(regla.alcance || {}).every(([clave, valor]) =>
       String(detalle[clave] || "") === String(valor)));
 
-  function cambiarImagen(nuevoId) {
+  function cambiarImagen(nuevoId, centrarVisor = false) {
     setImagenId(nuevoId);
     const imagen = imagenesDetalle.find((item) => item.id === nuevoId);
     const ocr = imagen?.resultado_ocr || {};
@@ -1302,7 +1510,8 @@ function VistaDetalle({ nombre }) {
     setResultadoRegion(null);
     if (!revisionCompletada) {
       setModoEdicion(true);
-      window.setTimeout(() => document.querySelector(".aprendizaje-panel")?.scrollIntoView({
+      window.setTimeout(() => document.querySelector(
+        centrarVisor ? ".panel-imagen" : ".aprendizaje-panel")?.scrollIntoView({
         behavior: "smooth", block: "start",
       }), 0);
     }
@@ -1369,15 +1578,29 @@ function VistaDetalle({ nombre }) {
       setGuardandoRegion(false);
     }
   }
-  async function rotarImagen(imagen, grados) {
+  async function rotarImagen(imagen, grados, usarAutomatico = false) {
     setResultadoCorreccion(null);
     try {
       const resultado = await enviarJSON("/api/aprendizaje/rotaciones", {
         tipo: "carpeta", prueba_id: detalle.id, imagen_id: imagen.id, grados,
+        usar_automatico: usarAutomatico,
       });
       setResultadoCorreccion({ ok: true, rotacion: true, resultado });
       setDetalle(await pedirJSON(`/api/pruebas/${encodeURIComponent(nombre)}`));
       setAprendizaje(await pedirJSON("/api/aprendizaje"));
+    } catch (error) {
+      setResultadoCorreccion({ ok: false, mensaje: error.message });
+    }
+  }
+  async function marcarSinDatos(imagen) {
+    setResultadoCorreccion(null);
+    try {
+      const resultado = await enviarJSON("/api/imagenes/sin-datos", {
+        tipo: "carpeta", prueba_id: detalle.id, imagen_id: imagen.id,
+        motivo: motivoSinDatos.trim() || null,
+      });
+      setResultadoCorreccion({ ok: true, sinDatos: true, resultado });
+      setDetalle(await pedirJSON(`/api/pruebas/${encodeURIComponent(nombre)}`));
     } catch (error) {
       setResultadoCorreccion({ ok: false, mensaje: error.message });
     }
@@ -1579,6 +1802,11 @@ function VistaDetalle({ nombre }) {
           Guardar valor y actualizar Excel
         </button>
       </form>
+      <label class="motivo-sin-datos"><strong>Motivo opcional para “Imagen sin datos”</strong>
+        <input class="campo" value=${motivoSinDatos} maxLength=${512}
+          onInput=${(e) => setMotivoSinDatos(e.target.value)}
+          placeholder="Ej. fotografía de contexto, sin etiqueta ni código" />
+      </label>
       ${(detalle.historial_ejecuciones || []).length > 0 && html`
         <details style=${{ marginTop: 14 }}><summary>Historial de ejecuciones
           (${detalle.historial_ejecuciones.length})</summary>
@@ -1674,9 +1902,10 @@ function VistaDetalle({ nombre }) {
         </form>`
         : html`<p class="subtitulo-seccion">No hay texto OCR que corregir en esta imagen.</p>`}
       ${aprendizaje && html`<p class="subtitulo-seccion estado-modelo">
-        Memorias confirmadas: <strong>${aprendizaje.memorias_imagen ?? aprendizaje.correcciones}</strong> · Modelo global activo:
+        Correcciones auditables: <strong>${aprendizaje.memorias_imagen ?? aprendizaje.correcciones}</strong> · Reglas confirmadas activas:
         <span class="mono">${aprendizaje.modelo_activo?.version || "aún sin evidencia suficiente"}</span>
         <br />Recortes visuales entrenables: <strong>${aprendizaje.muestras_entrenables || 0}</strong> ·
+        mínimo recomendado: <strong>100 recortes de 15 IDs</strong> (ideal 300+) ·
         EasyOCR visual: <span class="mono">${aprendizaje.modelo_visual_activo?.version || "modelo base"}</span> ·
         Estado: ${aprendizaje.entrenamiento_visual?.estado || "inactivo"}
         <button type="button" class="boton boton-compacto" onClick=${entrenarVisual}
@@ -1696,10 +1925,10 @@ function VistaDetalle({ nombre }) {
       ${resultadoCorreccion?.ok && html`<div class="aviso">
         ${resultadoCorreccion.rotacion
           ? resultadoCorreccion.resultado.mensaje
-          : html`<strong>Corrección guardada y memorizada para esta imagen.</strong>
-            ${resultadoCorreccion.resultado.entrenamiento?.promovido
-              ? ` También se activó una regla global (${resultadoCorreccion.resultado.entrenamiento.version}) para imágenes nuevas.`
-              : " Se aplicará automáticamente si vuelve a procesarse esta misma imagen y zona. Por seguridad, todavía no se generaliza a imágenes nuevas hasta que otras correcciones confirmen el mismo patrón."}`}
+          : resultadoCorreccion.sinDatos ? resultadoCorreccion.resultado.mensaje
+          : html`<strong>Corrección guardada con su recorte y evidencia.</strong>
+            Se aplicará a esta imagen y zona. Quedó en la cola de aprendizaje; el modelo OCR sólo se entrena
+            por lote y únicamente puede activarse si mejora validación y prueba.`}
       </div>`}
       ${resultadoCorreccion && !resultadoCorreccion.ok && html`
         <div class="mensaje-error">${resultadoCorreccion.mensaje}</div>`}
@@ -1759,9 +1988,12 @@ function VistaDetalle({ nombre }) {
     <div class="selector-imagenes" aria-label="Imágenes del ID">
       ${imagenesDetalle.map((imagen) => html`<button type="button" key=${imagen.id || imagen.ruta}
         class=${`boton boton-imagen ${imagen.id === imagenSeleccionada?.id ? "activa" : ""}`}
-        onClick=${() => cambiarImagen(imagen.id)}>
-        ${imagen.nombre || imagen.ruta.split(/[\\/]/).pop()}
-        <small>${(imagen.fase || imagen.rol || "imagen").replaceAll("_", " ")}</small>
+        onClick=${() => cambiarImagen(imagen.id, true)} onDoubleClick=${() => cambiarImagen(imagen.id, true)}
+        title="Un clic abre esta imagen en el visor y activa su edición">
+        <strong>${imagen.nombre || imagen.ruta.split(/[\\/]/).pop()}</strong>
+        <small>ID: ${detalle.identificador || detalle.id}</small>
+        <small>${imagen.fase || "SIN FASE"}${imagen.tor ? ` · ${imagen.tor}` : ""} · ${imagen.estado_imagen || "sin estado"}</small>
+        <small class="ruta-imagen-lista">${imagen.ruta_relativa || imagen.ruta}</small>
       </button>`)}
     </div>
     <div class="detalle-grid detalle-todas-imagenes">
@@ -1769,8 +2001,8 @@ function VistaDetalle({ nombre }) {
         titulo=${`${(imagenSeleccionada?.rol || "imagen").replaceAll("_", " ")} · ${imagenSeleccionada?.nombre || imagenSeleccionada?.ruta?.split(/[\\/]/).pop() || "Imagen"}`}
         item=${imagenSeleccionada} vacio="Imagen no disponible."
         seleccionada=${true} edicionActiva=${modoEdicion && !revisionCompletada}
-        rotacionActiva=${!revisionCompletada} onSelectImage=${(imagen) => cambiarImagen(imagen.id)}
-        onSelectText=${seleccionarUnidad} onRotate=${rotarImagen} />
+        rotacionActiva=${!revisionCompletada} onSelectImage=${(imagen) => cambiarImagen(imagen.id, true)}
+        onSelectText=${seleccionarUnidad} onRotate=${rotarImagen} onMarkNoData=${marcarSinDatos} />
     </div>
 
     <a class="volver" href="#/tabla">← Volver al listado</a>
@@ -1778,6 +2010,18 @@ function VistaDetalle({ nombre }) {
 }
 
 /* ----------------------------- App / routing ----------------------------- */
+
+function MascotaProgramando() {
+  return html`<div class="mascota-programando" aria-hidden="true">
+    <span class="mascota-globo">Programando…</span>
+    <span class="mascota-chispas"><i></i><i></i><i></i></span>
+    <span class="mascota-cabeza"><span class="mascota-pantalla"><b></b><b></b></span></span>
+    <span class="mascota-cuerpo"><span></span></span>
+    <span class="mascota-brazo brazo-izquierdo"></span>
+    <span class="mascota-brazo brazo-derecho"></span>
+    <span class="mascota-teclado"><i></i><i></i><i></i><i></i><i></i><i></i></span>
+  </div>`;
+}
 
 function App() {
   const [ruta, setRuta] = useState(location.hash || "#/resumen");
@@ -1812,6 +2056,7 @@ function App() {
         : vista === "detalle" ? html`<${VistaDetalle} nombre=${decodeURIComponent(arg || "")} />`
         : html`<${VistaResumen} />`}
     </main>
+    <${MascotaProgramando} />
   `;
 }
 

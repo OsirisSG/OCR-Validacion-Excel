@@ -5,8 +5,8 @@ OCR, comparar etiquetas contra imágenes de referencia, generar un Excel maestro
 y consultar los resultados desde un dashboard responsivo.
 
 El procesamiento no utiliza APIs de OCR ni servicios en la nube. EasyOCR es el
-motor portable instalado y seleccionado por defecto; PaddleOCR puede instalarse
-por separado y seleccionarse en `config.yaml` cuando la plataforma lo soporte.
+motor de producción: se mantiene una sola instancia por ejecución y usa
+CUDA/MPS cuando están disponibles, con CPU como respaldo seguro.
 
 ## Funciones principales
 
@@ -112,24 +112,12 @@ python -m pip install -r requirements.txt
 La primera ejecución de EasyOCR descargará sus modelos de detección y
 reconocimiento al caché del usuario. Esa descarga ocurre una sola vez.
 
-### PaddleOCR opcional
+### Motor OCR
 
-EasyOCR permite una instalación base por CPU sin exigir PaddlePaddle, CUDA o una
-GPU concreta. Con `fase1.dispositivo: auto`, el sistema usa CUDA, después MPS
-(Apple Silicon) y finalmente CPU. La inferencia neuronal corre en el acelerador
-y OpenCV, QR y preparación geométrica usan la CPU. Si deseas evaluar PaddleOCR, instala PaddlePaddle y PaddleOCR
-siguiendo las instrucciones oficiales correspondientes a tu sistema, CPU o GPU.
-Después configura:
-
-```yaml
-fase1:
-  motor: paddle
-  motor_fallback: easyocr
-```
-
-Si PaddleOCR falla al inicializar, el sistema vuelve a EasyOCR. En Windows, el
-adaptador ya desactiva MKLDNN para evitar el fallo de oneDNN registrado en
-`errores/2026-08-23_paddle_onednn_windows.md`.
+EasyOCR permite una instalación base por CPU sin exigir una GPU concreta. Con
+`fase1.dispositivo: auto`, el sistema usa CUDA, después MPS (Apple Silicon) y
+finalmente CPU. La inferencia neuronal corre en el acelerador y OpenCV, QR y la
+preparación geométrica usan la CPU. No es necesario instalar PaddleOCR.
 
 ### Dependencias opcionales
 
@@ -174,7 +162,7 @@ python -m pip freeze > requirements-lock.txt
 
 Registra junto al lock el sistema operativo, la arquitectura, la versión de
 Python y, si aplica, CUDA. Un lock generado en macOS ARM64 o en Windows con GPU
-no debe presentarse como universal; las ruedas de PyTorch, PaddlePaddle y varios
+no debe presentarse como universal; las ruedas de PyTorch y varios
 paquetes de imagen dependen de la plataforma.
 
 ## Inicio rápido con los datos sintéticos
@@ -200,9 +188,13 @@ Produce localmente:
 - `resultado_maestro.xlsx`
 
 Para una estructura empresarial, el sistema busca automáticamente una plantilla
-compatible con las 36 claves estables en la raíz, en `plantillas/`, en la carpeta
-superior y en las rutas configuradas. Si no encuentra una, usa el formato
-integrado. `--plantilla` queda disponible como anulación explícita para scripts:
+compatible en la biblioteca local `.plantillas/`, en la raíz, en `plantillas/`,
+en la carpeta superior y en las rutas configuradas. Desde **Procesar carpeta**
+se pueden registrar contratos XLSX independientes y asociarles tipo 1ST/2ST y
+marcadores de ruta. Cada archivo conserva sus propias columnas, diccionario,
+catálogos, validaciones y formato; nunca se combinan contratos. Si no hay una
+coincidencia inequívoca se usa el formato integrado o una selección explícita.
+`--plantilla` sigue disponible para scripts:
 
 ```bash
 python pipeline.py "/ruta/Proyecto_1ST" \
@@ -257,10 +249,12 @@ Opciones de Windows:
 ```
 
 Las correcciones marcadas “Confirmar y usar para entrenar” se guardan como
-recortes en `.aprendizaje/dataset_visual/recortes`. El botón “Entrenar lote
-visual” ajusta el reconocedor EasyOCR cuando existen suficientes ejemplos de al
-menos tres IDs; separa entrenamiento, validación y prueba por ID. Un candidato
-se activa sólo si mejora sin degradar el conjunto de prueba y puede restaurarse.
+recortes en `.aprendizaje/dataset_visual/recortes`. Una edición individual sólo
+se guarda en la cola; nunca dispara entrenamiento. El botón “Entrenar lote
+visual” habilita el ajuste a partir de 100 recortes confirmados de al menos 15
+IDs (idealmente 300+ variados), separando entrenamiento, validación y prueba por
+ID. Registra CER, WER y exactitud por campo; un candidato sólo puede activarse si
+mejora sin degradar el conjunto de prueba y siempre admite rollback.
 
 Abre en el navegador:
 
@@ -277,12 +271,17 @@ El dashboard ofrece tres vistas principales:
 - **Detalle:** todas las imágenes de la carpeta, texto completo con su layout y
   corrección de tokens, líneas o bloques multilinea. También permite dibujar una
   región y transcribir texto que el OCR omitió por completo. Al elegir una imagen
-  se activa su edición. Incluye giro manual de cualquier ángulo —que tiene
-  prioridad sobre el enderezado automático—, informa la orientación aplicada y muestra la lista
+  de la lista inferior, un solo clic abre el visor y activa su edición. El giro
+  manual de cualquier ángulo se previsualiza mientras se mueve el control y sólo
+  se guarda al pulsar **Aplicar giro**. Esa decisión —incluso 0°— tiene prioridad
+  sobre el enderezado automático; **Usar automático** elimina esa prioridad. También muestra la lista
   conjunta de correcciones y textos omitidos usados como aprendizaje supervisado.
 - **Procesar carpeta:** ejecuta las Fases 0–3 desde una ruta local, acepta la ruta
   con o sin comillas, permite nombrar el Excel, elegir si se sobrescribe el
-  archivo existente y pausar/continuar entre imágenes. Si no se autoriza
+  archivo existente y pausar/continuar entre imágenes. Al detener ofrece
+  continuar, conservar el avance de inmediato o terminar el ID actual. El
+  checkpoint, los resultados parciales y el caché permiten reanudar sin repetir
+  imágenes que no cambiaron. Si no se autoriza
   sobrescribir, crea automáticamente `nombre_1.xlsx`, `nombre_2.xlsx`, etc.
   Las últimas diez direcciones y su nombre de Excel se conservan localmente en
   el navegador para poder seleccionarlas en ejecuciones posteriores.
@@ -298,6 +297,9 @@ El **zoom de vista** sólo amplía la fotografía en pantalla y no altera el OCR
 esa zona; ese recorte sí cambia la lectura. El detalle prioriza una lista deduplicada
 de códigos útiles. Las frases, unidades sueltas y fragmentos sin estructura quedan
 en las lecturas completas plegables y cada descarte muestra una regla comprensible.
+La rueda, los botones, el arrastre y el doble clic controlan el visor. La acción
+**Imagen sin datos de texto** registra una revisión humana válida —con motivo
+opcional— sin convertirla en un fallo del OCR.
 
 Para un lote grande, usa una ruta local en **Procesar carpeta**. Los archivos no
 se suben ni se duplican en el navegador. Durante la ejecución aparecen un reloj
@@ -376,10 +378,10 @@ mismos hex se utilizan en Excel y dashboard.
 
 ## Aprendizaje incremental
 
-Cada ejecución registra ejemplos localmente. Desde el detalle del dashboard se
-puede corregir una lectura; el sistema entrena un candidato y solo lo activa si
-mejora los casos confirmados sin regresiones. Las predicciones no confirmadas no
-se usan como verdad de entrenamiento.
+Cada ejecución registra observaciones localmente. Desde el detalle del dashboard
+se puede confirmar una corrección y su recorte exacto; el entrenamiento se inicia
+únicamente por lote y un candidato sólo se puede activar si mejora los conjuntos
+de validación y prueba. Las predicciones no confirmadas no se usan como verdad.
 
 La base y las versiones se guardan en
 `.aprendizaje/aprendizaje.sqlite3`; las fotografías no se copian. La supervisión
@@ -533,7 +535,7 @@ python -c "import easyocr; print(easyocr.__version__)"
 ### El dashboard indica “Entorno OCR incompleto”
 
 El dashboard debe arrancarse desde el mismo entorno donde instalaste OpenCV,
-openpyxl y EasyOCR/PaddleOCR. Detén el servidor, activa `.venv` y vuelve a
+openpyxl y EasyOCR. Detén el servidor, activa `.venv` y vuelve a
 ejecutar `python dashboard/backend/app.py`.
 
 ### El puerto 8000 está ocupado

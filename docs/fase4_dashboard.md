@@ -10,7 +10,7 @@ el Excel maestro. El dashboard es local y tiene tres vistas principales:
    cuatro estados de revisión, paginación y navegación por teclado.
 3. **Detalle:** todas las imágenes, texto completo, líneas OCR y comparación;
    permite corregir cualquier línea o bloque o dibujar una región omitida.
-3. **Procesar carpeta:** valida una ruta local, ejecuta las Fases 0–3 en segundo
+4. **Procesar carpeta:** valida una ruta local, ejecuta las Fases 0–3 en segundo
    plano y muestra estado, fase actual, errores y finalización.
 
 El banco complejo está unificado en el Listado. Cada fila externa abre un
@@ -40,10 +40,12 @@ completamente local.
 - Las unidades repetidas conservan su `bbox`; la UI y la API usan texto + caja
   para no corregir por accidente otra aparición igual. Un clic en la lectura o
   en su caja la carga en el editor. Una corrección confirmada se pinta en verde.
-- Cada imagen tiene giro manual por pasos de 90°. La vista, cajas OCR y regiones
-  manuales cambian de inmediato; la preferencia queda asociada al hash y se usa
-  al comenzar el OCR siguiente. El detalle también informa la rotación
-  automática y el ajuste fino aplicados.
+- Cada imagen tiene giro manual de ángulo libre. El visor muestra el giro en
+  tiempo real mientras se mueve el control; `Aplicar giro` guarda la decisión y
+  entonces alinea cajas OCR y regiones. La preferencia queda asociada al hash y
+  se usa al comenzar el OCR siguiente. Incluso 0° puede ser una decisión manual;
+  `Usar automático` la elimina. El detalle también informa la rotación automática
+  y el ajuste fino aplicados.
 - El texto omitido aparece en la misma lista de aprendizaje supervisado que las
   correcciones OCR, agrupado por la imagen y carpeta actuales.
 - La edición solo se habilita durante la revisión y queda bloqueada en
@@ -52,6 +54,16 @@ completamente local.
   la raíz completa del sistema; la tarea corre en un hilo para no bloquear la UI.
 - La pausa es cooperativa y segura: termina la inferencia de la imagen actual y
   espera antes de comenzar la siguiente. Continuar reutiliza el modelo cargado.
+- Cancelar abre tres decisiones: continuar, cancelar conservando el avance o
+  detener al terminar la carpeta/ID. El checkpoint `.cache_ocr/estado_pipeline.json`,
+  los JSON parciales y la caché por hash permiten reanudar sin repetir imágenes
+  cuya imagen, configuración y modelo no cambiaron.
+- Un clic en cualquier imagen de la lista inferior la abre, centra el visor y
+  activa la edición sin esconder las demás. El visor tiene rueda, botones `+`/`−`, ajuste a pantalla, 100 %, arrastre y
+  doble clic. El zoom visual no altera el OCR; una ROI manual sí recorta los
+  píxeles que se vuelven a reconocer y queda como evidencia supervisada.
+- `Imagen sin datos de texto` guarda una revisión humana con motivo opcional;
+  no incrementa los fallos del sistema ni obliga a reprocesar esa imagen.
 - La ETA usa una ventana de duraciones recientes y excluye el calentamiento de
   la primera imagen. La pantalla actualiza el reloj cada 250 ms y el backend
   publica avance por imagen.
@@ -61,7 +73,10 @@ completamente local.
   con el nombre de Excel asociado. El usuario puede recuperarlas o quitarlas;
   no se envían a ningún servicio externo.
 - Antes de habilitar el botón, `/api/pipeline/capacidad` comprueba OpenCV,
-  NumPy, openpyxl, PyYAML y al menos un motor PaddleOCR/EasyOCR.
+  NumPy, openpyxl, PyYAML y EasyOCR.
+- La biblioteca `.plantillas/` registra contratos XLSX independientes. Tipo de
+  proyecto y marcadores de ruta permiten seleccionarlos automáticamente; una
+  selección explícita resuelve casos ambiguos sin mezclar catálogos.
 - Los fallos iniciados desde la UI crean automáticamente una bitácora Markdown
   en `errores/`, además de mostrarse en el panel de estado.
 - Cada fila recibe un id SHA-256 corto derivado de su ruta. Así dos lotes pueden
@@ -133,9 +148,12 @@ verde, sin volver a listar por separado un renglón y sus tokens internos.
 | `GET /api/pipeline/estado` | Avance, porcentaje, ETA y resultados parciales de la ejecución. |
 | `POST /api/pipeline` | Valida una ruta local e inicia las Fases 0–3 en segundo plano. |
 | `POST /api/pipeline/pausar` | Solicita una pausa segura tras la imagen actual. |
-| `POST /api/pipeline/reanudar` | Continúa el mismo lote y modelo cargado. |
+| `POST /api/pipeline/reanudar` | Continúa el hilo pausado o recupera el checkpoint persistido. |
+| `POST /api/pipeline/cancelar` | Conserva avance ahora o detiene al terminar el ID actual. |
+| `GET/POST /api/plantillas` | Lista o registra contratos Excel reutilizables. |
 | `GET /api/aprendizaje` | Estado, correcciones y versión activa del modelo local. |
-| `POST /api/aprendizaje/correcciones` | Registra verdad humana, evalúa y entrena un candidato. |
+| `POST /api/aprendizaje/correcciones` | Registra verdad humana y su recorte en la cola auditable. |
+| `POST /api/aprendizaje/entrenar-visual` | Entrena y evalúa un lote visual separado por ID. |
 | `POST /api/aprendizaje/rotaciones` | Memoriza la orientación manual de una imagen. |
 | `GET /api/imagen/orientada` | Sirve una vista rotada/enderezada de una imagen autorizada. |
 | `POST /api/aprendizaje/rollback` | Reactiva una versión histórica. |
@@ -144,6 +162,7 @@ verde, sin volver a listar por separado un renglón y sus tokens internos.
 | `GET /api/externas/imagen/{nombre}` | Sirve únicamente una imagen externa permitida. |
 | `POST /api/externas/correcciones` | Registra una corrección confirmada del banco externo. |
 | `POST /api/externas/regiones` | Guarda una región y texto omitido de una prueba compleja. |
+| `POST /api/imagenes/sin-datos` | Registra una imagen revisada sin datos útiles. |
 
 Ejemplo abreviado de salida de `GET /api/pruebas?estado=rojo`:
 

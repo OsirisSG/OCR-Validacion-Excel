@@ -475,16 +475,18 @@ def _evidencia_ruta(caso: dict) -> list[dict]:
 
 def consolidar_caso(caso: dict, evidencias: Iterable[dict],
                      requeridos: set[str] | None = None,
-                     reglas_confirmadas: Iterable[dict] = ()) -> dict:
+                     reglas_confirmadas: Iterable[dict] = (),
+                     claves: Iterable[str] | None = None) -> dict:
     requeridos = requeridos or CAMPOS_REQUERIDOS_DEFAULT
+    claves_contrato = tuple(dict.fromkeys(claves or CLAVES_PLANTILLA))
     todos = [*_evidencia_ruta(caso), *list(evidencias)]
     por_clave: dict[str, list[dict]] = defaultdict(list)
     for evidencia in todos:
-        if evidencia.get("clave") in CLAVES_PLANTILLA and evidencia.get("valor_normalizado") not in {None, ""}:
+        if evidencia.get("clave") in claves_contrato and evidencia.get("valor_normalizado") not in {None, ""}:
             por_clave[evidencia["clave"]].append(evidencia)
     campos: dict[str, dict] = {}
     conflictos: list[str] = []
-    for clave in CLAVES_PLANTILLA:
+    for clave in claves_contrato:
         items = por_clave.get(clave, [])
         por_valor: dict[str, list[dict]] = defaultdict(list)
         for item in items:

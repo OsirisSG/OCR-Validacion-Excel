@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
+import shutil
+import uuid
 from copy import copy
 from datetime import date, datetime
 from pathlib import Path
@@ -66,7 +70,8 @@ def _raices_plantillas(ruta_raiz: Path, directorios: Iterable[str]) -> list[Path
 
 
 def detectar_plantilla_automatica(ruta_raiz: str | Path, estructura: dict,
-                                  config: dict, explicita: str | Path | None = None) -> dict:
+                                  config: dict, explicita: str | Path | None = None,
+                                  plantilla_id: str | None = None) -> dict:
     """Selecciona una plantilla compatible o el generador integrado.
 
     Las estrategias viven en ``fase3.deteccion_plantillas.estrategias``. Un
@@ -75,6 +80,14 @@ def detectar_plantilla_automatica(ruta_raiz: str | Path, estructura: dict,
     """
     raiz = Path(ruta_raiz).expanduser().resolve()
     cfg = config.get("fase3", {}).get("deteccion_plantillas", {})
+    registro = RegistroPlantillas(config)
+    if plantilla_id:
+        registrada = registro.obtener(plantilla_id)
+        if not registrada:
+            raise ValueError("La plantilla registrada seleccionada ya no existe.")
+        cargar_contrato(registrada["ruta"])
+        return {**registrada, "estilo": "plantilla_registrada",
+                "fuente": "seleccionada", "estrategia": "registro_local"}
     configurada = config.get("fase3", {}).get("plantilla_empresarial")
     for ruta, fuente in ((explicita, "explícita"), (configurada, "configuración")):
         if not ruta:
@@ -93,6 +106,34 @@ def detectar_plantilla_automatica(ruta_raiz: str | Path, estructura: dict,
     if not cfg.get("activar", True) or not estructura.get("casos_empresariales"):
         return {"ruta": None, "estilo": "generador_estandar", "fuente": "integrada",
                 "estrategia": "sin_plantilla_externa"}
+
+    perfil = "empresarial" if estructura.get("casos_empresariales") else "legacy"
+    tipos_detectados = {str(valor).upper() for valor in estructura.get("tipos_st", [])}
+    if estructura.get("tipo_st"):
+        tipos_detectados.add(str(estructura["tipo_st"]).upper())
+    texto_ruta = "/".join(raiz.parts).upper()
+    compatibles_registro = []
+    for registrada in registro.listar():
+        tipos_registrados = {str(tipo).upper() for tipo in registrada.get("tipos_st", [])}
+        perfiles = {str(valor).lower() for valor in registrada.get("perfiles", [])}
+        marcadores = [str(valor).upper() for valor in registrada.get("marcadores_ruta", [])]
+        if perfiles and perfil not in perfiles:
+            continue
+        if tipos_registrados and not tipos_registrados.intersection(tipos_detectados):
+            continue
+        if marcadores and not any(marcador in texto_ruta for marcador in marcadores):
+            continue
+        compatibles_registro.append(registrada)
+    # Un marcador de ruta es una selección inequívoca. Sin marcadores se usa
+    # automáticamente sólo cuando queda un contrato compatible; ante empate no
+    # se adivina ni se mezclan contratos.
+    con_marcador = [item for item in compatibles_registro if item.get("marcadores_ruta")]
+    candidatas_registro = con_marcador or compatibles_registro
+    if len(candidatas_registro) == 1:
+        registrada = candidatas_registro[0]
+        cargar_contrato(registrada["ruta"])
+        return {**registrada, "estilo": "plantilla_registrada",
+                "fuente": "registro", "estrategia": "estructura_registrada"}
 
     estrategias = cfg.get("estrategias") or [{
         "nombre": "empresarial_1st_2st", "perfiles": ["empresarial"],
@@ -161,6 +202,95 @@ def cargar_contrato(ruta_plantilla: str | Path) -> dict:
                     valores.append(str(valor))
             catalogos[nombre] = valores
     return {"claves": claves, "esquema": esquema, "catalogos": catalogos}
+
+
+class RegistroPlantillas:
+    """Biblioteca local de contratos Excel independientes y reutilizables."""
+
+    def __init__(self, config: dict | None = None, directorio: str | Path | None = None):
+        cfg = (config or {}).get("fase3", {}).get("registro_plantillas", {})
+        base = Path(directorio or cfg.get("directorio", ".plantillas"))
+        if not base.is_absolute():
+            base = Path(__file__).resolve().parent / base
+        self.directorio = base.resolve()
+        self.archivos = self.directorio / "archivos"
+        self.indice = self.directorio / "registro.json"
+
+    def _leer(self) -> dict:
+        if not self.indice.is_file():
+            return {"version": 1, "plantillas": []}
+        try:
+            datos = json.loads(self.indice.read_text(encoding="utf-8"))
+            return datos if isinstance(datos.get("plantillas"), list) else {
+                "version": 1, "plantillas": []}
+        except (OSError, json.JSONDecodeError, AttributeError):
+            return {"version": 1, "plantillas": []}
+
+    def _guardar(self, datos: dict) -> None:
+        self.directorio.mkdir(parents=True, exist_ok=True)
+        temporal = self.indice.with_suffix(".tmp")
+        temporal.write_text(json.dumps(datos, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporal.replace(self.indice)
+
+    def listar(self) -> list[dict]:
+        salida = []
+        for item in self._leer()["plantillas"]:
+            actual = dict(item)
+            actual["disponible"] = Path(actual.get("ruta", "")).is_file()
+            salida.append(actual)
+        return salida
+
+    def obtener(self, plantilla_id: str) -> dict | None:
+        return next((item for item in self.listar()
+                     if item.get("id") == plantilla_id and item.get("disponible")), None)
+
+    def registrar(self, ruta: str | Path, nombre: str | None = None,
+                  tipos_st: Iterable[str] | None = None,
+                  marcadores_ruta: Iterable[str] | None = None) -> dict:
+        origen = Path(str(ruta).strip().strip('"\'')).expanduser().resolve()
+        if not origen.is_file() or origen.suffix.lower() != ".xlsx":
+            raise ValueError("La plantilla debe ser un archivo .xlsx accesible.")
+        contrato = cargar_contrato(origen)
+        digest = hashlib.sha256(origen.read_bytes()).hexdigest()
+        datos = self._leer()
+        existente = next((p for p in datos["plantillas"] if p.get("sha256") == digest), None)
+        if existente:
+            if nombre and str(nombre).strip():
+                existente["nombre"] = str(nombre).strip()
+            existente["tipos_st"] = sorted({
+                *existente.get("tipos_st", []),
+                *(str(tipo).upper() for tipo in (tipos_st or [])
+                  if str(tipo).upper() in {"1ST", "2ST"}),
+            })
+            existente["marcadores_ruta"] = sorted({
+                *existente.get("marcadores_ruta", []),
+                *(str(valor).strip() for valor in (marcadores_ruta or [])
+                  if str(valor).strip()),
+            })
+            self._guardar(datos)
+            return {**existente, "disponible": Path(existente["ruta"]).is_file(),
+                    "duplicada": True}
+        plantilla_id = f"tpl-{digest[:12]}-{uuid.uuid4().hex[:4]}"
+        self.archivos.mkdir(parents=True, exist_ok=True)
+        destino = self.archivos / f"{plantilla_id}.xlsx"
+        shutil.copy2(origen, destino)
+        registro = {
+            "id": plantilla_id, "nombre": str(nombre or origen.stem).strip() or origen.stem,
+            "ruta": str(destino), "ruta_origen": str(origen), "sha256": digest,
+            "tipos_st": sorted({str(tipo).upper() for tipo in (tipos_st or [])
+                                 if str(tipo).upper() in {"1ST", "2ST"}}),
+            "perfiles": ["empresarial"],
+            "marcadores_ruta": sorted({str(valor).strip() for valor in
+                                         (marcadores_ruta or []) if str(valor).strip()}),
+            "hojas": [HOJA_CAPTURA, HOJA_DICCIONARIO, HOJA_CATALOGOS, "Resumen"],
+            "claves": len(contrato["claves"]),
+            "claves_estables": sorted(contrato["claves"]),
+            "catalogos": sorted(contrato["catalogos"]),
+            "registrada_en": datetime.now().isoformat(timespec="seconds"),
+        }
+        datos["plantillas"].append(registro)
+        self._guardar(datos)
+        return {**registro, "disponible": True, "duplicada": False}
 
 
 def _limites_y_regex(valor) -> tuple[float | None, str | None]:

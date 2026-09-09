@@ -46,6 +46,7 @@ checkpoints/
 runs/
 wandb/
 .aprendizaje/
+.plantillas/
 .pruebas_externas/
 .cache_ocr/
 base_conocimiento.json

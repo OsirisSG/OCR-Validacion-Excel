@@ -56,14 +56,17 @@ La revisión distingue dos herramientas que no deben confundirse:
 - El zoom OCR recorta una región de interés y vuelve a analizar sus píxeles.
 
 La rotación manual acepta cualquier ángulo, expande el lienzo para no cortar la
-fotografía y prevalece sobre orientación y deskew automáticos. Al restablecerla a
-0° se recupera la geometría automática original. Seleccionar una fotografía en
-el detalle activa de inmediato sus herramientas de edición.
+fotografía y prevalece sobre orientación y deskew automáticos. El movimiento se
+previsualiza en tiempo real y se persiste con `Aplicar giro`; 0° también puede ser
+una decisión manual explícita. `Usar automático` recupera la geometría automática
+original. Seleccionar una fotografía en la lista inferior abre el visor, lo centra
+y activa de inmediato sus herramientas de edición sin ocultar las demás.
 
-La plantilla empresarial se resuelve automáticamente mediante estrategias
-configurables (perfil, tipo 1ST/2ST, marcadores de ruta y patrones de archivo).
-Agregar un estilo futuro consiste en declarar otra estrategia en `config.yaml`;
-si ninguna plantilla compatible aparece se usa el formato integrado.
+La biblioteca local administra múltiples plantillas, cada una con su copia y
+contrato independiente: hojas, claves, diccionario, catálogos, validaciones y
+formato. Tipo 1ST/2ST, perfil, marcadores de ruta y estrategias declarativas
+permiten seleccionarlas automáticamente. En un empate no se adivina ni se
+mezclan contratos: se requiere selección explícita o se usa el formato integrado.
 
 ## Códigos operativos
 
@@ -99,3 +102,8 @@ y el entrenamiento usa un bloqueo separado del OCR normal.
 Windows 11 con Python 3.12 de 64 bits es el objetivo principal; macOS y Linux
 se mantienen compatibles. Los scripts de arranque sólo aplican Bypass de
 PowerShell al proceso actual.
+
+El avance operativo se persiste por imagen e ID. Pausa y cancelación nunca se
+presentan como error: se informa el último ID terminado y se puede reanudar con
+el modelo vigente, reutilizando la caché cuando imagen, configuración y modelo
+siguen iguales.

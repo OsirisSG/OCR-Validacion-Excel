@@ -15,11 +15,10 @@ fase0:
   archivo_salida: estructura_detectada.json
 
 fase1:
-  # EasyOCR es el motor portable instalado por defecto. PaddleOCR permanece
-  # disponible como alternativa opcional y debe instalarse por plataforma.
-  # Si el principal falla, ocr_engine prueba el secundario y reporta cuál usó.
+  # EasyOCR es el único motor requerido y soportado por la instalación actual.
+  # Su propia instancia cambia de CUDA/MPS a CPU si el acelerador falla.
   motor: easyocr
-  motor_fallback: paddle
+  motor_fallback: null
   # auto selecciona CUDA, después MPS (Apple Silicon) y finalmente CPU.
   dispositivo: auto
   rendimiento:
@@ -130,6 +129,8 @@ fase3:
         tipos_st: [1ST, 2ST]
         marcadores_ruta: []
         patrones_archivo: ["*plantilla*.xlsx", "*captura*.xlsx", "*template*.xlsx"]
+  registro_plantillas:
+    directorio: .plantillas
   hoja_estructura: "Estructura completa"
   hoja_matriz: "Matriz de cumplimiento"
   hoja_textos: "Textos por imagen"
@@ -138,6 +139,8 @@ fase3:
 # Flujo por ID para proyectos con <ID> <VERSION> <INFLADOR> <TEMPERATURA>.
 empresarial:
   archivo_cache: .cache_ocr/imagenes.sqlite3
+  archivo_cache_legacy: .cache_ocr/imagenes_legacy.sqlite3
+  archivo_avance_ids: .cache_ocr/avances_ids.json
   base_conocimiento: base_conocimiento.json
   reglas_minimo_ids: 3
   reglas_consenso_minimo: 0.90
@@ -173,7 +176,7 @@ aprendizaje:
   directorio: .aprendizaje
   registrar_observaciones: true
   aplicar_modelo: true
-  promocion_automatica: true
+  promocion_automatica: false
   # Una lectura exacta debe corregirse igual en imágenes distintas al menos dos
   # veces antes de convertirse en regla automática.
   minimo_soporte_exacto: 2
@@ -184,8 +187,8 @@ aprendizaje:
   minimo_correcciones_validacion: 20
   visual:
     # Entrenamiento real del reconocedor CTC de EasyOCR. CRAFT no se modifica.
-    minimo_muestras: 12
-    minimo_ids: 5
+    minimo_muestras: 100
+    minimo_ids: 15
     proporcion_validacion: 0.20  # separación por ID, nunca por recorte aleatorio
     epocas: 3
     batch: 8

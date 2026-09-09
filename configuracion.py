@@ -32,7 +32,7 @@ RUTA_REGLAS = RAIZ_PROYECTO / "reglas_cumplimiento.yaml"
 # ejecutarse con valores sensatos y avisar, no morir por un YAML faltante.
 _CONFIG_DEFECTO: dict = {
     "fase0": {"min_carpetas_para_patron": 2},
-    "fase1": {"motor": "paddle", "motor_fallback": "easyocr", "lang": "en",
+    "fase1": {"motor": "easyocr", "motor_fallback": None, "lang": "en",
               "umbral_confianza": 0.5, "umbral_espacio_px": 40},
     "colores": {"verde": "#22c55e", "amarillo": "#f59e0b", "rojo": "#ef4444"},
 }

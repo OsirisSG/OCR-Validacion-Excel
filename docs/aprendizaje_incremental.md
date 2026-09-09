@@ -7,7 +7,7 @@ imagen y ejecución en `.aprendizaje/aprendizaje.sqlite3`. Una observación sin
 confirmar **no modifica el modelo**. El entrenamiento comienza cuando una
 persona corrige un código desde el detalle del dashboard o mediante CLI.
 
-El modelo incremental aprende dos niveles:
+Las correcciones alimentan dos capas distintas:
 
 1. Correcciones exactas recurrentes, por ejemplo `K001 → GCC10`.
 2. Confusiones de caracteres respaldadas por un patrón confirmado, como
@@ -32,17 +32,20 @@ fotografías nuevas. No se perdió la corrección.
 ```text
 ejecución OCR
   → observaciones sin etiqueta
-  → corrección humana
-  → modelo candidato
+  → corrección humana y recorte en cola
+  → lote mínimo de 100 recortes / 15 IDs
+  → modelo candidato EasyOCR
   → comparación con modelo activo
   → promoción solo si mejora y no hay regresiones
   → historial + rollback
 ```
 
-Con menos de 20 correcciones se usa una evaluación conservadora sobre todos los
-casos conocidos. Desde 20 correcciones se reserva de forma determinista cerca
-del 20% de las imágenes como conjunto de validación; estas no participan en el
-entrenamiento del candidato.
+Una corrección individual nunca entrena. Para el reconocedor visual se requieren
+por defecto 100 recortes confirmados procedentes de 15 IDs distintos; 300 o más
+ejemplos variados es el objetivo recomendado. La separación determinista por ID
+crea conjuntos de entrenamiento, validación y prueba sin fuga. Se calculan CER,
+WER y exactitud global/por campo. El entrenamiento puede iniciarse después de
+una revisión temprana de unos 15 IDs y continuar después en lotes de 20 y 50.
 
 ## Dashboard
 
@@ -91,7 +94,8 @@ python entrenamiento_easyocr.py
 - La base vive solo en el equipo y está excluida de Git.
 - La ruta concreta es `.aprendizaje/aprendizaje.sqlite3`; las tablas `modelos`,
   `correcciones`, `correcciones_texto`, `anotaciones_regiones` y
-  `rotaciones_imagen` contienen el
+  `rotaciones_imagen`, `muestras_visuales`, `modelos_visuales` e
+  `imagenes_sin_datos` contienen el
   historial, las versiones y la evidencia confirmada.
 - No se modifican ni duplican fotografías completas. Sólo se guardan los
   recortes confirmados que forman el dataset visual auditable.

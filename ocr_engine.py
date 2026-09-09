@@ -22,9 +22,10 @@ Reglas duras implementadas:
   imagen completa sin error ni degradación (qr_bbox = None).
 - El texto NO tiene posición fija: se OCR-ea toda la imagen (o el ROI amplio
   cuando hay QR) y se devuelven cajas por bloque detectado.
-- El motor es intercambiable: EasyOCR es el valor portable predeterminado y
-  PaddleOCR permanece disponible como alternativa, ambos elegidos desde
-  config.yaml. Si el principal falla se usa el secundario y se reporta cuál fue.
+- EasyOCR es el motor de producción. Se crea una sola instancia y, si CUDA/MPS
+  falla por memoria o ejecución, esa instancia se reconstruye en CPU y reporta
+  el cambio. El adaptador Paddle antiguo sólo conserva compatibilidad histórica;
+  la instalación y configuración vigentes no lo requieren ni lo seleccionan.
 
 Preprocesamiento (orden): carga unicode-safe → búsqueda adaptativa en
 0°/90°/180°/270° → deskew → variantes para impresión/relieve → recorte de ROI
@@ -258,7 +259,7 @@ def obtener_motor(config: dict | None = None):
         except Exception as exc:  # ImportError u otro fallo de arranque del motor
             print(f"[ocr_engine] motor '{nombre}' no disponible ({exc}); probando fallback",
                   file=sys.stderr)
-    raise RuntimeError("Ningún motor de OCR disponible (paddle/easyocr). Revisa la instalación.")
+    raise RuntimeError("EasyOCR no está disponible. Revisa la instalación del entorno.")
 
 
 # ---------------------------------------------------------------------------
@@ -1018,7 +1019,9 @@ def extraer_texto_empresarial(imagen_path: str, config: dict | None = None,
 
     imagen_fuente = cargar_imagen(imagen_path)
     from aprendizaje import GestorAprendizaje
-    rotacion_manual = GestorAprendizaje(config).rotacion_preferida(imagen_path)
+    preferencia_manual = GestorAprendizaje(config).preferencia_rotacion(imagen_path)
+    rotacion_manual = float(preferencia_manual["grados"]) if preferencia_manual else 0.0
+    rotacion_manual_definida = preferencia_manual is not None
     imagen_original = rotar_imagen_libre(imagen_fuente, rotacion_manual)
     qrs = detectar_qrs(imagen_original, f1.get("qr", {}))
     motor, _ = obtener_motor(config)
@@ -1055,7 +1058,7 @@ def extraer_texto_empresarial(imagen_path: str, config: dict | None = None,
                 "dimensiones_originales": (ancho_fuente, alto_fuente),
                 "dimensiones": (ancho, alto),
                 "rotacion_manual_aplicada_grados": rotacion_manual,
-                "orientacion_manual_prioritaria": bool(rotacion_manual),
+                "orientacion_manual_prioritaria": rotacion_manual_definida,
                 "orientacion_base_grados": 0,
                 "orientacion_texto_base_grados": 0,
                 "deskew_aplicado_grados": 0.0,
@@ -1138,7 +1141,7 @@ def extraer_texto_empresarial(imagen_path: str, config: dict | None = None,
             if zoom_respaldo > 1.01:
                 preparada = cv2.resize(preparada, None, fx=zoom_respaldo,
                                        fy=zoom_respaldo, interpolation=cv2.INTER_CUBIC)
-            angulo = 0 if rotacion_manual else (
+            angulo = 0 if rotacion_manual_definida else (
                 180 if preparada.shape[1] >= preparada.shape[0] else 90)
             if angulo:
                 preparada = _rotar_recto(preparada, angulo)
@@ -1169,7 +1172,7 @@ def extraer_texto_empresarial(imagen_path: str, config: dict | None = None,
             "dimensiones_originales": (ancho_fuente, alto_fuente),
             "dimensiones": (ancho, alto),
             "rotacion_manual_aplicada_grados": rotacion_manual,
-            "orientacion_manual_prioritaria": bool(rotacion_manual),
+            "orientacion_manual_prioritaria": rotacion_manual_definida,
             "orientacion_base_grados": 0,
             "orientacion_texto_base_grados": 0,
             "deskew_aplicado_grados": 0.0,
@@ -1197,10 +1200,12 @@ def extraer_texto(imagen_path: str, config: dict | None = None) -> dict:
     motor, f1 = obtener_motor(config)
     imagen_original = cargar_imagen(imagen_path)
     from aprendizaje import GestorAprendizaje, aplicar_modelo_tokens
-    rotacion_manual = GestorAprendizaje(config).rotacion_preferida(imagen_path)
+    preferencia_manual = GestorAprendizaje(config).preferencia_rotacion(imagen_path)
+    rotacion_manual = float(preferencia_manual["grados"]) if preferencia_manual else 0.0
+    rotacion_manual_definida = preferencia_manual is not None
     imagen = rotar_imagen_libre(imagen_original, rotacion_manual)
     f1_ejecucion = f1
-    if rotacion_manual:
+    if rotacion_manual_definida:
         # Una decisión humana fija el marco de lectura: no se suma otra
         # orientación ni un deskew automático sobre la imagen ya colocada.
         f1_ejecucion = deepcopy(f1)
@@ -1259,7 +1264,7 @@ def extraer_texto(imagen_path: str, config: dict | None = None) -> dict:
         "texto_completo": "\n".join(l["texto"] for l in lineas_texto),
         "qr_bbox": tuple(pasada["qr"]) if pasada["qr"] is not None else None,
         "rotacion_manual_aplicada_grados": rotacion_manual,
-        "orientacion_manual_prioritaria": bool(rotacion_manual),
+        "orientacion_manual_prioritaria": rotacion_manual_definida,
         "orientacion_base_grados": base_codigo,
         "deskew_aplicado_grados": -deskew_codigo_reportado,
         "orientacion_corregida_grados": (

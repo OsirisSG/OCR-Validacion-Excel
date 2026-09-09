@@ -104,6 +104,17 @@ def _metricas_por_contexto(filas: list[dict], reales: list[str], predichos: list
             for grupo, indices in grupos.items()}
 
 
+def _metricas_por_campo(filas: list[dict], reales: list[str], predichos: list[str]) -> dict:
+    """Publica CER/WER/exactitud por campo sin mezclar IDs entre particiones."""
+    grupos: dict[str, list[int]] = {}
+    for indice, fila in enumerate(filas):
+        campo = str(fila.get("campo") or "sin_campo")
+        grupos.setdefault(campo, []).append(indice)
+    return {campo: _metricas([reales[i] for i in indices],
+                             [predichos[i] for i in indices])
+            for campo, indices in grupos.items()}
+
+
 def entrenar_lote(config: dict | None = None, directorio=None) -> dict:
     config = config or cargar_config()
     gestor = GestorAprendizaje(config, directorio)
@@ -211,6 +222,9 @@ def entrenar_lote(config: dict | None = None, directorio=None) -> dict:
                     "base_prueba": metricas_base_prueba,
                     "prueba": metricas_prueba,
                     "por_contexto_prueba": _metricas_por_contexto(test, reales_test, pred_test),
+                    "por_campo_validacion": _metricas_por_campo(
+                        validacion, reales_validacion, pred_validacion),
+                    "por_campo_prueba": _metricas_por_campo(test, reales_test, pred_test),
                     "entrenamiento": len(train), "validacion": len(validacion),
                     "prueba_muestras": len(test),
                     "ids_entrenamiento": len({f['caso_id'] for f in train}),

@@ -288,13 +288,26 @@ def test_validacion_empresarial_procesa_todas_y_reanuda_desde_cache(monkeypatch,
                 "tiempo_ocr_seg": .02, "numero_regiones": 1, "zoom_aplicado": 2.0}
 
     monkeypatch.setattr(validacion, "extraer_texto_empresarial", ocr)
+    avance_ids = tmp_path / "avance_ids.json"
     config = {"fase1": {}, "ocr": {}, "normalizacion": {}, "empresarial": {
         "archivo_cache": str(tmp_path / "cache.json"),
+        "archivo_avance_ids": str(avance_ids),
         "base_conocimiento": str(tmp_path / "base.json")}}
     destino = tmp_path / "resultados.json"
+    parciales = []
+
+    def imagen_persistida(*_args):
+        parciales.append(json.loads(avance_ids.read_text(encoding="utf-8")))
+
     primera = validacion.validar_lote_empresarial(
-        archivo_estructura, config, archivo_salida=destino)
+        archivo_estructura, config, archivo_salida=destino,
+        al_imagen=imagen_persistida)
     assert len(llamadas) == 3
+    assert all(item["avances_ids"] for item in parciales)
+    primera_evidencia = next(iter(parciales[0]["avances_ids"].values()))
+    assert primera_evidencia["imagenes"][0]["nombre"] == "a.jpg"
+    assert primera_evidencia["trazabilidad"][0]["estado_imagen"] == "procesada_con_texto"
+    assert json.loads(avance_ids.read_text(encoding="utf-8"))["avances_ids"] == {}
     assert len(primera["resultados"]) == 1
     assert primera["resultados"][0]["progreso"]["revisadas"] == 3
     assert primera["resultados"][0]["campos"]["module_part_number"]["estado"] == \
@@ -319,6 +332,23 @@ def test_temperatura_ocr_contraria_a_ruta_genera_conflicto(tmp_path):
     }], requeridos={"temperature_condition"})
     assert salida["campos"]["temperature_condition"]["estado"] == "conflicto"
     assert salida["campos"]["temperature_condition"]["valor_seguro_ruta"] == "HT"
+
+
+def test_consolidacion_respeta_claves_de_un_contrato_nuevo(tmp_path):
+    raiz = tmp_path / "Proyecto_1ST"
+    _caso(raiz)
+    caso = descubrir_casos(raiz)["casos"][0]
+
+    salida = consolidar_caso(
+        caso, [{"clave": "customer_code", "valor_normalizado": "CX-2040",
+                "valor_original": "CX-2040", "fuente": "manual",
+                "imagen": "x.jpg", "confianza_ocr": 1.0}],
+        requeridos={"test_number", "customer_code"},
+        claves=["test_number", "customer_code"])
+
+    assert set(salida["campos"]) == {"test_number", "customer_code"}
+    assert salida["campos"]["customer_code"]["valor"] == "CX-2040"
+    assert salida["campos"]["customer_code"]["estado"] == "extraido_manual"
 
 
 def test_reader_easyocr_se_inicializa_una_sola_vez(monkeypatch):

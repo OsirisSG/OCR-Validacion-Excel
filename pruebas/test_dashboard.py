@@ -1,5 +1,6 @@
 """Pruebas de contrato del backend del dashboard (Fase 4)."""
 
+from copy import deepcopy
 import json
 
 from urllib.parse import quote
@@ -39,7 +40,8 @@ def test_estado_config_y_frontend():
     ejecucion = cliente.get("/api/pipeline/estado")
     assert ejecucion.status_code == 200
     assert ejecucion.json()["estado"] in {
-        "inactivo", "procesando", "pausado", "completado", "cancelada", "error"}
+        "inactivo", "procesando", "pausado", "cancelando", "detenido_con_avance",
+        "completado", "cancelada", "error"}
     assert {"porcentaje", "procesadas", "total", "restantes", "eta_segundos",
             "transcurrido_segundos", "resultados_parciales"} <= set(ejecucion.json())
 
@@ -51,11 +53,22 @@ def test_estado_config_y_frontend():
 
     frontend = (backend.RAIZ_PROYECTO / "dashboard" / "frontend" / "app.js").read_text(
         encoding="utf-8")
-    assert "Zoom de vista · sólo pantalla" in frontend
+    assert "Zoom de vista · rueda o botones" in frontend
+    assert "Ajustar a pantalla" in frontend
+    assert "onDoubleClick" in frontend and "onWheel" in frontend
     assert "Zoom OCR · mejora la lectura" in frontend
     assert "Ángulo manual" in frontend
-    assert "La plantilla se detecta automáticamente" in frontend
+    assert "Vista previa en tiempo real" in frontend
+    assert "giroPrevisualizado" in frontend
+    assert "Registrar otra plantilla Excel" in frontend
+    assert "Identificadores de carpeta" in frontend
+    assert "Imagen sin datos de texto" in frontend
+    assert "Detener al finalizar la carpeta/ID actual" in frontend
+    assert "Cancelar y conservar avance" in frontend
+    assert "onPointerMove" in frontend and "scrollLeft" in frontend
+    assert "onClick=${() => cambiarImagen(imagen.id, true)}" in frontend
     assert 'id="ruta-plantilla"' not in frontend
+    assert 'id="ruta-inventario"' not in frontend
 
 
 def test_pipeline_rechaza_rutas_invalidas_o_demasiado_amplias():
@@ -64,6 +77,98 @@ def test_pipeline_rechaza_rutas_invalidas_o_demasiado_amplias():
 
     raiz_sistema = cliente.post("/api/pipeline", json={"ruta": "/"})
     assert raiz_sistema.status_code == 400
+
+
+def test_checkpoint_persistido_recupera_avance_y_separa_pausa_de_error(
+        monkeypatch, tmp_path):
+    checkpoint = tmp_path / "estado_pipeline.json"
+    original = deepcopy(backend._pipeline_estado)
+    hilo_original = backend._pipeline_hilo
+
+    class HiloVivo:
+        @staticmethod
+        def is_alive():
+            return True
+
+    monkeypatch.setattr(backend, "RUTA_CHECKPOINT_PIPELINE", checkpoint)
+    try:
+        backend._pipeline_hilo = HiloVivo()
+        backend._pipeline_estado.update({
+            "estado": "procesando", "ultimo_id": "abc", "ultimo_id_nombre": "ID 15",
+            "resultados_parciales": [{"id": "abc", "nombre": "ID 15"}],
+            "solicitud": {"ruta": str(tmp_path)}, "error": None,
+        })
+        pausa = backend.pausar_pipeline()
+        assert pausa["estado"] == "pausado"
+        assert backend._pipeline_estado["reanudable"] is True
+        guardado = json.loads(checkpoint.read_text(encoding="utf-8"))
+        assert guardado["ultimo_id_nombre"] == "ID 15"
+        assert guardado["resultados_parciales"][0]["id"] == "abc"
+
+        reanudado = backend.reanudar_pipeline()
+        assert reanudado["estado"] == "procesando"
+        assert backend._pipeline_estado["error"] is None
+    finally:
+        backend._pipeline_estado.clear()
+        backend._pipeline_estado.update(original)
+        backend._pipeline_hilo = hilo_original
+        backend._pipeline_continuar.set()
+        backend._pipeline_cancelar.clear()
+        backend._pipeline_detener_fin_id.clear()
+
+
+def test_cancelacion_ofrece_fin_de_id_y_conserva_checkpoint(monkeypatch, tmp_path):
+    checkpoint = tmp_path / "estado_pipeline.json"
+    original = deepcopy(backend._pipeline_estado)
+    monkeypatch.setattr(backend, "RUTA_CHECKPOINT_PIPELINE", checkpoint)
+    try:
+        backend._pipeline_estado.update({"estado": "procesando", "error": None})
+        resultado = backend.cancelar_pipeline(backend.SolicitudDetencion(accion="fin_id"))
+        assert resultado == {"estado": "cancelando", "seguro": True, "accion": "fin_id"}
+        assert backend._pipeline_detener_fin_id.is_set()
+        assert json.loads(checkpoint.read_text(encoding="utf-8"))["reanudable"] is True
+    finally:
+        backend._pipeline_estado.clear()
+        backend._pipeline_estado.update(original)
+        backend._pipeline_continuar.set()
+        backend._pipeline_cancelar.clear()
+        backend._pipeline_detener_fin_id.clear()
+
+
+def test_reanudacion_omite_ids_ya_confirmados_y_conserva_su_lista(monkeypatch, tmp_path):
+    checkpoint = tmp_path / "estado_pipeline.json"
+    original = deepcopy(backend._pipeline_estado)
+    hilo_original = backend._pipeline_hilo
+    recibida = {}
+
+    def iniciar_falso(solicitud):
+        recibida.update(solicitud.model_dump())
+        backend._pipeline_estado.update({"estado": "procesando", "resultados_parciales": []})
+        return {"aceptado": True, "estado": "procesando"}
+
+    monkeypatch.setattr(backend, "RUTA_CHECKPOINT_PIPELINE", checkpoint)
+    monkeypatch.setattr(backend, "iniciar_pipeline", iniciar_falso)
+    try:
+        backend._pipeline_hilo = None
+        backend._pipeline_estado.update({
+            "estado": "detenido_con_avance", "reanudable": True,
+            "solicitud": {"ruta": str(tmp_path), "modo_ejecucion": "completo"},
+            "ultimo_id": "id-publico", "ultimo_id_nombre": "Caso 15",
+            "resultados_parciales": [{
+                "id": "id-publico", "nombre": "Caso 15", "case_key": "caso-15",
+                "ruta": str(tmp_path / "caso-15"), "estado": "procesada",
+            }],
+        })
+        respuesta = backend.reanudar_pipeline()
+
+        assert respuesta["desde_checkpoint"] is True
+        assert recibida["casos_omitidos"] == ["caso-15"]
+        assert backend._pipeline_estado["resultados_parciales"][0]["id"] == "id-publico"
+        assert backend._pipeline_estado["ultimo_id_nombre"] == "Caso 15"
+    finally:
+        backend._pipeline_estado.clear()
+        backend._pipeline_estado.update(original)
+        backend._pipeline_hilo = hilo_original
 
 
 def test_correccion_empresarial_se_refleja_y_deja_historial(monkeypatch, tmp_path):
@@ -226,6 +331,35 @@ def test_region_externa_se_guarda_como_aprendizaje_y_actualiza_excel(
     assert anotaciones[0]["bbox"] == [10, 12, 50, 20]
 
 
+def test_imagen_externa_sin_datos_persiste_como_revision_no_error(
+        monkeypatch, tmp_path):
+    import pruebas_externas
+    from aprendizaje import GestorAprendizaje
+
+    imagen = tmp_path / "contexto.jpg"
+    imagen.write_bytes(b"foto-contexto")
+    salida = tmp_path / "resultados.json"
+    documento = {"resultados": [{
+        "id": "externa-contexto", "imagen": imagen.name, "ruta": str(imagen),
+        "tipo": "codigo", "tokens": [], "lineas_texto": [],
+    }]}
+    config = {"aprendizaje": {
+        "activar": True, "directorio": str(tmp_path / "aprendizaje")}}
+    monkeypatch.setattr(backend, "CONFIG", config)
+    monkeypatch.setattr(pruebas_externas, "cargar", lambda _config: documento)
+    monkeypatch.setattr(pruebas_externas, "rutas", lambda _config: (tmp_path, salida))
+
+    resultado = backend.marcar_imagen_sin_datos(backend.SolicitudImagenSinDatos(
+        tipo="externa", prueba_id="externa-contexto", motivo="Sin etiqueta",
+        usuario="revisor"))
+
+    assert resultado["estado_imagen"] == "revisada_sin_datos"
+    assert "sin datos" in resultado["mensaje"].lower()
+    persistido = json.loads(salida.read_text(encoding="utf-8"))["resultados"][0]
+    assert persistido["revision_sin_datos"]["motivo"] == "Sin etiqueta"
+    assert GestorAprendizaje(config).imagen_sin_datos(imagen)["usuario"] == "revisor"
+
+
 def test_vista_orientada_rota_y_rechaza_archivo_corrupto(tmp_path):
     import cv2
     import numpy as np
@@ -313,6 +447,21 @@ def test_giro_libre_posterior_parte_del_angulo_manual_ya_aplicado():
     _rotar_resultado_existente(ocr, 0)
     assert ocr["dimensiones"] == [200, 100]
     assert ocr["orientacion_manual_prioritaria"] is False
+
+
+def test_giro_manual_cero_no_se_confunde_con_orientacion_automatica():
+    ocr = {
+        "dimensiones_originales": [200, 100], "dimensiones": [200, 100],
+        "rotacion_manual_aplicada_grados": 0,
+        "orientacion_texto_base_grados": 180,
+        "tokens": [], "lineas_texto": [], "orientacion_texto_grados": 180,
+    }
+
+    _rotar_resultado_existente(ocr, 0, restaurar_automatico=False)
+
+    assert ocr["orientacion_manual_prioritaria"] is True
+    assert ocr["orientacion_texto_base_grados"] == 0
+    assert ocr["rotacion_manual_aplicada_grados"] == 0
 
 
 def test_giro_recupera_dimensiones_de_imagen_si_el_ocr_no_las_guardo(tmp_path):

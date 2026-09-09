@@ -41,6 +41,7 @@ from aprendizaje import GestorAprendizaje
 from configuracion import RAIZ_PROYECTO, cargar_config
 from estructura import carpetas_hoja
 from flujo_empresarial import (BaseConocimiento, CAMPOS_REQUERIDOS_DEFAULT,
+                               CLAVES_PLANTILLA,
                                CacheOCR, EXTENSIONES_IMAGEN, ahora,
                                consolidar_caso, evidencias_desde_qr,
                                extraer_candidatos_texto)
@@ -209,7 +210,8 @@ def validar_lote(ruta_estructura: str | Path | None = None,
                  archivo_salida: str | Path | None = None,
                  al_resultado: Callable[[int, int, dict, float | None], None] | None = None,
                  al_imagen: Callable[[int, int, str, float | None], None] | None = None,
-                 control: Callable[[], None] | None = None) -> dict:
+                 control: Callable[[], None] | None = None,
+                 casos_omitidos: set[str] | None = None) -> dict:
     """
     Recorre las carpetas hoja de la estructura detectada, valida cada una y
     serializa validacion_resultados.json. Retorna la estructura completa
@@ -224,8 +226,26 @@ def validar_lote(ruta_estructura: str | Path | None = None,
 
     patron_dominante = estructura.get("patron_dominante")
     cache_ocr: dict[str, dict] = {}
-    resultados = []
+    cache_persistente = CacheOCR(
+        RAIZ_PROYECTO / config.get("empresarial", {}).get(
+            "archivo_cache_legacy", ".cache_ocr/imagenes_legacy.sqlite3"),
+        {"fase1": config.get("fase1", {}),
+         "normalizacion": config.get("normalizacion", {})})
+    gestor_aprendizaje = GestorAprendizaje(config)
+    resultados_existentes = []
+    destino = Path(archivo_salida) if archivo_salida else RAIZ_PROYECTO / "validacion_resultados.json"
+    if casos_omitidos and destino.is_file():
+        try:
+            resultados_existentes = json.loads(
+                destino.read_text(encoding="utf-8")).get("resultados", [])
+        except (OSError, json.JSONDecodeError):
+            resultados_existentes = []
+    resultados = [fila for fila in resultados_existentes
+                  if str(fila.get("case_key") or fila.get("ruta")) in casos_omitidos]
     hojas = carpetas_hoja(estructura)
+    if casos_omitidos:
+        hojas = [carpeta for carpeta in hojas
+                 if str(carpeta.get("case_key") or carpeta.get("ruta")) not in casos_omitidos]
     inicio = time.monotonic()
     total_imagenes = sum(len(c.get("archivos", {}).get("imagenes", [])) for c in hojas)
     imagenes_procesadas = 0
@@ -245,10 +265,26 @@ def validar_lote(ruta_estructura: str | Path | None = None,
             al_imagen(imagenes_procesadas, total_imagenes, ruta_imagen,
                       round(eta, 1) if eta is not None else None)
 
+    def persistir_legacy(parcial: bool) -> None:
+        salida_parcial = {
+            "raiz": estructura["raiz"],
+            "generado_en": datetime.now().isoformat(timespec="seconds"),
+            "estructura_usada": str(ruta_estructura), "perfil": "legacy",
+            "parcial": parcial, "carpetas_procesadas": len(resultados),
+            "resultados": resultados,
+        }
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        temporal = destino.with_suffix(destino.suffix + ".tmp")
+        temporal.write_text(json.dumps(salida_parcial, ensure_ascii=False, indent=2),
+                            encoding="utf-8")
+        temporal.replace(destino)
+
     for indice, carpeta in enumerate(hojas, start=1):
         fila = _validar_carpeta(
-            carpeta, config, f2, cache_ocr, patron_dominante, imagen_lista, control)
+            carpeta, config, f2, cache_ocr, patron_dominante, imagen_lista, control,
+            cache_persistente, gestor_aprendizaje)
         resultados.append(fila)
+        persistir_legacy(parcial=True)
         if al_resultado:
             transcurrido = time.monotonic() - inicio
             eta = (transcurrido / indice) * (len(hojas) - indice) if indice else None
@@ -274,7 +310,6 @@ def validar_lote(ruta_estructura: str | Path | None = None,
         "aprendizaje": aprendizaje,
         "resultados": resultados,
     }
-    destino = Path(archivo_salida) if archivo_salida else RAIZ_PROYECTO / "validacion_resultados.json"
     with open(destino, "w", encoding="utf-8") as f:
         json.dump(salida, f, ensure_ascii=False, indent=2)
     salida["archivo_salida"] = str(destino)
@@ -296,6 +331,7 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
                              al_imagen: Callable[[int, int, str, float | None], None] | None = None,
                              control: Callable[[], None] | None = None,
                              casos_filtrados: set[str] | None = None,
+                             casos_omitidos: set[str] | None = None,
                              imagenes_filtradas: set[str] | None = None,
                              solo_errores: bool = False,
                              modo_recorte: str | None = None,
@@ -313,6 +349,8 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
     casos = estructura.get("casos_empresariales", [])
     if casos_filtrados:
         casos = [c for c in casos if c["case_key"] in casos_filtrados]
+    if casos_omitidos:
+        casos = [c for c in casos if c["case_key"] not in casos_omitidos]
     cfg_emp = config.get("empresarial", {})
     gestor_aprendizaje = GestorAprendizaje(config)
     estado_modelos = gestor_aprendizaje.estado()
@@ -340,13 +378,16 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
     resultados: list[dict] = []
     resultados_previos: list[dict] = []
     resultados_existentes: list[dict] = []
+    avances_ids: dict[str, dict] = {}
+    ruta_avances = RAIZ_PROYECTO / cfg_emp.get(
+        "archivo_avance_ids", ".cache_ocr/avances_ids.json")
     if destino.is_file():
         try:
             resultados_existentes = json.loads(
                 destino.read_text(encoding="utf-8")).get("resultados", [])
         except (OSError, json.JSONDecodeError):
             resultados_existentes = []
-    if casos_filtrados:
+    if casos_filtrados or casos_omitidos:
         resultados_previos = resultados_existentes
     inicio = time.monotonic()
     total_imagenes = sum(len(c.get("fotos", [])) if c.get("estructura_valida")
@@ -371,6 +412,15 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
             json.dump(salida_parcial, archivo, ensure_ascii=False, indent=2)
         temporal.replace(destino)
 
+    def persistir_avance_id() -> None:
+        """Guarda sólo el ID activo; evita reescribir todo el lote por imagen."""
+        ruta_avances.parent.mkdir(parents=True, exist_ok=True)
+        temporal = ruta_avances.with_suffix(ruta_avances.suffix + ".tmp")
+        temporal.write_text(json.dumps({
+            "actualizado_en": ahora(), "avances_ids": avances_ids,
+        }, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporal.replace(ruta_avances)
+
     for indice, caso in enumerate(casos, start=1):
         if control:
             control()
@@ -391,16 +441,23 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
                 control()
             ruta = foto["ruta"]
             resultado = None
+            revision_sin_datos = gestor_aprendizaje.imagen_sin_datos(ruta)
+            if revision_sin_datos:
+                resultado = {"imagen": ruta, "tokens": [], "lineas_texto": [],
+                             "texto_completo": "", "estado_imagen": "revisada_sin_datos",
+                             "motivo_sin_datos": revision_sin_datos.get("motivo"),
+                             "modo_recorte": "revision_manual"}
             try:
-                resultado = cache.obtener(ruta)
+                resultado = resultado or cache.obtener(ruta)
             except OSError:
-                resultado = None
+                resultado = resultado
             desde_cache = resultado is not None
-            estado_cache = "leida" if desde_cache else "omitida"
-            if imagenes_filtradas and ruta in imagenes_filtradas:
+            estado_cache = "revision_manual" if revision_sin_datos else (
+                "leida" if desde_cache else "omitida")
+            if imagenes_filtradas and ruta in imagenes_filtradas and not revision_sin_datos:
                 resultado = None
                 desde_cache = False
-            if (solo_errores and desde_cache and
+            if (solo_errores and desde_cache and not revision_sin_datos and
                     (resultado.get("error") or str(resultado.get("estado_imagen", "")).startswith("error"))):
                 resultado = None
                 desde_cache = False
@@ -447,7 +504,7 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
             estado_imagen = resultado.get("estado_imagen", "procesada_con_texto")
             if estado_imagen in {"procesada_con_texto", "procesada_con_qr"}:
                 con_texto += 1
-            elif estado_imagen == "descartada_sin_texto":
+            elif estado_imagen in {"descartada_sin_texto", "revisada_sin_datos"}:
                 sin_texto += 1
             else:
                 errores += 1
@@ -504,6 +561,7 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
                                              if e.get("imagen") == foto.get("ruta_relativa")}),
                 "requiere_revision": bool(resultado.get("error")),
                 "mensaje_error": resultado.get("error"), "desde_cache": desde_cache,
+                "revision_sin_datos": revision_sin_datos,
                 "estado_cache": estado_cache,
                 "qr_payloads": [q.get("payload") for q in resultado.get("qrs", [])
                                 if q.get("payload")],
@@ -531,6 +589,15 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
             }
             if al_caso:
                 al_caso(deepcopy(caso))
+            avances_ids[caso["case_key"]] = {
+                "case_key": caso["case_key"], "nombre": caso.get("nombre"),
+                "progreso": deepcopy(caso["progreso"]),
+                "imagenes": deepcopy(imagenes_salida),
+                "trazabilidad": deepcopy(trazabilidad),
+                "evidencias": deepcopy(evidencias),
+                "actualizado_en": ahora(),
+            }
+            persistir_avance_id()
             ahora_monotonic = time.monotonic()
             duraciones.append(max(0.001, ahora_monotonic - anterior))
             anterior = ahora_monotonic
@@ -551,7 +618,8 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
         consolidado = consolidar_caso(
             caso, evidencias,
             requeridos=set(cfg_emp.get("campos_requeridos") or CAMPOS_REQUERIDOS_DEFAULT),
-            reglas_confirmadas=conocimiento.confirmadas())
+            reglas_confirmadas=conocimiento.confirmadas(),
+            claves=cfg_emp.get("claves_plantilla") or CLAVES_PLANTILLA)
         correcciones_manual_campos = deepcopy(previo.get("correcciones_manual_campos", {}))
         for clave, correccion in correcciones_manual_campos.items():
             if clave not in consolidado["campos"] or not correccion.get("valor"):
@@ -643,6 +711,8 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
             "historial_acciones": deepcopy(previo.get("historial_acciones", [])),
         }
         resultados.append(fila)
+        avances_ids.pop(caso["case_key"], None)
+        persistir_avance_id()
         persistir(parcial=True)
         if al_resultado:
             transcurrido = time.monotonic() - inicio
@@ -678,7 +748,9 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
 def _validar_carpeta(carpeta: dict, config: dict, f2: dict,
                      cache_ocr: dict, patron_dominante: str | None,
                      al_imagen: Callable[[str], None] | None = None,
-                     control: Callable[[], None] | None = None) -> dict:
+                     control: Callable[[], None] | None = None,
+                     cache_persistente: CacheOCR | None = None,
+                     gestor_aprendizaje: GestorAprendizaje | None = None) -> dict:
     """Procesa una carpeta hoja completa (clasificación + OCR + comparación)."""
     ruta = Path(carpeta["ruta"])
     observaciones: list[str] = []
@@ -707,12 +779,29 @@ def _validar_carpeta(carpeta: dict, config: dict, f2: dict,
         clave = str(img)
         if clave not in cache_ocr:
             try:
-                cache_ocr[clave] = extraer_texto(clave, config)
+                sin_datos = (gestor_aprendizaje.imagen_sin_datos(clave)
+                             if gestor_aprendizaje else None)
+                cache_ocr[clave] = ({"imagen": clave, "tokens": [], "lineas_texto": [],
+                                     "texto_completo": "",
+                                     "estado_imagen": "revisada_sin_datos",
+                                     "motivo_sin_datos": sin_datos.get("motivo")}
+                                    if sin_datos else
+                                    (cache_persistente.obtener(clave)
+                                     if cache_persistente else None))
+                if cache_ocr[clave] is None:
+                    cache_ocr[clave] = extraer_texto(clave, config)
+                    if cache_persistente:
+                        cache_persistente.guardar(clave, cache_ocr[clave])
             except Exception as exc:
                 cache_ocr[clave] = {"imagen": clave, "tokens": [], "qr_bbox": None,
                                     "orientacion_corregida_grados": 0.0,
                                     "confianza_media": None, "num_lineas_ocr": 0,
                                     "error": str(exc)}
+                if cache_persistente:
+                    try:
+                        cache_persistente.guardar(clave, cache_ocr[clave])
+                    except OSError:
+                        pass
                 alertas.append({
                     "codigo": ("IMAGEN_CORRUPTA" if isinstance(exc, ValueError)
                                else "ERROR_LECTURA_IMAGEN"),
@@ -720,7 +809,8 @@ def _validar_carpeta(carpeta: dict, config: dict, f2: dict,
                     "mensaje": f"No se pudo procesar {img.name}: {exc}",
                 })
         resultado_actual = cache_ocr[clave]
-        if (not resultado_actual.get("error") and
+        if (resultado_actual.get("estado_imagen") != "revisada_sin_datos" and
+                not resultado_actual.get("error") and
                 not resultado_actual.get("tokens") and
                 not resultado_actual.get("lineas_texto")):
             alertas.append({

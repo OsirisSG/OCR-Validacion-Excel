@@ -1,10 +1,12 @@
+from pathlib import Path
+
 from openpyxl import Workbook, load_workbook
 from openpyxl.formatting.formatting import ConditionalFormattingList
 from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.worksheet.table import Table
 
 from flujo_empresarial import CLAVES_PLANTILLA
-from plantilla_empresarial import (cargar_contrato, detectar_plantilla_automatica,
+from plantilla_empresarial import (RegistroPlantillas, cargar_contrato, detectar_plantilla_automatica,
                                    generar_desde_plantilla)
 
 
@@ -78,6 +80,51 @@ def test_sin_plantilla_compatible_usa_generador_integrado(tmp_path):
         tmp_path, estructura, {"fase3": {"deteccion_plantillas": {"activar": True}}})
     assert resultado["ruta"] is None
     assert resultado["estilo"] == "generador_estandar"
+
+
+def test_registro_conserva_contratos_independientes_y_selecciona_por_id(tmp_path):
+    primera = tmp_path / "cliente_a.xlsx"
+    segunda = tmp_path / "cliente_b.xlsx"
+    _plantilla(primera)
+    _plantilla(segunda)
+    libro_b = load_workbook(segunda)
+    libro_b["Catalogos"]["D1"] = "CAT_CLIENTE_B"
+    libro_b["Catalogos"]["D2"] = "Valor"
+    libro_b["Catalogos"]["D3"] = "B"
+    libro_b.save(segunda)
+    registro = RegistroPlantillas({}, tmp_path / "biblioteca")
+    a = registro.registrar(primera, "Cliente A", ["1ST"])
+    b = registro.registrar(segunda, "Cliente B", ["2ST"])
+
+    assert a["id"] != b["id"]
+    assert Path(a["ruta"]).read_bytes() == primera.read_bytes()
+    assert len(registro.listar()) == 2
+    estructura = {"casos_empresariales": [{}], "tipo_st": "2ST", "tipos_st": ["2ST"]}
+    seleccion = detectar_plantilla_automatica(
+        tmp_path, estructura,
+        {"fase3": {"registro_plantillas": {"directorio": str(tmp_path / "biblioteca")}}},
+        plantilla_id=b["id"])
+    assert seleccion["id"] == b["id"]
+    assert seleccion["fuente"] == "seleccionada"
+
+
+def test_registro_detecta_plantilla_por_marcador_de_carpeta(tmp_path):
+    plantilla = tmp_path / "cliente_x.xlsx"
+    _plantilla(plantilla)
+    biblioteca = tmp_path / "biblioteca"
+    registro = RegistroPlantillas({}, biblioteca)
+    registrada = registro.registrar(
+        plantilla, "Cliente X", ["1ST"], ["PROYECTO_X"])
+    raiz = tmp_path / "entregas" / "PROYECTO_X" / "1ST"
+    raiz.mkdir(parents=True)
+    estructura = {"casos_empresariales": [{}], "tipo_st": "1ST", "tipos_st": ["1ST"]}
+
+    seleccion = detectar_plantilla_automatica(
+        raiz, estructura,
+        {"fase3": {"registro_plantillas": {"directorio": str(biblioteca)}}})
+
+    assert seleccion["id"] == registrada["id"]
+    assert seleccion["estrategia"] == "estructura_registrada"
 
 
 def _resultado(numero):

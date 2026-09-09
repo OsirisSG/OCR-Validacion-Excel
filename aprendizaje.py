@@ -342,8 +342,14 @@ class GestorAprendizaje:
                 bbox_json TEXT, texto_ocr TEXT, texto_correcto TEXT,
                 accion TEXT NOT NULL, entrenable INTEGER NOT NULL DEFAULT 0,
                 campo TEXT, fase TEXT, tor TEXT, confianza REAL,
-                modelo_origen TEXT, confirmada INTEGER NOT NULL DEFAULT 1,
+                modelo_origen TEXT, usuario TEXT NOT NULL DEFAULT 'dashboard',
+                confirmada INTEGER NOT NULL DEFAULT 1,
                 metadatos_json TEXT, firma TEXT UNIQUE, creado_en TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS imagenes_sin_datos (
+                imagen_hash TEXT PRIMARY KEY, ruta_imagen TEXT NOT NULL,
+                caso_id TEXT NOT NULL, motivo TEXT, usuario TEXT NOT NULL,
+                creado_en TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS modelos_visuales (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, version TEXT UNIQUE NOT NULL,
@@ -372,6 +378,7 @@ class GestorAprendizaje:
             "campo": "TEXT", "fase": "TEXT", "tor": "TEXT", "confianza": "REAL",
             "modelo_origen": "TEXT", "confirmada": "INTEGER NOT NULL DEFAULT 1",
             "metadatos_json": "TEXT", "firma": "TEXT",
+            "usuario": "TEXT NOT NULL DEFAULT 'dashboard'",
         }.items():
             if nombre not in columnas:
                 con.execute(f"ALTER TABLE muestras_visuales ADD COLUMN {nombre} {definicion}")
@@ -423,6 +430,7 @@ class GestorAprendizaje:
                                  fase: str | None = None, tor: str | None = None,
                                  confianza: float | None = None,
                                  modelo_origen: str | None = None,
+                                 usuario: str = "dashboard",
                                  metadatos: dict | None = None) -> dict:
         """Guarda una evidencia y su recorte exacto para entrenamiento auditable."""
         acciones = {"aceptar", "corregir", "ilegible", "no_es_campo",
@@ -480,27 +488,37 @@ class GestorAprendizaje:
                 INSERT INTO muestras_visuales
                 (id, caso_id, imagen_hash, ruta_imagen, ruta_recorte, bbox_json,
                  texto_ocr, texto_correcto, accion, entrenable, campo, fase, tor,
-                 confianza, modelo_origen, confirmada, metadatos_json, firma, creado_en)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 confianza, modelo_origen, usuario, confirmada, metadatos_json, firma, creado_en)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (muestra_id, str(caso_id), imagen_hash, str(ruta), str(ruta_recorte),
                   json.dumps(caja), str(texto_ocr), str(texto_correcto), accion,
-                  int(entrenable), campo, fase, tor, confianza, modelo_origen, 1,
+                  int(entrenable), campo, fase, tor, confianza, modelo_origen,
+                  str(usuario or "dashboard"), 1,
                   json.dumps(metadatos or {}, ensure_ascii=False), firma, _ahora()))
         return {"id": muestra_id, "ruta_recorte": str(ruta_recorte),
                 "bbox": caja, "accion": accion, "entrenable": entrenable}
 
-    def rotacion_preferida(self, ruta_imagen: str | Path | None) -> float:
-        """Rotación humana, en sentido horario, para la próxima lectura OCR."""
+    def preferencia_rotacion(self, ruta_imagen: str | Path | None) -> dict | None:
+        """Devuelve la decisión humana, distinguiendo 0° de ausencia de decisión."""
         if not ruta_imagen or not self.db.exists() or not Path(ruta_imagen).is_file():
-            return 0
+            return None
         try:
             imagen_hash = hash_archivo(ruta_imagen)
         except OSError:
-            return 0
+            return None
         with self._conectar() as con:
             fila = con.execute(
-                "SELECT grados FROM rotaciones_imagen WHERE imagen_hash=?", (imagen_hash,)).fetchone()
-        return round(float(fila["grados"]) % 360, 3) if fila else 0.0
+                "SELECT * FROM rotaciones_imagen WHERE imagen_hash=?", (imagen_hash,)).fetchone()
+        if not fila:
+            return None
+        salida = dict(fila)
+        salida["grados"] = round(float(salida["grados"]) % 360, 3)
+        return salida
+
+    def rotacion_preferida(self, ruta_imagen: str | Path | None) -> float:
+        """Rotación humana en sentido horario; conserva la interfaz histórica."""
+        preferencia = self.preferencia_rotacion(ruta_imagen)
+        return float(preferencia["grados"]) if preferencia else 0.0
 
     def modelo_visual_activo(self) -> dict | None:
         if not self.db.exists():
@@ -568,6 +586,17 @@ class GestorAprendizaje:
                     fuente=excluded.fuente, actualizado_en=excluded.actualizado_en
             """, (imagen_hash, str(ruta_imagen), grados, fuente, _ahora()))
         return {"imagen_hash": imagen_hash, "grados": grados,
+                "aplicar_en_siguiente_ocr": True, "actualizado_en": _ahora()}
+
+    def eliminar_rotacion(self, ruta_imagen: str | Path) -> dict:
+        """Quita la prioridad manual para volver al análisis automático."""
+        if not Path(ruta_imagen).is_file():
+            raise ValueError("La imagen ya no está disponible.")
+        imagen_hash = hash_archivo(ruta_imagen)
+        with self._conectar() as con:
+            eliminadas = con.execute(
+                "DELETE FROM rotaciones_imagen WHERE imagen_hash=?", (imagen_hash,)).rowcount
+        return {"imagen_hash": imagen_hash, "rotacion_manual_eliminada": bool(eliminadas),
                 "aplicar_en_siguiente_ocr": True, "actualizado_en": _ahora()}
 
     def rotar_evidencias_imagen(self, ruta_imagen: str | Path, grados: float,
@@ -669,6 +698,7 @@ class GestorAprendizaje:
                              fase: str | None = None, tor: str | None = None,
                              confianza: float | None = None,
                              modelo_origen: str | None = None,
+                             usuario: str = "dashboard",
                              metadatos: dict | None = None) -> dict:
         crudo_original = str(texto_ocr).strip()
         correcto_original = str(texto_correcto).strip()
@@ -708,7 +738,10 @@ class GestorAprendizaje:
                     duplicada_modelo = True
             else:
                 duplicada_modelo = True
-        entrenamiento = self.entrenar_y_promover() if not duplicada_modelo else None
+        # Las correcciones quedan en cola. Tanto las reglas de normalización
+        # como el reconocedor visual se evalúan por lote mediante una acción
+        # explícita; nunca se entrena o promueve un modelo por cada edición.
+        entrenamiento = None
         muestra_visual = None
         advertencia_visual = None
         if ruta_imagen and caso_id:
@@ -717,7 +750,7 @@ class GestorAprendizaje:
                     ruta_imagen, caso_id, crudo_original, correcto_original, bbox,
                     accion=accion, entrenable=entrenar_visual, campo=campo, fase=fase,
                     tor=tor, confianza=confianza, modelo_origen=modelo_origen,
-                    metadatos=metadatos)
+                    usuario=usuario, metadatos=metadatos)
             except ValueError as exc:
                 advertencia_visual = str(exc)
         return {
@@ -739,6 +772,7 @@ class GestorAprendizaje:
                          imagen_nombre: str | None = None,
                          fuente: str = "dashboard_region", fase: str | None = None,
                          tor: str | None = None, modelo_origen: str | None = None,
+                         usuario: str = "dashboard",
                          metadatos: dict | None = None) -> dict:
         """Guarda texto humano localizado aunque el OCR no haya producido token."""
         texto = str(texto_correcto).strip()
@@ -783,7 +817,7 @@ class GestorAprendizaje:
                 muestra_visual = self.registrar_muestra_visual(
                     ruta_imagen, carpeta_id, "", texto, bbox_limpio,
                     accion="confirmar_entrenar", entrenable=True, fase=fase, tor=tor,
-                    modelo_origen=modelo_origen, metadatos=metadatos)
+                    modelo_origen=modelo_origen, usuario=usuario, metadatos=metadatos)
             except ValueError as exc:
                 advertencia_visual = str(exc)
         return {
@@ -797,6 +831,37 @@ class GestorAprendizaje:
             "muestra_visual": muestra_visual,
             "advertencia_visual": advertencia_visual,
         }
+
+    def registrar_imagen_sin_datos(self, ruta_imagen: str | Path, caso_id: str,
+                                   motivo: str | None = None,
+                                   usuario: str = "dashboard") -> dict:
+        ruta = Path(ruta_imagen)
+        if not ruta.is_file():
+            raise ValueError("La imagen ya no está disponible.")
+        imagen_hash = hash_archivo(ruta)
+        with self._conectar() as con:
+            con.execute("""INSERT INTO imagenes_sin_datos
+                (imagen_hash, ruta_imagen, caso_id, motivo, usuario, creado_en)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(imagen_hash) DO UPDATE SET
+                ruta_imagen=excluded.ruta_imagen, caso_id=excluded.caso_id,
+                motivo=excluded.motivo, usuario=excluded.usuario,
+                creado_en=excluded.creado_en""",
+                (imagen_hash, str(ruta), str(caso_id), str(motivo or "").strip(),
+                 str(usuario or "dashboard"), _ahora()))
+        return {"imagen_hash": imagen_hash, "caso_id": str(caso_id),
+                "motivo": str(motivo or "").strip(), "usuario": usuario,
+                "estado_imagen": "revisada_sin_datos"}
+
+    def imagen_sin_datos(self, ruta_imagen: str | Path) -> dict | None:
+        ruta = Path(ruta_imagen)
+        if not self.db.exists() or not ruta.is_file():
+            return None
+        imagen_hash = hash_archivo(ruta)
+        with self._conectar() as con:
+            fila = con.execute(
+                "SELECT * FROM imagenes_sin_datos WHERE imagen_hash=?", (imagen_hash,)).fetchone()
+        return dict(fila) if fila else None
 
     def listar_anotaciones(self, rutas_imagen: list[str | Path] | None = None,
                            carpeta_id: str | None = None) -> list[dict]:

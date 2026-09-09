@@ -67,8 +67,10 @@ def ejecutar_pipeline(ruta_raiz: str | Path, config: dict | None = None,
                       control: Callable[[], None] | None = None,
                       tipo_st: str | None = None,
                       ruta_plantilla: str | Path | None = None,
+                      plantilla_id: str | None = None,
                       casos_filtrados: set[str] | None = None,
                       imagenes_filtradas: set[str] | None = None,
+                      casos_omitidos: set[str] | None = None,
                       solo_errores: bool = False,
                       modo_recorte: str | None = None,
                       roi_manual: dict[str, float] | None = None,
@@ -144,7 +146,8 @@ def ejecutar_pipeline(ruta_raiz: str | Path, config: dict | None = None,
         )
     from plantilla_empresarial import detectar_plantilla_automatica
     seleccion_plantilla = detectar_plantilla_automatica(
-        ruta_raiz, estructura, config, explicita=ruta_plantilla)
+        ruta_raiz, estructura, config, explicita=ruta_plantilla,
+        plantilla_id=plantilla_id)
     ruta_plantilla = seleccion_plantilla.get("ruta")
     if usar_empresarial and ruta_plantilla:
         from plantilla_empresarial import cargar_contrato
@@ -153,6 +156,8 @@ def ejecutar_pipeline(ruta_raiz: str | Path, config: dict | None = None,
         requeridos = [clave for clave, regla in contrato["esquema"].items()
                       if str(regla.get("requerido") or "").lower() in {"sí", "si"}]
         config.setdefault("empresarial", {})["campos_requeridos"] = requeridos
+        config.setdefault("empresarial", {})["claves_plantilla"] = list(
+            contrato["claves"])
         config.setdefault("fase3", {})["plantilla_empresarial"] = str(ruta_plantilla)
     total_hojas = (len(estructura.get("casos_empresariales", [])) if usar_empresarial
                    else len(carpetas_hoja(estructura)))
@@ -226,15 +231,23 @@ def ejecutar_pipeline(ruta_raiz: str | Path, config: dict | None = None,
             "fase2", f"Procesando ID {caso.get('nombre')}", {"caso_actualizado": caso})
         argumentos_validacion.update({
             "casos_filtrados": casos_filtrados,
+            "casos_omitidos": casos_omitidos,
             "imagenes_filtradas": imagenes_filtradas,
             "solo_errores": solo_errores,
             "modo_recorte": modo_recorte,
             "roi_manual": roi_manual,
             "zoom_forzado": zoom_forzado,
         })
-    validacion = (validar_lote_empresarial(ruta_estructura, config, **argumentos_validacion)
-                  if usar_empresarial else
-                  validar_lote(ruta_estructura, config, **argumentos_validacion))
+    if usar_empresarial:
+        validacion = validar_lote_empresarial(
+            ruta_estructura, config, **argumentos_validacion)
+    else:
+        # Conserva compatibilidad con integraciones/pruebas que sustituyen el
+        # validador legacy con la firma anterior.
+        if (casos_omitidos and
+                "casos_omitidos" in inspect.signature(validar_lote).parameters):
+            argumentos_validacion["casos_omitidos"] = casos_omitidos
+        validacion = validar_lote(ruta_estructura, config, **argumentos_validacion)
     conteo: dict[str, int] = {}
     for fila in validacion["resultados"]:
         conteo[fila["comparacion"]["resultado"]] = conteo.get(fila["comparacion"]["resultado"], 0) + 1

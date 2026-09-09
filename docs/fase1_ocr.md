@@ -6,7 +6,7 @@
 foto de etiqueta y retorna tanto los tokens alfanuméricos para comparar códigos
 como el texto completo con espacios, signos y saltos de línea. También conserva
 bounding boxes, posición del QR (si existe) y orientación corregida.
-Procesamiento 100% local (PaddleOCR/EasyOCR), sin APIs ni nube.
+Procesamiento 100% local con EasyOCR, sin APIs ni nube.
 
 ## Contrato de entrada/salida
 
@@ -19,7 +19,7 @@ extraer_texto("foto_frontal.jpg")
 #   "qr_bbox": (75, 515, 180, 180) | None,   # SOLO geometría, nunca se decodifica
 #   "orientacion_corregida_grados": 4.0,
 #   # campos aditivos documentados:
-#   "imagen": "...", "motor": "paddle", "confianza_media": 0.998,
+#   "imagen": "...", "motor": "easyocr", "confianza_media": 0.998,
 #   "dispositivo": "cuda" | "mps" | "cpu", "advertencias_motor": [],
 #   "num_lineas_ocr": 2, "dimensiones": (1040, 760), "roi_usado": None,
 #   "variante_preprocesamiento": "adaptativa",
@@ -53,7 +53,7 @@ CLI: `python ocr_engine.py imagen1.jpg [imagen2.png ...] [--compacto]`
    defecto; `pyzbar` opcional por config. Valida cuadratura (0.7–1.3) y tamaño.
 8. **ROI conservador**: expansión `3.0×` el tamaño del QR, rechazado si dejara
    < 90% del ancho/alto. Sin QR → imagen completa, sin error ni degradación.
-9. **OCR dual** (EasyOCR portable por defecto / PaddleOCR alternativo, caché
+9. **OCR EasyOCR** (un lector compartido por ejecución, caché
    por proceso): una pasada restringida encuentra códigos y otra sin `allowlist`
    recupera lenguaje natural, espacios, acentos y puntuación.
 10. **Selección por evidencia**: se priorizan tokens con letras y números; entre
@@ -109,7 +109,7 @@ comportamiento: el código se extrae completo en los cuatro casos.
 
 | Parámetro | Default | Efecto |
 | --- | --- | --- |
-| `motor` / `motor_fallback` | easyocr / paddle | motor principal y alternativo |
+| `motor` / `motor_fallback` | easyocr / null | EasyOCR; su fallback de acelerador es CPU |
 | `lang` | en | alfabeto del reconocedor (nomenclaturas alfanuméricas) |
 | `caracteres_permitidos` | letras, dígitos y separadores de código | limita el alfabeto de EasyOCR |
 | `umbral_confianza` | 0.50 | descarta líneas por debajo |
@@ -149,11 +149,9 @@ comportamiento: el código se extrae completo en los cuatro casos.
 
 ## Limitaciones conocidas
 
-- **CPU**: la rueda instalada es `paddlepaddle` CPU. Con 6 GB de VRAM
-  disponibles, instalar `paddlepaddle-gpu` reduciría el tiempo por lote
-  (documentado como pendiente, no afecta exactitud).
-- `enable_mkldnn=False` obligatorio en este entorno (bug oneDNN, errores/001);
-  desactivar MKLDNN cuesta algo de velocidad en CPU.
+- **Dispositivo**: EasyOCR reutiliza un único `Reader` y selecciona CUDA, MPS o
+  CPU según la capacidad disponible. Si no puede inicializar el acelerador,
+  registra la advertencia y continúa en CPU sin cambiar el contrato de salida.
 - Las regiones mejoran el aislamiento, pero todavía no despliegan superficies
   cilíndricas ni rectifican perspectiva severa de forma geométrica.
 - Texto manuscrito con plumón y texto curvo: los modelos preentrenados los lee

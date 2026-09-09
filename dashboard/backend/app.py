@@ -58,6 +58,7 @@ REGLAS = cargar_reglas()
 RUTA_VALIDACION = RAIZ_PROYECTO / "validacion_resultados.json"
 RUTA_ESTRUCTURA = RAIZ_PROYECTO / CONFIG.get("fase0", {}).get(
     "archivo_salida", "estructura_detectada.json")
+RUTA_CHECKPOINT_PIPELINE = RAIZ_PROYECTO / ".cache_ocr" / "estado_pipeline.json"
 DIR_FRONTEND = RAIZ_PROYECTO / "dashboard" / "frontend"
 
 app = FastAPI(title="Dashboard de validación de pruebas (OCR)", version="1.0")
@@ -81,8 +82,11 @@ class SolicitudPipeline(BaseModel):
     sobrescribir_excel: bool = False
     tipo_st: str | None = Field(default=None, pattern="^(1ST|2ST|LEGACY)$")
     ruta_plantilla: str | None = Field(default=None, max_length=4096)
+    plantilla_id: str | None = Field(default=None, max_length=128)
     modo_ejecucion: str = Field(default="completo", pattern="^(completo|inventario|reanudar)$")
     ruta_inventario: str | None = Field(default=None, max_length=4096)
+    # Uso interno al recuperar un checkpoint. No aparece como control visual.
+    casos_omitidos: list[str] = Field(default_factory=list, max_length=100000)
 
 
 class SolicitudRegla(BaseModel):
@@ -113,6 +117,7 @@ class SolicitudCorreccion(BaseModel):
     bbox: list[int] | None = Field(default=None, min_length=4, max_length=4)
     accion: str = Field(default="confirmar_entrenar", pattern=(
         "^(aceptar|corregir|ilegible|no_es_campo|guardar_sin_entrenar|confirmar_entrenar)$"))
+    usuario: str = Field(default="dashboard", min_length=1, max_length=128)
 
 
 class SolicitudAnotacionRegion(BaseModel):
@@ -120,6 +125,7 @@ class SolicitudAnotacionRegion(BaseModel):
     imagen_id: str = Field(min_length=1, max_length=128)
     bbox: list[int] = Field(min_length=4, max_length=4)
     texto_correcto: str = Field(min_length=1, max_length=8192)
+    usuario: str = Field(default="dashboard", min_length=1, max_length=128)
 
 
 class SolicitudRevision(BaseModel):
@@ -145,6 +151,26 @@ class SolicitudRotacion(BaseModel):
     prueba_id: str = Field(min_length=1, max_length=128)
     imagen_id: str | None = Field(default=None, max_length=128)
     grados: float = Field(ge=-360, le=360)
+    usar_automatico: bool = False
+
+
+class SolicitudPlantilla(BaseModel):
+    ruta: str = Field(min_length=1, max_length=4096)
+    nombre: str | None = Field(default=None, max_length=128)
+    tipos_st: list[str] = Field(default_factory=list, max_length=2)
+    marcadores_ruta: list[str] = Field(default_factory=list, max_length=20)
+
+
+class SolicitudDetencion(BaseModel):
+    accion: str = Field(default="conservar_avance", pattern="^(conservar_avance|fin_id)$")
+
+
+class SolicitudImagenSinDatos(BaseModel):
+    tipo: str = Field(pattern="^(carpeta|externa)$")
+    prueba_id: str = Field(min_length=1, max_length=128)
+    imagen_id: str | None = Field(default=None, max_length=128)
+    motivo: str | None = Field(default=None, max_length=512)
+    usuario: str = Field(default="dashboard", min_length=1, max_length=128)
 
 
 class SolicitudCorreccionExterna(BaseModel):
@@ -154,18 +180,22 @@ class SolicitudCorreccionExterna(BaseModel):
     bbox: list[int] | None = Field(default=None, min_length=4, max_length=4)
     accion: str = Field(default="confirmar_entrenar", pattern=(
         "^(aceptar|corregir|ilegible|no_es_campo|guardar_sin_entrenar|confirmar_entrenar)$"))
+    usuario: str = Field(default="dashboard", min_length=1, max_length=128)
 
 
 class SolicitudRegionExterna(BaseModel):
     prueba_id: str = Field(min_length=1, max_length=128)
     bbox: list[int] = Field(min_length=4, max_length=4)
     texto_correcto: str = Field(min_length=1, max_length=8192)
+    usuario: str = Field(default="dashboard", min_length=1, max_length=128)
 
 
 _pipeline_lock = threading.Lock()
 _pipeline_continuar = threading.Event()
 _pipeline_continuar.set()
 _pipeline_cancelar = threading.Event()
+_pipeline_detener_fin_id = threading.Event()
+_pipeline_hilo: threading.Thread | None = None
 _externas_lock = threading.Lock()
 _entrenamiento_lock = threading.Lock()
 _entrenamiento_estado = {"estado": "inactivo", "resultado": None, "error": None}
@@ -176,8 +206,40 @@ _pipeline_estado: dict = {
     "restantes": 0, "eta_segundos": None, "transcurrido_segundos": 0,
     "resultados_parciales": [], "imagenes_procesadas": 0, "imagenes_total": 0,
     "imagenes_restantes": 0, "imagen_actual": None, "actualizado_en": None,
-    "recursos": None, "nombre_excel": None,
+    "recursos": None, "nombre_excel": None, "ultimo_id": None,
+    "ultimo_id_nombre": None, "reanudable": False, "solicitud": None,
 }
+
+
+def _persistir_checkpoint_pipeline() -> None:
+    """Guarda el estado operativo con reemplazo atómico para sobrevivir reinicios."""
+    RUTA_CHECKPOINT_PIPELINE.parent.mkdir(parents=True, exist_ok=True)
+    temporal = RUTA_CHECKPOINT_PIPELINE.with_suffix(".tmp")
+    with _pipeline_lock:
+        serializable = deepcopy(_pipeline_estado)
+    temporal.write_text(json.dumps(serializable, ensure_ascii=False, indent=2, default=str),
+                        encoding="utf-8")
+    temporal.replace(RUTA_CHECKPOINT_PIPELINE)
+
+
+def _recuperar_checkpoint_pipeline() -> None:
+    if not RUTA_CHECKPOINT_PIPELINE.is_file():
+        return
+    try:
+        guardado = json.loads(RUTA_CHECKPOINT_PIPELINE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    if not isinstance(guardado, dict):
+        return
+    _pipeline_estado.update({k: v for k, v in guardado.items() if k in _pipeline_estado})
+    if _pipeline_estado.get("estado") in {"procesando", "cancelando"}:
+        _pipeline_estado.update({
+            "estado": "pausado", "reanudable": True,
+            "mensaje": "Ejecución recuperada; puedes reanudar desde el avance guardado.",
+        })
+
+
+_recuperar_checkpoint_pipeline()
 
 # ---------------------------------------------------------------------------
 # Carga de datos con caché por mtime (refresco automático tras cada pipeline)
@@ -342,7 +404,8 @@ def _dimensiones_ocr_desde_archivo(ruta: Path, ocr: dict) -> tuple[int, int]:
 
 def _rotar_resultado_existente(
         ocr: dict, grados_nuevos: float,
-        dimensiones_respaldo: tuple[int, int] | None = None) -> dict:
+        dimensiones_respaldo: tuple[int, int] | None = None,
+        restaurar_automatico: bool | None = None) -> dict:
     """Gira cajas al instante; la geometría automática queda restaurable."""
     dimensiones = ocr.get("dimensiones") or []
     if len(dimensiones) == 2:
@@ -355,6 +418,8 @@ def _rotar_resultado_existente(
     dimensiones_anteriores = (ancho, alto)
     aplicados = float(ocr.get("rotacion_manual_aplicada_grados") or 0) % 360
     nuevos = round(float(grados_nuevos) % 360, 3)
+    restaurar_automatico = (not nuevos if restaurar_automatico is None
+                            else bool(restaurar_automatico))
     prioridad_manual = bool(ocr.get("orientacion_manual_prioritaria"))
     base_automatica = (_orientacion_base_publica(ocr) if not prioridad_manual else
                        float(ocr.get("orientacion_automatica_preservada_grados") or 0))
@@ -405,7 +470,7 @@ def _rotar_resultado_existente(
     referencia = float(guardada.get("angulo_referencia", base_automatica)) % 360
     fuente = guardada.get("dimensiones_fuente") or ocr.get("dimensiones_originales") or [ancho, alto]
     ancho_fuente, alto_fuente = int(fuente[0]), int(fuente[1])
-    if nuevos:
+    if not restaurar_automatico:
         objetivo = nuevos
         delta_geometria = (objetivo - referencia) % 360
         ocr["orientacion_manual_prioritaria"] = True
@@ -424,7 +489,7 @@ def _rotar_resultado_existente(
         ocr["deskew_texto_aplicado_grados"] = ajuste
     delta_evidencias = (objetivo - actual) % 360
     if abs(delta_geometria) < 1e-6:
-        ocr["rotacion_manual_aplicada_grados"] = nuevos
+        ocr["rotacion_manual_aplicada_grados"] = 0 if restaurar_automatico else nuevos
         return {"delta": delta_evidencias, "dimensiones_anteriores": dimensiones_anteriores,
                 "angulo_anterior": actual, "angulo_nuevo": objetivo,
                 "dimensiones_fuente": (ancho_fuente, alto_fuente)}
@@ -443,7 +508,7 @@ def _rotar_resultado_existente(
                   "orientacion_grados"):
         if ocr.get(clave) is not None:
             ocr[clave] = objetivo % 360
-    ocr["rotacion_manual_aplicada_grados"] = nuevos
+    ocr["rotacion_manual_aplicada_grados"] = 0 if restaurar_automatico else nuevos
     return {"delta": delta_evidencias, "dimensiones_anteriores": dimensiones_anteriores,
             "angulo_anterior": actual, "angulo_nuevo": objetivo,
             "dimensiones_fuente": (ancho_fuente, alto_fuente)}
@@ -521,12 +586,9 @@ def _capacidad_pipeline() -> dict:
     }
     faltantes = [etiqueta for etiqueta, modulo in modulos.items()
                  if importlib.util.find_spec(modulo) is None]
-    motores = {
-        "paddle": importlib.util.find_spec("paddleocr") is not None,
-        "easyocr": importlib.util.find_spec("easyocr") is not None,
-    }
-    if not any(motores.values()):
-        faltantes.append("PaddleOCR o EasyOCR")
+    motores = {"easyocr": importlib.util.find_spec("easyocr") is not None}
+    if not motores["easyocr"]:
+        faltantes.append("EasyOCR")
     recursos = detectar_recursos(CONFIG.get("fase1", {}).get("dispositivo", "auto"))
     return {"listo": not faltantes, "faltantes": faltantes,
             "motores": motores, "recursos": recursos}
@@ -535,6 +597,7 @@ def _capacidad_pipeline() -> dict:
 def _actualizar_pipeline(**cambios) -> None:
     with _pipeline_lock:
         _pipeline_estado.update(cambios)
+    _persistir_checkpoint_pipeline()
 
 
 def _registrar_error_pipeline(ruta: Path, exc: Exception) -> Path:
@@ -572,11 +635,13 @@ def _ejecutar_pipeline_fondo(ruta: Path, nombre_excel: str | None = None,
                              sobrescribir_excel: bool = False,
                              tipo_st: str | None = None,
                              ruta_plantilla: str | None = None,
+                             plantilla_id: str | None = None,
                              casos_filtrados: set[str] | None = None,
                              imagenes_filtradas: set[str] | None = None,
                              solo_errores: bool = False,
                              modo_recorte: str | None = None,
                              roi_manual: dict[str, float] | None = None,
+                             casos_omitidos: set[str] | None = None,
                              modo_ejecucion: str = "completo",
                              ruta_inventario: str | None = None,
                              zoom_forzado: float | None = None) -> None:
@@ -599,7 +664,11 @@ def _ejecutar_pipeline_fondo(ruta: Path, nombre_excel: str | None = None,
                 _pipeline_estado["resultados_parciales"] = [
                     f for f in _pipeline_estado["resultados_parciales"] if f["id"] != publica["id"]]
                 _pipeline_estado["resultados_parciales"].append(publica)
+                _pipeline_estado["ultimo_id"] = publica.get("id")
+                _pipeline_estado["ultimo_id_nombre"] = publica.get("nombre")
                 _cache.update({"mtime": None, "datos": None})
+                if _pipeline_detener_fin_id.is_set():
+                    _pipeline_cancelar.set()
             elif caso is not None:
                 publica = _fila_publica(caso)
                 if not any(f["id"] == publica["id"] for f in _pipeline_estado["resultados_parciales"]):
@@ -609,6 +678,7 @@ def _ejecutar_pipeline_fondo(ruta: Path, nombre_excel: str | None = None,
                 _pipeline_estado["resultados_parciales"] = [
                     f for f in _pipeline_estado["resultados_parciales"] if f["id"] != publica["id"]]
                 _pipeline_estado["resultados_parciales"].append(publica)
+        _persistir_checkpoint_pipeline()
 
     try:
         from pipeline import ejecutar_pipeline
@@ -617,7 +687,9 @@ def _ejecutar_pipeline_fondo(ruta: Path, nombre_excel: str | None = None,
             sobrescribir_excel=sobrescribir_excel,
             control=_esperar_continuacion, tipo_st=tipo_st,
             ruta_plantilla=ruta_plantilla, casos_filtrados=casos_filtrados,
+            plantilla_id=plantilla_id,
             imagenes_filtradas=imagenes_filtradas, solo_errores=solo_errores,
+            casos_omitidos=casos_omitidos,
             modo_recorte=modo_recorte, roi_manual=roi_manual,
             modo_ejecucion=modo_ejecucion, ruta_inventario=ruta_inventario,
             zoom_forzado=zoom_forzado)
@@ -626,15 +698,17 @@ def _ejecutar_pipeline_fondo(ruta: Path, nombre_excel: str | None = None,
             estado="completado", fase="completado", mensaje="Procesamiento terminado",
             finalizado_en=datetime.now().isoformat(timespec="seconds"), resumen=resumen,
             porcentaje=100, restantes=0, eta_segundos=0,
-            transcurrido_segundos=round(time.monotonic() - inicio, 1),
+            transcurrido_segundos=round(time.monotonic() - inicio, 1), reanudable=False,
         )
     except PipelineCancelado:
         with _pipeline_lock:
             for parcial in _pipeline_estado.get("resultados_parciales", []):
                 if parcial.get("estado") == "procesando":
                     parcial["estado"] = "cancelada"
+        hasta = _pipeline_estado.get("ultimo_id_nombre") or _pipeline_estado.get("imagen_actual") or "inicio"
         _actualizar_pipeline(
-            estado="cancelada", fase="cancelada", mensaje="Procesamiento detenido por el usuario",
+            estado="detenido_con_avance", fase="detenido",
+            mensaje=f"Proceso terminado hasta: {hasta}", reanudable=True,
             finalizado_en=datetime.now().isoformat(timespec="seconds"), error=None,
             eta_segundos=None,
             transcurrido_segundos=round(time.monotonic() - inicio, 1))
@@ -767,6 +841,23 @@ def config_dashboard():
     }
 
 
+@app.get("/api/plantillas")
+def listar_plantillas():
+    from plantilla_empresarial import RegistroPlantillas
+    return {"plantillas": RegistroPlantillas(CONFIG).listar()}
+
+
+@app.post("/api/plantillas", status_code=201)
+def registrar_plantilla(solicitud: SolicitudPlantilla):
+    from plantilla_empresarial import RegistroPlantillas
+    try:
+        return RegistroPlantillas(CONFIG).registrar(
+            solicitud.ruta, solicitud.nombre, solicitud.tipos_st,
+            solicitud.marcadores_ruta)
+    except (OSError, ValueError, KeyError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @app.get("/api/pipeline/capacidad")
 def capacidad_pipeline():
     return _capacidad_pipeline()
@@ -888,7 +979,8 @@ def corregir_lectura(solicitud: SolicitudCorreccion):
                 token.get("bbox"), accion=solicitud.accion, entrenable=False,
                 campo=solicitud.campo, fase=item.get("fase"), tor=item.get("tor"),
                 confianza=token.get("confianza"), modelo_origen=ocr.get("modelo_visual_version")
-                or ocr.get("motor"), metadatos={k: fila.get(k) for k in
+                or ocr.get("motor"), usuario=solicitud.usuario,
+                metadatos={k: fila.get(k) for k in
                 ("tipo_st", "module_version", "temperature_condition", "inflator_type")})
             resultado = {"registrada": True, "tipo": "supervision_visual",
                          "muestra_visual": muestra, "entrenamiento": None}
@@ -902,7 +994,8 @@ def corregir_lectura(solicitud: SolicitudCorreccion):
                 entrenar_visual=solicitud.accion == "confirmar_entrenar",
                 campo=solicitud.campo, fase=item.get("fase"), tor=item.get("tor"),
                 confianza=token.get("confianza"), modelo_origen=ocr.get("modelo_visual_version")
-                or ocr.get("motor"), metadatos={k: fila.get(k) for k in
+                or ocr.get("motor"), usuario=solicitud.usuario,
+                metadatos={k: fila.get(k) for k in
                 ("tipo_st", "module_version", "temperature_condition", "inflator_type")})
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -955,6 +1048,7 @@ def anotar_region_no_detectada(solicitud: SolicitudAnotacionRegion):
             fase=item.get("fase"), tor=item.get("tor"),
             modelo_origen=(item.get("resultado_ocr") or {}).get("modelo_visual_version")
             or (item.get("resultado_ocr") or {}).get("motor"),
+            usuario=solicitud.usuario,
             metadatos={k: fila.get(k) for k in
                        ("tipo_st", "module_version", "temperature_condition", "inflator_type")})
     except ValueError as exc:
@@ -1020,8 +1114,10 @@ def guardar_rotacion(solicitud: SolicitudRotacion):
     try:
         dimensiones_respaldo = _dimensiones_ocr_desde_archivo(ruta, ocr_objetivo)
         giro = _rotar_resultado_existente(
-            ocr_objetivo, solicitud.grados, dimensiones_respaldo)
-        resultado = gestor.actualizar_rotacion(ruta, solicitud.grados)
+            ocr_objetivo, solicitud.grados, dimensiones_respaldo,
+            restaurar_automatico=solicitud.usar_automatico)
+        resultado = (gestor.eliminar_rotacion(ruta) if solicitud.usar_automatico
+                     else gestor.actualizar_rotacion(ruta, solicitud.grados))
         resultado.update(gestor.rotar_evidencias_imagen(
             ruta, giro["delta"], giro["dimensiones_anteriores"],
             grados_desde=giro["angulo_anterior"], grados_hasta=giro["angulo_nuevo"],
@@ -1035,7 +1131,8 @@ def guardar_rotacion(solicitud: SolicitudRotacion):
                     ocr_copia = copia.get("resultado_ocr") or {}
                     _rotar_resultado_existente(
                         ocr_copia, solicitud.grados,
-                        _dimensiones_ocr_desde_archivo(ruta, ocr_copia))
+                        _dimensiones_ocr_desde_archivo(ruta, ocr_copia),
+                        restaurar_automatico=solicitud.usar_automatico)
             _guardar_json_atomico(RUTA_VALIDACION, datos)
             _cache.update({"mtime": None, "datos": None})
         else:
@@ -1043,9 +1140,61 @@ def guardar_rotacion(solicitud: SolicitudRotacion):
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     gestor.actualizar_revision(solicitud.tipo, solicitud.prueba_id, estado="parcial")
-    resultado["mensaje"] = (
+    resultado["mensaje"] = ((
+        "Se restauró la orientación automática y se ajustaron sus cajas y regiones.")
+        if solicitud.usar_automatico else (
         "Imagen rotada ahora. También se ajustaron sus cajas y regiones; "
-        "el próximo OCR conservará esta orientación.")
+        "el próximo OCR conservará esta orientación manual."))
+    return resultado
+
+
+@app.post("/api/imagenes/sin-datos")
+def marcar_imagen_sin_datos(solicitud: SolicitudImagenSinDatos):
+    """Registra una decisión humana válida; no la presenta como error OCR."""
+    gestor = GestorAprendizaje(CONFIG)
+    if solicitud.tipo == "carpeta":
+        datos = _cargar_datos()
+        fila = next((f for f in (datos or {}).get("resultados", [])
+                     if _id_fila(f) == solicitud.prueba_id), None)
+        if fila is None:
+            raise HTTPException(404, "La carpeta indicada no existe.")
+        item = next((imagen for imagen in fila.get("imagenes", [])
+                     if imagen.get("id") == solicitud.imagen_id), None)
+        if item is None:
+            raise HTTPException(404, "La imagen indicada no pertenece a la carpeta.")
+        raiz = _resolver_raiz_datos(datos)
+        if raiz is None:
+            raise HTTPException(503, "La raíz de imágenes no está disponible en este equipo.")
+        ruta = _resolver_imagen(str(item["ruta"]), datos, raiz)
+        resultado = gestor.registrar_imagen_sin_datos(
+            ruta, solicitud.prueba_id, solicitud.motivo, solicitud.usuario)
+        item["estado_imagen"] = "revisada_sin_datos"
+        item["revision_sin_datos"] = resultado
+        if item.get("resultado_ocr") is not None:
+            item["resultado_ocr"]["estado_imagen"] = "revisada_sin_datos"
+        for traza in fila.get("trazabilidad", []):
+            if str(traza.get("ruta_absoluta")) == str(ruta):
+                traza.update({"estado_imagen": "revisada_sin_datos",
+                              "requiere_revision": False,
+                              "mensaje_error": solicitud.motivo or None})
+        _guardar_json_atomico(RUTA_VALIDACION, datos)
+        _cache.update({"mtime": None, "datos": None})
+    else:
+        from pruebas_externas import cargar, rutas
+        documento = cargar(CONFIG)
+        fila = next((f for f in documento.get("resultados", [])
+                     if f.get("id") == solicitud.prueba_id), None)
+        if fila is None:
+            raise HTTPException(404, "La prueba externa indicada no existe.")
+        ruta = Path(str(fila.get("ruta") or "")).resolve()
+        resultado = gestor.registrar_imagen_sin_datos(
+            ruta, solicitud.prueba_id, solicitud.motivo, solicitud.usuario)
+        fila["estado_imagen"] = "revisada_sin_datos"
+        fila["revision_sin_datos"] = resultado
+        _, salida = rutas(CONFIG)
+        _guardar_json_atomico(salida, documento)
+    gestor.actualizar_revision(solicitud.tipo, solicitud.prueba_id, estado="parcial")
+    resultado["mensaje"] = "Imagen revisada y registrada sin datos de texto útiles."
     return resultado
 
 
@@ -1082,16 +1231,18 @@ def _externas_publicas(incluir_ocultos: bool = False) -> dict:
         item["ruta_api"] = f"/api/externas/imagen/{quote(str(fila['imagen']), safe='')}"
         ruta_imagen = (directorio / fila["imagen"]).resolve()
         imagen_hash = hash_archivo(ruta_imagen) if ruta_imagen.is_file() else None
-        preferida = float((rotaciones.get(imagen_hash) or {}).get("grados", 0)) % 360
+        rotacion_guardada = rotaciones.get(imagen_hash)
+        preferida = float((rotacion_guardada or {}).get("grados", 0)) % 360
         aplicada = float(fila.get("rotacion_manual_aplicada_grados") or 0) % 360
         base = _orientacion_base_publica(fila)
         ajuste = float(fila.get("deskew_texto_aplicado_grados") or
                        fila.get("deskew_aplicado_grados") or 0)
         item["rotacion_manual_preferida_grados"] = preferida
+        item["rotacion_manual_definida"] = rotacion_guardada is not None
         item["orientacion_texto_base_grados"] = base
         item["rotacion_pendiente"] = abs(preferida - aplicada) >= 0.01
-        rotacion_vista = preferida if preferida else base
-        ajuste_vista = 0.0 if preferida else ajuste
+        rotacion_vista = preferida if rotacion_guardada is not None else base
+        ajuste_vista = 0.0 if rotacion_guardada is not None else ajuste
         prioridad_aplicada = bool(fila.get("orientacion_manual_prioritaria"))
         rotacion_ocr = aplicada if prioridad_aplicada else (aplicada + base) % 360
         ajuste_ocr = 0.0 if prioridad_aplicada else ajuste
@@ -1235,7 +1386,8 @@ def corregir_prueba_externa(solicitud: SolicitudCorreccionExterna):
                 fila["ruta"], solicitud.prueba_id, solicitud.texto_ocr, correcto,
                 token.get("bbox"), accion=solicitud.accion, entrenable=False,
                 confianza=token.get("confianza"), modelo_origen=fila.get("modelo_visual_version")
-                or fila.get("motor"), metadatos={"origen": "externa"})
+                or fila.get("motor"), usuario=solicitud.usuario,
+                metadatos={"origen": "externa"})
             resultado = {"registrada": True, "tipo": "supervision_visual",
                          "muestra_visual": muestra, "entrenamiento": None}
         else:
@@ -1247,7 +1399,8 @@ def corregir_prueba_externa(solicitud: SolicitudCorreccionExterna):
                 caso_id=solicitud.prueba_id, accion=solicitud.accion,
                 entrenar_visual=solicitud.accion == "confirmar_entrenar",
                 confianza=token.get("confianza"), modelo_origen=fila.get("modelo_visual_version")
-                or fila.get("motor"), metadatos={"origen": "externa"})
+                or fila.get("motor"), usuario=solicitud.usuario,
+                metadatos={"origen": "externa"})
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     gestor.actualizar_revision("externa", solicitud.prueba_id, estado="parcial")
@@ -1295,6 +1448,7 @@ def anotar_region_externa(solicitud: SolicitudRegionExterna):
             carpeta_id=solicitud.prueba_id, carpeta_nombre="Pruebas complejas",
             imagen_nombre=fila.get("imagen"), fuente="dashboard_externo",
             modelo_origen=fila.get("modelo_visual_version") or fila.get("motor"),
+            usuario=solicitud.usuario,
             metadatos={"origen": "externa"})
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -1306,6 +1460,7 @@ def anotar_region_externa(solicitud: SolicitudRegionExterna):
 
 @app.post("/api/pipeline", status_code=202)
 def iniciar_pipeline(solicitud: SolicitudPipeline):
+    global _pipeline_hilo
     ruta_cruda = solicitud.ruta.strip()
     if len(ruta_cruda) >= 2 and ruta_cruda[0] == ruta_cruda[-1] and ruta_cruda[0] in {'"', "'"}:
         ruta_cruda = ruta_cruda[1:-1].strip()
@@ -1333,6 +1488,10 @@ def iniciar_pipeline(solicitud: SolicitudPipeline):
         if not plantilla.is_file() or plantilla.suffix.lower() != ".xlsx":
             raise HTTPException(400, "La plantilla debe ser un archivo .xlsx accesible.")
         ruta_plantilla = str(plantilla)
+    if solicitud.plantilla_id:
+        from plantilla_empresarial import RegistroPlantillas
+        if not RegistroPlantillas(CONFIG).obtener(solicitud.plantilla_id):
+            raise HTTPException(400, "La plantilla seleccionada no está registrada o disponible.")
     ruta_inventario = (solicitud.ruta_inventario or "").strip().strip('"\'') or None
     if ruta_inventario:
         inventario = Path(ruta_inventario).expanduser()
@@ -1347,10 +1506,18 @@ def iniciar_pipeline(solicitud: SolicitudPipeline):
         raise HTTPException(503, {"mensaje": "El entorno OCR no está listo.", **capacidad})
 
     with _pipeline_lock:
-        if _pipeline_estado["estado"] in {"procesando", "pausado"}:
+        if _pipeline_estado["estado"] in {"procesando", "pausado", "cancelando"}:
             raise HTTPException(409, "Ya hay una carpeta en procesamiento.")
         _pipeline_continuar.set()
         _pipeline_cancelar.clear()
+        _pipeline_detener_fin_id.clear()
+        solicitud_guardada = {
+            "ruta": str(ruta), "nombre_excel": nombre_excel,
+            "sobrescribir_excel": solicitud.sobrescribir_excel,
+            "tipo_st": solicitud.tipo_st, "plantilla_id": solicitud.plantilla_id,
+            "modo_ejecucion": solicitud.modo_ejecucion,
+            "casos_omitidos": list(solicitud.casos_omitidos),
+        }
         _pipeline_estado.update({
             "estado": "procesando", "fase": "preparando",
             "mensaje": "Preparando el pipeline", "ruta": str(ruta),
@@ -1363,19 +1530,25 @@ def iniciar_pipeline(solicitud: SolicitudPipeline):
             "imagen_actual": None,
             "recursos": capacidad.get("recursos"), "nombre_excel": nombre_excel,
             "tipo_st": solicitud.tipo_st, "ruta_plantilla": ruta_plantilla,
+            "plantilla_id": solicitud.plantilla_id,
             "modo_ejecucion": solicitud.modo_ejecucion,
             "ruta_inventario": ruta_inventario,
+            "ultimo_id": None, "ultimo_id_nombre": None,
+            "reanudable": False, "solicitud": solicitud_guardada,
             "actualizado_en": datetime.now().isoformat(timespec="milliseconds"),
         })
+    _persistir_checkpoint_pipeline()
 
-    hilo = threading.Thread(target=_ejecutar_pipeline_fondo, kwargs={
+    _pipeline_hilo = threading.Thread(target=_ejecutar_pipeline_fondo, kwargs={
         "ruta": ruta, "nombre_excel": nombre_excel,
         "sobrescribir_excel": solicitud.sobrescribir_excel,
         "tipo_st": solicitud.tipo_st, "ruta_plantilla": ruta_plantilla,
+        "plantilla_id": solicitud.plantilla_id,
+        "casos_omitidos": set(solicitud.casos_omitidos),
         "modo_ejecucion": solicitud.modo_ejecucion,
         "ruta_inventario": ruta_inventario,
     }, daemon=True)
-    hilo.start()
+    _pipeline_hilo.start()
     return {"aceptado": True, "ruta": str(ruta), "estado": "procesando"}
 
 
@@ -1387,33 +1560,77 @@ def pausar_pipeline():
         _pipeline_continuar.clear()
         _pipeline_estado.update(
             estado="pausado", mensaje="Pausa solicitada; se detendrá al terminar la imagen actual",
-            eta_segundos=None, actualizado_en=datetime.now().isoformat(timespec="milliseconds"))
+            eta_segundos=None, reanudable=True,
+            actualizado_en=datetime.now().isoformat(timespec="milliseconds"))
+    _persistir_checkpoint_pipeline()
     return {"estado": "pausado", "seguro": True}
 
 
 @app.post("/api/pipeline/reanudar")
 def reanudar_pipeline():
+    global _pipeline_hilo
+    reiniciar = None
+    parciales_guardados = []
+    ultimo_guardado = (None, None)
     with _pipeline_lock:
-        if _pipeline_estado["estado"] != "pausado":
-            raise HTTPException(409, "El procesamiento no está pausado.")
-        _pipeline_continuar.set()
-        _pipeline_estado.update(
-            estado="procesando", mensaje="Procesamiento reanudado",
-            actualizado_en=datetime.now().isoformat(timespec="milliseconds"))
+        if _pipeline_estado["estado"] not in {"pausado", "detenido_con_avance"}:
+            raise HTTPException(409, "No existe un avance pausado que se pueda reanudar.")
+        hilo_vivo = bool(_pipeline_hilo and _pipeline_hilo.is_alive())
+        if hilo_vivo and _pipeline_estado["estado"] == "pausado":
+            _pipeline_continuar.set()
+            _pipeline_estado.update(
+                estado="procesando", mensaje="Procesamiento reanudado",
+                actualizado_en=datetime.now().isoformat(timespec="milliseconds"))
+        else:
+            reiniciar = deepcopy(_pipeline_estado.get("solicitud"))
+            if not reiniciar:
+                raise HTTPException(409, "El checkpoint no conserva los datos necesarios para reanudar.")
+            parciales_guardados = deepcopy(_pipeline_estado.get("resultados_parciales") or [])
+            omitidos = set(reiniciar.get("casos_omitidos") or [])
+            omitidos.update(str(item.get("case_key") or item.get("ruta"))
+                            for item in parciales_guardados
+                            if (item.get("case_key") or item.get("ruta")) and
+                            item.get("estado") not in {"procesando", "cancelada"})
+            reiniciar["casos_omitidos"] = sorted(omitidos)
+            ultimo_guardado = (_pipeline_estado.get("ultimo_id"),
+                               _pipeline_estado.get("ultimo_id_nombre"))
+            _pipeline_estado["estado"] = "detenido_con_avance"
+    if reiniciar:
+        respuesta = iniciar_pipeline(SolicitudPipeline(**reiniciar))
+        with _pipeline_lock:
+            actuales = {item.get("id"): item for item in
+                        _pipeline_estado.get("resultados_parciales", [])}
+            for item in parciales_guardados:
+                actuales.setdefault(item.get("id"), item)
+            _pipeline_estado["resultados_parciales"] = list(actuales.values())
+            if not _pipeline_estado.get("ultimo_id"):
+                _pipeline_estado["ultimo_id"], _pipeline_estado["ultimo_id_nombre"] = ultimo_guardado
+        _persistir_checkpoint_pipeline()
+        respuesta["desde_checkpoint"] = True
+        return respuesta
+    _persistir_checkpoint_pipeline()
     return {"estado": "procesando"}
 
 
 @app.post("/api/pipeline/cancelar")
-def cancelar_pipeline():
+def cancelar_pipeline(solicitud: SolicitudDetencion | None = None):
+    solicitud = solicitud or SolicitudDetencion()
     with _pipeline_lock:
         if _pipeline_estado["estado"] not in {"procesando", "pausado"}:
             raise HTTPException(409, "No hay un procesamiento activo que detener.")
-        _pipeline_cancelar.set()
-        _pipeline_continuar.set()
+        if solicitud.accion == "fin_id":
+            _pipeline_detener_fin_id.set()
+            _pipeline_continuar.set()
+            mensaje = "Se detendrá al finalizar la carpeta/ID actual y conservará el avance"
+        else:
+            _pipeline_cancelar.set()
+            _pipeline_continuar.set()
+            mensaje = "Se detendrá al finalizar la imagen actual y conservará el avance"
         _pipeline_estado.update(
-            mensaje="Detención solicitada; se cerrará al terminar la imagen actual",
+            estado="cancelando", mensaje=mensaje, reanudable=True,
             actualizado_en=datetime.now().isoformat(timespec="milliseconds"))
-    return {"estado": "cancelando", "seguro": True}
+    _persistir_checkpoint_pipeline()
+    return {"estado": "cancelando", "seguro": True, "accion": solicitud.accion}
 
 
 @app.get("/api/resumen")
@@ -1549,13 +1766,13 @@ def historial_caso(clave: str):
 
 @app.post("/api/casos/{clave}/campos/{campo}")
 def corregir_campo_caso(clave: str, campo: str, solicitud: SolicitudCampoManual):
-    """Confirma un valor de las 36 claves sin alterar archivos originales."""
-    if campo not in CLAVES_PLANTILLA:
-        raise HTTPException(400, "La clave no pertenece al contrato de 36 campos.")
+    """Confirma una clave del contrato activo sin alterar archivos originales."""
     datos = _cargar_datos()
     fila = next((f for f in (datos or {}).get("resultados", []) if _id_fila(f) == clave), None)
     if not fila or fila.get("perfil") != "empresarial":
         raise HTTPException(404, "No existe el caso empresarial solicitado.")
+    if campo not in (fila.get("campos") or {}) and campo not in CLAVES_PLANTILLA:
+        raise HTTPException(400, "La clave no pertenece al contrato Excel activo.")
     gestor = GestorAprendizaje(CONFIG)
     inicial = _fila_publica(fila)["revision"]["estado"]
     if gestor.estado_revision("carpeta", clave, inicial)["estado"] == "completada":
@@ -1767,8 +1984,8 @@ def detalle(clave: str):
                 publico["correcciones"] = correcciones_por_hash.get(imagen_hash, [])
                 publico["resultado_ocr"] = _aplicar_correcciones_publicas(
                     publico.get("resultado_ocr") or {}, publico["correcciones"])
-                rotacion = rotaciones.get(imagen_hash) or {}
-                preferida = float(rotacion.get("grados", 0)) % 360
+                rotacion = rotaciones.get(imagen_hash)
+                preferida = float((rotacion or {}).get("grados", 0)) % 360
                 ocr = publico.get("resultado_ocr") or {}
                 aplicada = float(ocr.get("rotacion_manual_aplicada_grados") or 0) % 360
                 base = _orientacion_base_publica(ocr)
@@ -1777,9 +1994,10 @@ def detalle(clave: str):
                                ocr.get("deskew_aplicado_grados") or 0)
                 ruta_codificada = quote(str(item["ruta"]), safe="")
                 publico["rotacion_manual_preferida_grados"] = preferida
+                publico["rotacion_manual_definida"] = rotacion is not None
                 publico["rotacion_pendiente"] = abs(preferida - aplicada) >= 0.01
-                rotacion_vista = preferida if preferida else base
-                ajuste_vista = 0.0 if preferida else ajuste
+                rotacion_vista = preferida if rotacion is not None else base
+                ajuste_vista = 0.0 if rotacion is not None else ajuste
                 prioridad_aplicada = bool(ocr.get("orientacion_manual_prioritaria"))
                 rotacion_ocr = aplicada if prioridad_aplicada else (aplicada + base) % 360
                 ajuste_ocr = 0.0 if prioridad_aplicada else ajuste

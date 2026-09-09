@@ -34,11 +34,13 @@ def test_promueve_correccion_exacta_solo_con_soporte_repetido(tmp_path):
     gestor = _gestor(tmp_path)
 
     primera = gestor.registrar_correccion("K001", "GCC10", imagen_hash="imagen-1")
-    assert primera["entrenamiento"]["promovido"] is False
+    assert primera["entrenamiento"] is None
+    assert gestor.entrenar_y_promover()["promovido"] is False
     assert gestor.aplicar("K001") == ("K001", None)
 
     segunda = gestor.registrar_correccion("K001", "GCC10", imagen_hash="imagen-2")
-    assert segunda["entrenamiento"]["promovido"] is True
+    assert segunda["entrenamiento"] is None
+    assert gestor.entrenar_y_promover()["promovido"] is True
     corregido, evidencia = gestor.aplicar("K001")
     assert corregido == "GCC10"
     assert evidencia["tipo"] == "exacta"
@@ -74,6 +76,7 @@ def test_generaliza_confusion_de_caracter_solo_con_patron_confirmado(tmp_path):
     ]
     for crudo, correcto, imagen_hash in pares:
         gestor.registrar_correccion(crudo, correcto, imagen_hash=imagen_hash)
+    gestor.entrenar_y_promover()
 
     corregido, evidencia = gestor.aplicar("D0-111")
     assert corregido == "DO-111"
@@ -84,11 +87,11 @@ def test_generaliza_confusion_de_caracter_solo_con_patron_confirmado(tmp_path):
 def test_rollback_reactiva_version_anterior(tmp_path):
     gestor = _gestor(tmp_path)
     gestor.registrar_correccion("K001", "GCC10", imagen_hash="imagen-1")
-    primera = gestor.registrar_correccion("K001", "GCC10", imagen_hash="imagen-2")
-    version_primera = primera["entrenamiento"]["version"]
+    gestor.registrar_correccion("K001", "GCC10", imagen_hash="imagen-2")
+    version_primera = gestor.entrenar_y_promover()["version"]
     gestor.registrar_correccion("Z999", "IBC20", imagen_hash="imagen-3")
-    segunda = gestor.registrar_correccion("Z999", "IBC20", imagen_hash="imagen-4")
-    assert segunda["entrenamiento"]["promovido"] is True
+    gestor.registrar_correccion("Z999", "IBC20", imagen_hash="imagen-4")
+    assert gestor.entrenar_y_promover()["promovido"] is True
 
     resultado = gestor.rollback(version_primera)
 
@@ -151,6 +154,41 @@ def test_dataset_visual_guarda_recorte_exacto_y_evade_duplicados(tmp_path):
     assert gestor.estado()["muestras_entrenables"] == 1
 
 
+def test_dataset_visual_conserva_usuario_campo_modelo_y_metadatos(tmp_path):
+    import cv2
+    import json
+    import numpy as np
+
+    imagen = tmp_path / "auditable.png"
+    assert cv2.imwrite(str(imagen), np.zeros((40, 90, 3), dtype=np.uint8))
+    gestor = _gestor(tmp_path)
+    gestor.registrar_muestra_visual(
+        imagen, "ID-15", "AB-I23", "AB-123", [5, 6, 70, 20],
+        accion="confirmar_entrenar", campo="module_part_number", fase="NACH",
+        confianza=.81, modelo_origen="easyocr-base", usuario="operador-1",
+        metadatos={"tipo_st": "1ST"})
+
+    muestra = gestor.listar_muestras_visuales([imagen])[0]
+    assert muestra["usuario"] == "operador-1"
+    assert muestra["campo"] == "module_part_number"
+    assert muestra["modelo_origen"] == "easyocr-base"
+    assert json.loads(muestra["metadatos_json"])["tipo_st"] == "1ST"
+
+
+def test_imagen_sin_datos_es_revision_humana_y_no_error(tmp_path):
+    imagen = tmp_path / "contexto.jpg"
+    imagen.write_bytes(b"contenido-estable")
+    gestor = _gestor(tmp_path)
+
+    resultado = gestor.registrar_imagen_sin_datos(
+        imagen, "ID-20", "Foto general sin códigos", "operador-2")
+    guardada = gestor.imagen_sin_datos(imagen)
+
+    assert resultado["estado_imagen"] == "revisada_sin_datos"
+    assert guardada["motivo"] == "Foto general sin códigos"
+    assert guardada["usuario"] == "operador-2"
+
+
 def test_revision_es_reversible_y_no_borra_resultados(tmp_path):
     gestor = _gestor(tmp_path)
 
@@ -178,7 +216,12 @@ def test_rotacion_manual_se_memoriza_por_archivo(tmp_path):
 
     gestor.actualizar_rotacion(imagen, 0)
     assert gestor.rotacion_preferida(imagen) == 0
+    assert gestor.preferencia_rotacion(imagen)["grados"] == 0
     assert gestor.estado()["rotaciones_confirmadas"] == 0
+
+    eliminada = gestor.eliminar_rotacion(imagen)
+    assert eliminada["rotacion_manual_eliminada"] is True
+    assert gestor.preferencia_rotacion(imagen) is None
 
 
 def test_rotacion_de_cajas_conserva_su_posicion_visual():

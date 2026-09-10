@@ -634,6 +634,20 @@ function VistaCarga() {
       ${estado.ultimo_id_nombre && html`<p class="aviso checkpoint-aviso">
         Avance confirmado hasta: <strong>${estado.ultimo_id_nombre}</strong>. Las imágenes sin cambios se recuperarán del caché.
       </p>`}
+      ${estado.archivo_excel_parcial && html`<p class="aviso checkpoint-aviso">
+        <strong>Excel parcial disponible.</strong>
+        ${estado.excel_parcial_actualizado_en ? ` Actualizado: ${fmtFecha(estado.excel_parcial_actualizado_en)}.` : ""}
+        <a class="boton boton-compacto" href="/api/pipeline/excel-parcial" target="_blank">
+          Abrir Excel parcial</a>
+      </p>`}
+      ${estado.advertencia_excel_parcial && html`<div class="aviso alerta-warning" role="alert">
+        <strong>El OCR y su checkpoint continúan seguros.</strong> ${estado.advertencia_excel_parcial}
+      </div>`}
+      ${(estado.advertencias_cache || []).length > 0 && html`<details class="aviso alerta-warning">
+        <summary>Advertencias de persistencia (${estado.advertencias_cache.length})</summary>
+        ${(estado.advertencias_cache || []).map((mensaje, indice) => html`
+          <p key=${indice} class="mono">${mensaje}</p>`)}
+      </details>`}
       ${estado.error && html`<div class="mensaje-error" role="alert">
         <strong>Error:</strong> ${estado.error}
         ${estado.bitacora && html`<div class="mono">Bitácora: ${estado.bitacora}</div>`}
@@ -863,8 +877,11 @@ function TarjetaExterna({ prueba, alActualizarRevision }) {
     ${modoEdicion && !completada && html`<div class="aprendizaje-panel herramientas-externas">
       <div><p class="sobrelinea">APRENDIZAJE SUPERVISADO</p>
         <h3 class="titulo-seccion">Corregir una lectura</h3>
-        <p class="subtitulo-seccion">Selecciona un renglón en la imagen o en la lista y confirma su texto.</p>
+        <p class="subtitulo-seccion">Selecciona un renglón y confirma su texto. Guardarlo
+          prepara el dato; el entrenamiento sólo comienza con el botón de lote.</p>
       </div>
+      <${MiniVisorCorreccion} item=${itemExterno} unidad=${seleccionada}
+        textoReferencia=${textoCorrecto} onSelectText=${seleccionar} />
       ${unidades.length > 0 ? html`<form class="formulario-correccion formulario-externo" onSubmit=${corregir}>
         <label>Lectura OCR
           <select class="campo" value=${seleccionada?.unidad_id || ""} onChange=${(e) => {
@@ -882,7 +899,7 @@ function TarjetaExterna({ prueba, alActualizarRevision }) {
         <label>Acción
           <select class="campo" value=${accionSupervision}
             onChange=${(e) => setAccionSupervision(e.target.value)}>
-            <option value="confirmar_entrenar">Confirmar y usar para entrenar</option>
+            <option value="confirmar_entrenar">Confirmar para el próximo lote</option>
             <option value="corregir">Corregir sin lote visual</option>
             <option value="aceptar">Aceptar lectura OCR</option>
             <option value="ilegible">Marcar ilegible</option>
@@ -1179,6 +1196,81 @@ function VistaTabla() {
   `;
 }
 
+function MiniVisorCorreccion({ item, unidad, textoReferencia, onSelectText }) {
+  const [zoom, setZoom] = useState(100);
+  const marcoRef = useRef(null);
+  const arrastreRef = useRef(null);
+  const ocr = item?.resultado_ocr || {};
+  const dimensiones = ocr.dimensiones || [1, 1];
+  const detectadas = unidadesOcr(ocr).filter((linea) => linea.bbox);
+  const limitar = (valor) => Math.min(500, Math.max(100, Math.round(valor)));
+  const cambiarZoom = (valor) => setZoom(limitar(valor));
+  function alRueda(evento) {
+    evento.preventDefault();
+    cambiarZoom(zoom + (evento.deltaY < 0 ? 25 : -25));
+  }
+  function iniciarArrastre(evento) {
+    const marco = marcoRef.current;
+    if (!marco || zoom <= 100 || evento.button !== 0 || evento.target.closest("button")) return;
+    marco.setPointerCapture(evento.pointerId);
+    arrastreRef.current = { x: evento.clientX, y: evento.clientY,
+      izquierda: marco.scrollLeft, arriba: marco.scrollTop };
+    marco.classList.add("arrastrando");
+  }
+  function moverArrastre(evento) {
+    const marco = marcoRef.current;
+    const inicio = arrastreRef.current;
+    if (!marco || !inicio) return;
+    marco.scrollLeft = inicio.izquierda - (evento.clientX - inicio.x);
+    marco.scrollTop = inicio.arriba - (evento.clientY - inicio.y);
+  }
+  function terminarArrastre() {
+    marcoRef.current?.classList.remove("arrastrando");
+    arrastreRef.current = null;
+  }
+  function restablecer() {
+    setZoom(100);
+    marcoRef.current?.scrollTo({ left: 0, top: 0, behavior: "smooth" });
+  }
+  function estiloCaja(bbox) {
+    return { left: `${bbox[0] / dimensiones[0] * 100}%`,
+      top: `${bbox[1] / dimensiones[1] * 100}%`,
+      width: `${bbox[2] / dimensiones[0] * 100}%`,
+      height: `${bbox[3] / dimensiones[1] * 100}%` };
+  }
+  return html`<aside class="mini-visor-correccion" aria-label="Previsualización de la corrección">
+    <div class="mini-visor-cabecera">
+      <div><strong>Imagen asociada</strong><small>${item?.nombre || "Imagen"}</small></div>
+      <span class="chip neutro">${zoom}%</span>
+      <button type="button" class="boton boton-compacto" aria-label="Alejar previsualización"
+        onClick=${() => cambiarZoom(zoom - 50)}>−</button>
+      <button type="button" class="boton boton-compacto" aria-label="Acercar previsualización"
+        onClick=${() => cambiarZoom(zoom + 50)}>+</button>
+      <button type="button" class="boton boton-compacto" onClick=${restablecer}>Restablecer zoom</button>
+    </div>
+    <div class="mini-visor-marco" ref=${marcoRef} onWheel=${alRueda}
+      onPointerDown=${iniciarArrastre} onPointerMove=${moverArrastre}
+      onPointerUp=${terminarArrastre} onPointerCancel=${terminarArrastre}>
+      <div class="mini-visor-lienzo" style=${{ width: `${zoom}%` }}>
+        <img src=${item?.ruta_api_orientada || item?.ruta_api}
+          alt=${`Previsualización de ${item?.nombre || "imagen"}`} draggable="false" />
+        ${detectadas.map((linea, indice) => html`<button type="button"
+          key=${linea.unidad_id || indice}
+          class=${`caja-region caja-ocr ${unidad?.unidad_id === linea.unidad_id ? "caja-activa" : ""}`}
+          style=${estiloCaja(linea.bbox)} title=${`Seleccionar: ${textoVisible(linea)}`}
+          onPointerDown=${(evento) => evento.stopPropagation()}
+          onClick=${() => onSelectText?.(linea)} />`)}
+      </div>
+    </div>
+    <div class="mini-visor-textos">
+      <small><strong>OCR original:</strong> ${unidad
+        ? (unidad.texto_original || unidad.texto || "—") : "—"}</small>
+      <small><strong>Referencia/corrección:</strong> ${textoReferencia || "—"}</small>
+    </div>
+    <small class="subtitulo-seccion">Rueda para ampliar y arrastra para desplazarte. Las cajas mantienen sus coordenadas reales.</small>
+  </aside>`;
+}
+
 function SelectorRegion({ item, valor, onChange, onSelectText }) {
   const marcoRef = useRef(null);
   const inicioRef = useRef(null);
@@ -1250,7 +1342,7 @@ function SelectorRegion({ item, valor, onChange, onSelectText }) {
 }
 
 function PanelImagen({ titulo, item, vacio, onSelectText, edicionActiva, rotacionActiva, onRotate,
-  onSelectImage, onMarkNoData, seleccionada = false }) {
+  onSelectImage, onMarkNoData, seleccionada = false, anclaId = null }) {
   const [zoomVista, setZoomVista] = useState(100);
   const [dimensionesNaturales, setDimensionesNaturales] = useState(null);
   const marcoZoomRef = useRef(null);
@@ -1329,7 +1421,8 @@ function PanelImagen({ titulo, item, vacio, onSelectText, edicionActiva, rotacio
         top: Math.max(0, (marco.scrollHeight - marco.clientHeight) / 2), behavior: "smooth" });
     });
   }
-  return html`<div class=${`tarjeta panel-imagen ${seleccionada ? "imagen-seleccionada" : ""}`}>
+  return html`<div id=${anclaId}
+    class=${`tarjeta panel-imagen ${seleccionada ? "imagen-seleccionada" : ""}`}>
     <div class="progreso-titulo">
       <h3 class="titulo-seccion" style=${{ marginTop: 0 }}>${titulo}</h3>
       ${onSelectImage && html`<button type="button" class="boton boton-compacto"
@@ -1510,8 +1603,9 @@ function VistaDetalle({ nombre }) {
     setResultadoRegion(null);
     if (!revisionCompletada) {
       setModoEdicion(true);
-      window.setTimeout(() => document.querySelector(
-        centrarVisor ? ".panel-imagen" : ".aprendizaje-panel")?.scrollIntoView({
+      window.setTimeout(() => (centrarVisor
+        ? document.getElementById(`visor-imagen-${nuevoId}`)
+        : document.querySelector(".aprendizaje-panel"))?.scrollIntoView({
         behavior: "smooth", block: "start",
       }), 0);
     }
@@ -1856,9 +1950,13 @@ function VistaDetalle({ nombre }) {
       <div>
         <p class="sobrelinea">APRENDIZAJE SUPERVISADO</p>
         <h3 class="titulo-seccion">Corregir una lectura</h3>
-        <p class="subtitulo-seccion">La corrección se guarda como verdad confirmada. Una nueva versión
-          solo se activa si mejora la evaluación sin introducir regresiones.</p>
+        <p class="subtitulo-seccion">La corrección se guarda como verdad confirmada y se prepara
+          para el próximo lote; guardar no entrena el OCR. Una nueva versión sólo se activa
+          si el lote mejora la evaluación sin introducir regresiones.</p>
       </div>
+      <${MiniVisorCorreccion} item=${imagenSeleccionada} unidad=${unidadSeleccionada}
+        textoReferencia=${textoCorrecto}
+        onSelectText=${(unidad) => seleccionarUnidad(imagenSeleccionada, unidad)} />
       ${unidadesCorregibles.length ? html`
         <form class="formulario-correccion" onSubmit=${confirmarCorreccion}>
           <label>Imagen
@@ -1888,7 +1986,7 @@ function VistaDetalle({ nombre }) {
           <label>Acción
             <select class="campo" value=${accionSupervision}
               onChange=${(e) => setAccionSupervision(e.target.value)}>
-              <option value="confirmar_entrenar">Confirmar y usar para entrenar</option>
+              <option value="confirmar_entrenar">Confirmar para el próximo lote</option>
               <option value="corregir">Corregir sin lote visual</option>
               <option value="aceptar">Aceptar lectura OCR</option>
               <option value="ilegible">Marcar ilegible</option>
@@ -1994,15 +2092,25 @@ function VistaDetalle({ nombre }) {
         <small>ID: ${detalle.identificador || detalle.id}</small>
         <small>${imagen.fase || "SIN FASE"}${imagen.tor ? ` · ${imagen.tor}` : ""} · ${imagen.estado_imagen || "sin estado"}</small>
         <small class="ruta-imagen-lista">${imagen.ruta_relativa || imagen.ruta}</small>
+        <span class="miniatura-imagen-lista">
+          <img src=${imagen.ruta_api_visual || imagen.ruta_api_orientada || imagen.ruta_api}
+            alt=${`Vista previa de ${imagen.nombre || "imagen"}`} loading="lazy" />
+        </span>
       </button>`)}
     </div>
     <div class="detalle-grid detalle-todas-imagenes">
-      <${PanelImagen} key=${imagenSeleccionada?.id || imagenSeleccionada?.ruta}
-        titulo=${`${(imagenSeleccionada?.rol || "imagen").replaceAll("_", " ")} · ${imagenSeleccionada?.nombre || imagenSeleccionada?.ruta?.split(/[\\/]/).pop() || "Imagen"}`}
-        item=${imagenSeleccionada} vacio="Imagen no disponible."
-        seleccionada=${true} edicionActiva=${modoEdicion && !revisionCompletada}
-        rotacionActiva=${!revisionCompletada} onSelectImage=${(imagen) => cambiarImagen(imagen.id, true)}
-        onSelectText=${seleccionarUnidad} onRotate=${rotarImagen} onMarkNoData=${marcarSinDatos} />
+      ${imagenesDetalle.map((imagen) => {
+        const activa = imagen.id === imagenSeleccionada?.id;
+        return html`<${PanelImagen} key=${imagen.id || imagen.ruta}
+          anclaId=${`visor-imagen-${imagen.id}`}
+          titulo=${`${(imagen.rol || "imagen").replaceAll("_", " ")} · ${imagen.nombre || imagen.ruta?.split(/[\\/]/).pop() || "Imagen"}`}
+          item=${imagen} vacio="Imagen no disponible." seleccionada=${activa}
+          edicionActiva=${activa && modoEdicion && !revisionCompletada}
+          rotacionActiva=${activa && !revisionCompletada}
+          onSelectImage=${(seleccionada) => cambiarImagen(seleccionada.id, true)}
+          onSelectText=${seleccionarUnidad} onRotate=${rotarImagen}
+          onMarkNoData=${marcarSinDatos} />`;
+      })}
     </div>
 
     <a class="volver" href="#/tabla">← Volver al listado</a>

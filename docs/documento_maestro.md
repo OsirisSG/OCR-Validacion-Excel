@@ -10,7 +10,7 @@ El sistema recolecta.
 El sistema interpreta.
 El sistema llena.
 El sistema valida.
-El sistema aprende.
+El sistema prepara aprendizaje supervisado.
 El humano revisa únicamente excepciones.
 ```
 
@@ -33,6 +33,7 @@ imagen de origen, ROI, texto OCR/corregido, campo, ID, fase, TOR, confianza,
 modelo, fecha y hash. El entrenamiento se realiza por lotes y divide por ID
 para evitar fuga entre entrenamiento, validación y prueba. Un candidato sólo
 se activa si mejora las métricas configuradas sin regresiones importantes;
+guardar una corrección individual no entrena ni promueve el modelo por sí solo.
 siempre existe rollback.
 
 ## Fase A: recolección e inventario

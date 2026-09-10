@@ -2,6 +2,9 @@
 
 from copy import deepcopy
 import json
+import threading
+import time
+from pathlib import Path
 
 from urllib.parse import quote
 
@@ -67,6 +70,13 @@ def test_estado_config_y_frontend():
     assert "Cancelar y conservar avance" in frontend
     assert "onPointerMove" in frontend and "scrollLeft" in frontend
     assert "onClick=${() => cambiarImagen(imagen.id, true)}" in frontend
+    assert "Previsualización de la corrección" in frontend
+    assert "Restablecer zoom" in frontend
+    assert "mini-visor-marco" in frontend and "onWheel=${alRueda}" in frontend
+    assert "Abrir Excel parcial" in frontend
+    assert "miniatura-imagen-lista" in frontend
+    assert "imagenesDetalle.map((imagen)" in frontend
+    assert "visor-imagen-${imagen.id}" in frontend
     assert 'id="ruta-plantilla"' not in frontend
     assert 'id="ruta-inventario"' not in frontend
 
@@ -133,6 +143,109 @@ def test_cancelacion_ofrece_fin_de_id_y_conserva_checkpoint(monkeypatch, tmp_pat
         backend._pipeline_continuar.set()
         backend._pipeline_cancelar.clear()
         backend._pipeline_detener_fin_id.clear()
+
+
+def _preparar_excel_parcial(monkeypatch, tmp_path):
+    import generar_excel
+
+    raiz = tmp_path / "lote"
+    raiz.mkdir()
+    avances = tmp_path / ".cache_ocr" / "avances_ids.json"
+    avances.parent.mkdir()
+    avances.write_text(json.dumps({"raiz": str(raiz), "avances_ids": {
+        "ID-activo": {"estado": "procesando", "fila_parcial": {
+            "case_key": "ID-activo", "nombre": "ID activo", "ruta": str(raiz / "ID-activo"),
+            "perfil": "empresarial", "comparacion": {"resultado": "coincidencia_parcial"},
+            "imagenes": [], "campos": {}, "progreso": {"revisadas": 1},
+        }}}}), encoding="utf-8")
+    validacion = tmp_path / "validacion_resultados.json"
+    validacion.write_text(json.dumps({"resultados": [{
+        "case_key": "ID-listo", "nombre": "ID listo", "ruta": str(raiz / "ID-listo"),
+        "perfil": "empresarial", "comparacion": {"resultado": "coincidencia_total"},
+        "imagenes": [], "campos": {},
+    }]}), encoding="utf-8")
+    capturado = {}
+
+    def excel_falso(ruta_json, ruta_salida, *_args, **_kwargs):
+        capturado["datos"] = _kwargs.get("datos_validacion") or json.loads(
+            Path(ruta_json).read_text(encoding="utf-8"))
+        Path(ruta_salida).write_bytes(b"excel-parcial")
+        return Path(ruta_salida)
+
+    monkeypatch.setattr(backend, "RAIZ_PROYECTO", tmp_path)
+    monkeypatch.setattr(backend, "RUTA_VALIDACION", validacion)
+    monkeypatch.setattr(backend, "RUTA_CHECKPOINT_PIPELINE",
+                        tmp_path / ".cache_ocr" / "estado_pipeline.json")
+    monkeypatch.setattr(backend, "CONFIG", {
+        "empresarial": {"archivo_avance_ids": str(avances)},
+        "fase3": {"archivo_salida": "resultado_maestro.xlsx"},
+    })
+    monkeypatch.setattr(generar_excel, "generar_excel", excel_falso)
+    backend._pipeline_estado.update({
+        "estado": "pausado", "ruta": str(raiz), "nombre_excel": "auditoria.xlsx",
+        "ruta_plantilla": None, "excel_parcial_pendiente": True,
+        "archivo_excel_parcial": None, "advertencia_excel_parcial": None,
+        "resultados_parciales": [
+            {"case_key": "ID-listo", "estado": "procesada"},
+            {"case_key": "ID-activo", "estado": "procesando"},
+        ],
+    })
+    return capturado
+
+
+def test_pausa_exporta_excel_parcial_y_continua_desde_checkpoint(monkeypatch, tmp_path):
+    original = deepcopy(backend._pipeline_estado)
+    capturado = _preparar_excel_parcial(monkeypatch, tmp_path)
+    backend._pipeline_cancelar.clear()
+    backend._pipeline_continuar.clear()
+    terminado = threading.Event()
+
+    def esperar():
+        backend._esperar_continuacion()
+        terminado.set()
+
+    hilo = threading.Thread(target=esperar, daemon=True)
+    try:
+        hilo.start()
+        limite = time.monotonic() + 3
+        while not backend._pipeline_estado.get("archivo_excel_parcial") and time.monotonic() < limite:
+            time.sleep(.01)
+        assert Path(backend._pipeline_estado["archivo_excel_parcial"]).name == "auditoria_parcial.xlsx"
+        assert {fila["case_key"] for fila in capturado["datos"]["resultados"]} == {
+            "ID-listo", "ID-activo"}
+        assert backend._pipeline_estado["estado"] == "pausado"
+        backend._pipeline_continuar.set()
+        hilo.join(timeout=2)
+        assert terminado.is_set()
+    finally:
+        backend._pipeline_continuar.set()
+        hilo.join(timeout=2)
+        backend._pipeline_cancelar.clear()
+        backend._pipeline_estado.clear()
+        backend._pipeline_estado.update(original)
+
+
+def test_detener_al_finalizar_id_exporta_excel_y_deja_reanudable(monkeypatch, tmp_path):
+    original = deepcopy(backend._pipeline_estado)
+    capturado = _preparar_excel_parcial(monkeypatch, tmp_path)
+    backend._pipeline_estado.update(estado="cancelando", reanudable=True)
+    backend._pipeline_cancelar.set()
+    backend._pipeline_continuar.set()
+    try:
+        try:
+            backend._esperar_continuacion()
+        except backend.PipelineCancelado:
+            pass
+        else:
+            raise AssertionError("La detención debía cerrar el ciclo de forma cooperativa")
+        assert Path(backend._pipeline_estado["archivo_excel_parcial"]).is_file()
+        assert capturado["datos"]["parcial"] is True
+        assert backend._pipeline_estado["reanudable"] is True
+    finally:
+        backend._pipeline_cancelar.clear()
+        backend._pipeline_continuar.set()
+        backend._pipeline_estado.clear()
+        backend._pipeline_estado.update(original)
 
 
 def test_reanudacion_omite_ids_ya_confirmados_y_conserva_su_lista(monkeypatch, tmp_path):

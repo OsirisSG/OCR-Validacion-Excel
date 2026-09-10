@@ -17,6 +17,7 @@ from typing import Callable
 
 from configuracion import RAIZ_PROYECTO, cargar_config
 from ocr_engine import extraer_texto
+from utilidades.persistencia import escribir_json_seguro
 
 FUENTES = {
     "embossed": {
@@ -215,9 +216,7 @@ def evaluar(config: dict | None = None,
         "resultados": resultados,
     }
     salida.parent.mkdir(parents=True, exist_ok=True)
-    temporal = salida.with_suffix(salida.suffix + ".tmp")
-    temporal.write_text(json.dumps(documento, ensure_ascii=False, indent=2), encoding="utf-8")
-    temporal.replace(salida)
+    escribir_json_seguro(salida, documento, lanzar=True)
     return documento
 
 

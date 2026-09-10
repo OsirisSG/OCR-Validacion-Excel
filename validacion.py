@@ -46,6 +46,7 @@ from flujo_empresarial import (BaseConocimiento, CAMPOS_REQUERIDOS_DEFAULT,
                                consolidar_caso, evidencias_desde_qr,
                                extraer_candidatos_texto)
 from ocr_engine import cargar_imagen, extraer_texto, extraer_texto_empresarial
+from utilidades.persistencia import escribir_json_seguro
 
 _RE_TOKEN_CODIGO = re.compile(r"^([A-Za-z]+)(\d+)$")
 
@@ -242,6 +243,7 @@ def validar_lote(ruta_estructura: str | Path | None = None,
             resultados_existentes = []
     resultados = [fila for fila in resultados_existentes
                   if str(fila.get("case_key") or fila.get("ruta")) in casos_omitidos]
+    advertencias_persistencia: list[str] = []
     hojas = carpetas_hoja(estructura)
     if casos_omitidos:
         hojas = [carpeta for carpeta in hojas
@@ -273,11 +275,9 @@ def validar_lote(ruta_estructura: str | Path | None = None,
             "parcial": parcial, "carpetas_procesadas": len(resultados),
             "resultados": resultados,
         }
-        destino.parent.mkdir(parents=True, exist_ok=True)
-        temporal = destino.with_suffix(destino.suffix + ".tmp")
-        temporal.write_text(json.dumps(salida_parcial, ensure_ascii=False, indent=2),
-                            encoding="utf-8")
-        temporal.replace(destino)
+        escribir_json_seguro(
+            destino, salida_parcial,
+            al_error=lambda mensaje: advertencias_persistencia.append(mensaje))
 
     for indice, carpeta in enumerate(hojas, start=1):
         fila = _validar_carpeta(
@@ -310,8 +310,13 @@ def validar_lote(ruta_estructura: str | Path | None = None,
         "aprendizaje": aprendizaje,
         "resultados": resultados,
     }
-    with open(destino, "w", encoding="utf-8") as f:
-        json.dump(salida, f, ensure_ascii=False, indent=2)
+    if advertencias_persistencia:
+        salida["advertencias_persistencia"] = list(dict.fromkeys(advertencias_persistencia))
+    guardado_final = escribir_json_seguro(
+        destino, salida,
+        al_error=lambda mensaje: advertencias_persistencia.append(mensaje))
+    if not guardado_final:
+        salida["advertencias_persistencia"] = list(dict.fromkeys(advertencias_persistencia))
     salida["archivo_salida"] = str(destino)
     return salida
 
@@ -323,6 +328,42 @@ def _imagenes_legacy_caso(caso: dict) -> list[dict]:
              "fase": "LEGACY", "tor": None}
             for p in sorted(raiz.rglob("*"))
             if p.is_file() and p.suffix.lower() in EXTENSIONES_IMAGEN]
+
+
+def _fila_empresarial_parcial(caso: dict, evidencias: list[dict],
+                              imagenes: list[dict], trazabilidad: list[dict],
+                              progreso: dict, cfg_emp: dict,
+                              conocimiento: BaseConocimiento) -> dict:
+    """Construye una fila provisional utilizable por el Excel durante una pausa."""
+    consolidado = consolidar_caso(
+        caso, evidencias,
+        requeridos=set(cfg_emp.get("campos_requeridos") or CAMPOS_REQUERIDOS_DEFAULT),
+        reglas_confirmadas=conocimiento.confirmadas(),
+        claves=cfg_emp.get("claves_plantilla") or CLAVES_PLANTILLA)
+    confianza = [t["confianza_ocr"] for t in trazabilidad
+                 if t.get("confianza_ocr") is not None]
+    return {
+        "case_key": caso["case_key"],
+        "id": hashlib.sha256(caso["case_key"].encode()).hexdigest()[:16],
+        "ruta": caso["ruta"], "ruta_relativa": caso.get("ruta_relativa"),
+        "nombre": caso["nombre"],
+        "identificador": consolidado["test_number"] or caso["nombre"],
+        "test_number": consolidado["test_number"], "tipo_st": caso.get("tipo_st"),
+        **caso.get("metadata_ruta", {}), "perfil": "empresarial",
+        "estado": "procesando", "parcial": True, "progreso": deepcopy(progreso),
+        "imagenes": deepcopy(imagenes), "trazabilidad": deepcopy(trazabilidad),
+        "consolidado": consolidado, "campos": consolidado["campos"],
+        "campos_faltantes": consolidado["campos_faltantes"],
+        "conflictos": consolidado["conflictos"],
+        "requiere_revision": True,
+        "tipos_archivo": {"fotografia": [i["nombre"] for i in imagenes]},
+        "comparacion": {"resultado": "coincidencia_parcial", "ratio": None,
+                        "coincidentes": [], "faltantes": []},
+        "confianza_ocr_pct": (round(statistics.mean(confianza) * 100, 2)
+                               if confianza else None),
+        "qr_detectado": any(i.get("resultado_ocr", {}).get("qrs") for i in imagenes),
+        "observaciones": ["Resultado parcial exportado durante una pausa"],
+    }
 
 
 def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = None,
@@ -379,8 +420,16 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
     resultados_previos: list[dict] = []
     resultados_existentes: list[dict] = []
     avances_ids: dict[str, dict] = {}
+    advertencias_persistencia: list[str] = []
     ruta_avances = RAIZ_PROYECTO / cfg_emp.get(
         "archivo_avance_ids", ".cache_ocr/avances_ids.json")
+    if ruta_avances.is_file():
+        try:
+            documento_avances = json.loads(ruta_avances.read_text(encoding="utf-8"))
+            if str(documento_avances.get("raiz") or estructura["raiz"]) == str(estructura["raiz"]):
+                avances_ids = dict(documento_avances.get("avances_ids") or {})
+        except (OSError, ValueError, json.JSONDecodeError):
+            avances_ids = {}
     if destino.is_file():
         try:
             resultados_existentes = json.loads(
@@ -396,7 +445,7 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
     duraciones: deque[float] = deque(maxlen=12)
     anterior = inicio
 
-    def persistir(parcial: bool) -> None:
+    def persistir(parcial: bool) -> dict:
         combinados = {r.get("case_key") or r.get("ruta"): r for r in resultados_previos}
         combinados.update({r.get("case_key") or r.get("ruta"): r for r in resultados})
         salida_parcial = {
@@ -406,20 +455,18 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
             "parcial": parcial, "carpetas_procesadas": len(combinados),
             "casos_encontrados": len(combinados), "resultados": list(combinados.values()),
         }
-        destino.parent.mkdir(parents=True, exist_ok=True)
-        temporal = destino.with_suffix(destino.suffix + ".tmp")
-        with open(temporal, "w", encoding="utf-8") as archivo:
-            json.dump(salida_parcial, archivo, ensure_ascii=False, indent=2)
-        temporal.replace(destino)
+        escribir_json_seguro(
+            destino, salida_parcial,
+            al_error=lambda mensaje: advertencias_persistencia.append(mensaje))
+        return salida_parcial
 
     def persistir_avance_id() -> None:
         """Guarda sólo el ID activo; evita reescribir todo el lote por imagen."""
-        ruta_avances.parent.mkdir(parents=True, exist_ok=True)
-        temporal = ruta_avances.with_suffix(ruta_avances.suffix + ".tmp")
-        temporal.write_text(json.dumps({
-            "actualizado_en": ahora(), "avances_ids": avances_ids,
-        }, ensure_ascii=False, indent=2), encoding="utf-8")
-        temporal.replace(ruta_avances)
+        escribir_json_seguro(
+            ruta_avances,
+            {"raiz": estructura["raiz"], "actualizado_en": ahora(),
+             "avances_ids": avances_ids},
+            al_error=lambda mensaje: advertencias_persistencia.append(mensaje))
 
     for indice, caso in enumerate(casos, start=1):
         if control:
@@ -591,10 +638,14 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
                 al_caso(deepcopy(caso))
             avances_ids[caso["case_key"]] = {
                 "case_key": caso["case_key"], "nombre": caso.get("nombre"),
+                "estado": "procesando",
                 "progreso": deepcopy(caso["progreso"]),
                 "imagenes": deepcopy(imagenes_salida),
                 "trazabilidad": deepcopy(trazabilidad),
                 "evidencias": deepcopy(evidencias),
+                "fila_parcial": _fila_empresarial_parcial(
+                    caso, evidencias, imagenes_salida, trazabilidad,
+                    caso["progreso"], cfg_emp, conocimiento),
                 "actualizado_en": ahora(),
             }
             persistir_avance_id()
@@ -711,7 +762,11 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
             "historial_acciones": deepcopy(previo.get("historial_acciones", [])),
         }
         resultados.append(fila)
-        avances_ids.pop(caso["case_key"], None)
+        avances_ids[caso["case_key"]] = {
+            "case_key": caso["case_key"], "nombre": caso.get("nombre"),
+            "estado": "completado", "progreso": deepcopy(progreso),
+            "resultado_id": fila["id"], "actualizado_en": ahora(),
+        }
         persistir_avance_id()
         persistir(parcial=True)
         if al_resultado:
@@ -720,8 +775,7 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
             al_resultado(indice, len(casos), fila, round(eta, 1))
 
     propuestas = conocimiento.proponer([*resultados_previos, *resultados])
-    persistir(parcial=False)
-    salida = json.loads(destino.read_text(encoding="utf-8"))
+    salida = persistir(parcial=False)
     salida.update({
         "archivo_salida": str(destino), "base_conocimiento": str(conocimiento.ruta),
         "reglas_propuestas": propuestas,
@@ -740,8 +794,13 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
             "reglas_propuestas": len(propuestas),
         },
     })
-    with open(destino, "w", encoding="utf-8") as archivo:
-        json.dump(salida, archivo, ensure_ascii=False, indent=2)
+    if advertencias_persistencia:
+        salida["advertencias_persistencia"] = list(dict.fromkeys(advertencias_persistencia))
+    guardado_final = escribir_json_seguro(
+        destino, salida,
+        al_error=lambda mensaje: advertencias_persistencia.append(mensaje))
+    if not guardado_final:
+        salida["advertencias_persistencia"] = list(dict.fromkeys(advertencias_persistencia))
     return salida
 
 

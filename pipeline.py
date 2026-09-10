@@ -26,6 +26,7 @@ from generar_excel import generar_excel
 from inventario import cargar_inventario, crear_inventario, estructura_desde_inventario
 from recursos import detectar_recursos
 from validacion import validar_lote, validar_lote_empresarial
+from utilidades.persistencia import escribir_json_seguro
 
 
 def _bloqueo_pipeline(func):
@@ -278,13 +279,18 @@ def ejecutar_pipeline(ruta_raiz: str | Path, config: dict | None = None,
                 ruta_destino = candidata
                 break
             indice += 1
-    ruta_excel = (generar_excel(None, ruta_destino, config, ruta_plantilla=ruta_plantilla)
-                  if ruta_plantilla else generar_excel(None, ruta_destino, config))
+    extras_excel = ({"datos_validacion": validacion}
+                    if "datos_validacion" in inspect.signature(generar_excel).parameters else {})
+    ruta_excel = (generar_excel(None, ruta_destino, config,
+                               ruta_plantilla=ruta_plantilla, **extras_excel)
+                  if ruta_plantilla else generar_excel(None, ruta_destino, config, **extras_excel))
     if validacion.get("perfil") == "empresarial":
         validacion["archivo_excel"] = str(ruta_excel)
         validacion["ruta_plantilla"] = str(ruta_plantilla) if ruta_plantilla else None
-        with open(validacion["archivo_salida"], "w", encoding="utf-8") as archivo:
-            json.dump(validacion, archivo, ensure_ascii=False, indent=2)
+        guardado_validacion = escribir_json_seguro(validacion["archivo_salida"], validacion)
+        if not guardado_validacion:
+            validacion.setdefault("advertencias_persistencia", []).append(
+                guardado_validacion.error)
     resumen["fases"]["fase3"] = {
         "artifacto": str(ruta_excel), "plantilla": seleccion_plantilla}
     resumen["duracion_segundos"] = round(time.time() - t0, 1)

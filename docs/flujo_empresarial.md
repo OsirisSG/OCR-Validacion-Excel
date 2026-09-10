@@ -66,10 +66,15 @@ Procesar carpeta enlaza al mismo `#/detalle/<id>`.
 
 ## Archivos locales
 
-- `.cache_ocr/imagenes.json`: caché reanudable.
+- `.cache_ocr/imagenes.sqlite3`: caché OCR transaccional reanudable.
+- `.cache_ocr/avances_ids.json`: evidencia del ID activo y marcadores de IDs
+  completados; no se borra al pausar o detener.
+- `.cache_ocr/estado_pipeline.json`: checkpoint del dashboard.
 - `base_conocimiento.json`: reglas empresariales versionadas y auditables.
 - `.aprendizaje/aprendizaje.sqlite3`: correcciones OCR y regiones supervisadas.
 - `estructura_detectada.json`: estructura y casos descubiertos.
 - `validacion_resultados.json`: consolidación y trazabilidad.
 
 Estos artefactos contienen rutas o conocimiento local y están excluidos de Git.
+Los JSON de caché usan temporales únicos, `fsync`, bloqueo por destino y
+reintentos para tolerar antivirus/indexadores de Windows sin abortar el OCR.

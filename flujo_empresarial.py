@@ -20,6 +20,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Iterable
 
+from utilidades.persistencia import escribir_json_seguro
+
 
 PATRON_CASO = re.compile(
     r"^(?P<id>\d+)\s+(?P<version>RDW|RWD|NAR)\s+"
@@ -769,6 +771,5 @@ class BaseConocimiento:
         return deepcopy(regla)
 
     def guardar(self) -> None:
-        self.ruta.parent.mkdir(parents=True, exist_ok=True)
         self.datos["actualizado_en"] = ahora()
-        self.ruta.write_text(json.dumps(self.datos, ensure_ascii=False, indent=2), encoding="utf-8")
+        escribir_json_seguro(self.ruta, self.datos, lanzar=True)

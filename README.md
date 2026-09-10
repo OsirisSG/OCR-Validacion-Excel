@@ -248,7 +248,7 @@ Opciones de Windows:
 .\iniciar_ocr.ps1 -Diagnostico
 ```
 
-Las correcciones marcadas “Confirmar y usar para entrenar” se guardan como
+Las correcciones marcadas “Confirmar para el próximo lote” se guardan como
 recortes en `.aprendizaje/dataset_visual/recortes`. Una edición individual sólo
 se guarda en la cola; nunca dispara entrenamiento. El botón “Entrenar lote
 visual” habilita el ajuste a partir de 100 recortes confirmados de al menos 15
@@ -281,7 +281,9 @@ El dashboard ofrece tres vistas principales:
   archivo existente y pausar/continuar entre imágenes. Al detener ofrece
   continuar, conservar el avance de inmediato o terminar el ID actual. El
   checkpoint, los resultados parciales y el caché permiten reanudar sin repetir
-  imágenes que no cambiaron. Si no se autoriza
+  OCR de imágenes que no cambiaron. Al pausar después de una imagen o detener al
+  terminar un ID también genera `*_parcial.xlsx`, visible desde el panel, con los
+  IDs terminados y el avance consolidable del ID activo. Si no se autoriza
   sobrescribir, crea automáticamente `nombre_1.xlsx`, `nombre_2.xlsx`, etc.
   Las últimas diez direcciones y su nombre de Excel se conservan localmente en
   el navegador para poder seleccionarlas en ejecuciones posteriores.
@@ -300,6 +302,18 @@ en las lecturas completas plegables y cada descarte muestra una regla comprensib
 La rueda, los botones, el arrastre y el doble clic controlan el visor. La acción
 **Imagen sin datos de texto** registra una revisión humana válida —con motivo
 opcional— sin convertirla en un fallo del OCR.
+
+El editor de correcciones incluye una previsualización compacta de la imagen
+asociada. Sus controles `+`/`−`, rueda, restablecimiento y paneo amplían al mismo
+tiempo la fotografía y las cajas OCR; por ello seleccionar una caja conserva las
+coordenadas originales. El panel mantiene juntos imagen, OCR original y texto
+confirmado.
+
+Los JSON operativos se escriben mediante un único escritor seguro. Usa un
+temporal único por hilo/proceso, `flush` + `fsync`, reemplazo atómico, bloqueo
+`RLock` por destino y ocho reintentos progresivos ante archivos ocupados en
+Windows. Si un caché sigue bloqueado, conserva la última versión válida, muestra
+una advertencia separada y continúa el OCR con el avance en memoria.
 
 Para un lote grande, usa una ruta local en **Procesar carpeta**. Los archivos no
 se suben ni se duplican en el navegador. Durante la ejecución aparecen un reloj

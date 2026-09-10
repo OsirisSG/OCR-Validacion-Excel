@@ -53,15 +53,24 @@ completamente local.
 - Solo puede ejecutarse un pipeline a la vez. Se rechazan rutas inexistentes y
   la raíz completa del sistema; la tarea corre en un hilo para no bloquear la UI.
 - La pausa es cooperativa y segura: termina la inferencia de la imagen actual y
-  espera antes de comenzar la siguiente. Continuar reutiliza el modelo cargado.
+  espera antes de comenzar la siguiente. En ese límite genera un Excel parcial
+  descargable sin descartar `avances_ids.json`. Continuar reutiliza el modelo cargado.
 - Cancelar abre tres decisiones: continuar, cancelar conservando el avance o
   detener al terminar la carpeta/ID. El checkpoint `.cache_ocr/estado_pipeline.json`,
   los JSON parciales y la caché por hash permiten reanudar sin repetir imágenes
   cuya imagen, configuración y modelo no cambiaron.
+- `estado_pipeline.json`, `avances_ids.json` y los demás JSON atómicos comparten
+  un escritor con temporal único, `fsync`, `RLock` y reintentos ante
+  `PermissionError`. Un fallo de caché queda como advertencia y no cambia el
+  estado del OCR a `error`.
 - Un clic en cualquier imagen de la lista inferior la abre, centra el visor y
-  activa la edición sin esconder las demás. El visor tiene rueda, botones `+`/`−`, ajuste a pantalla, 100 %, arrastre y
+  activa la edición sin esconder las demás. Cada tarjeta muestra su miniatura y
+  todos los visores permanecen desplegados, uno debajo de otro. El visor tiene rueda, botones `+`/`−`, ajuste a pantalla, 100 %, arrastre y
   doble clic. El zoom visual no altera el OCR; una ROI manual sí recorta los
   píxeles que se vuelven a reconocer y queda como evidencia supervisada.
+- El formulario de corrección muestra una miniatura ampliable con rueda,
+  botones, paneo y restablecimiento. Imagen, cajas, OCR original y texto de
+  referencia se actualizan como una sola selección.
 - `Imagen sin datos de texto` guarda una revisión humana con motivo opcional;
   no incrementa los fallos del sistema ni obliga a reprocesar esa imagen.
 - La ETA usa una ventana de duraciones recientes y excluye el calentamiento de

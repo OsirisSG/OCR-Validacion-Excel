@@ -284,6 +284,14 @@ td.numero { font-variant-numeric: tabular-nums; }
 .boton-imagen small { color: var(--texto-3); text-transform: uppercase; font-size: 11px; }
 .boton-imagen .ruta-imagen-lista { text-transform: none; overflow-wrap: anywhere; }
 .boton-imagen.activa { border-color: var(--acento); background: var(--acento-suave); }
+.miniatura-imagen-lista {
+  display: grid; place-items: center; height: 150px; margin-top: 8px; overflow: hidden;
+  border: 1px solid var(--borde); border-radius: 7px; background: #111827;
+}
+.miniatura-imagen-lista img {
+  display: block; width: 100%; height: 100%; object-fit: contain; pointer-events: none;
+}
+.detalle-todas-imagenes { grid-template-columns: minmax(0, 1fr); }
 .roi-ocr-panel {
   margin-top: 14px; padding: 14px; border: 1px dashed var(--acento);
   border-radius: var(--radio-sm); background: color-mix(in srgb, var(--acento-suave) 55%, transparent);
@@ -381,6 +389,25 @@ td.numero { font-variant-numeric: tabular-nums; }
   display: block; width: 100%; height: auto; pointer-events: none;
   -webkit-user-drag: none;
 }
+.mini-visor-correccion {
+  display: grid; gap: 8px; margin: 14px 0; padding: 12px;
+  border: 1px solid var(--borde); border-radius: var(--radio-sm); background: var(--fondo);
+}
+.mini-visor-cabecera { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
+.mini-visor-cabecera > div { display: grid; gap: 2px; margin-right: auto; }
+.mini-visor-cabecera small, .mini-visor-textos small { color: var(--texto-3); }
+.mini-visor-marco {
+  height: 230px; overflow: auto; border: 1px solid var(--borde-fuerte);
+  border-radius: 7px; background: #111827; cursor: grab; touch-action: none;
+}
+.mini-visor-marco.arrastrando { cursor: grabbing; user-select: none; }
+.mini-visor-lienzo { position: relative; min-width: 100%; line-height: 0; }
+.mini-visor-lienzo img { display: block; width: 100%; height: auto; user-select: none; }
+.mini-visor-lienzo .caja-activa {
+  border-color: #38bdf8; background: rgba(56, 189, 248, .24); outline: 2px solid #fff;
+}
+.mini-visor-textos { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.mini-visor-textos small { white-space: pre-wrap; overflow-wrap: anywhere; }
 .caja-region {
   position: absolute; box-sizing: border-box; pointer-events: none;
   border-radius: 2px;

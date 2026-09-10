@@ -157,7 +157,8 @@ def generar_excel(ruta_validacion: str | Path | None = None,
                   ruta_salida: str | Path | None = None,
                   config: dict | None = None,
                   reglas: dict | None = None,
-                  ruta_plantilla: str | Path | None = None) -> Path:
+                  ruta_plantilla: str | Path | None = None,
+                  datos_validacion: dict | None = None) -> Path:
     """Genera resultado_maestro.xlsx. Retorna la ruta del archivo creado."""
     config = config or cargar_config()
     reglas = reglas or cargar_reglas()
@@ -165,8 +166,11 @@ def generar_excel(ruta_validacion: str | Path | None = None,
     ruta_validacion = Path(ruta_validacion) if ruta_validacion else RAIZ_PROYECTO / "validacion_resultados.json"
     ruta_salida = Path(ruta_salida) if ruta_salida else RAIZ_PROYECTO / f3.get("archivo_salida", "resultado_maestro.xlsx")
 
-    with open(ruta_validacion, "r", encoding="utf-8") as f:
-        datos = json.load(f)
+    if datos_validacion is None:
+        with open(ruta_validacion, "r", encoding="utf-8") as f:
+            datos = json.load(f)
+    else:
+        datos = datos_validacion
 
     plantilla_config = ruta_plantilla or f3.get("plantilla_empresarial")
     if datos.get("perfil") == "empresarial" and plantilla_config:

@@ -4,8 +4,10 @@
 
 Cada pipeline registra localmente las lecturas OCR, confianza, caja, motor,
 imagen y ejecución en `.aprendizaje/aprendizaje.sqlite3`. Una observación sin
-confirmar **no modifica el modelo**. El entrenamiento comienza cuando una
-persona corrige un código desde el detalle del dashboard o mediante CLI.
+confirmar **no modifica el modelo**. Una corrección confirmada se guarda y sus
+sustituciones seguras pueden reutilizarse de inmediato, pero ningún clic entrena
+por sí solo el reconocedor. El entrenamiento visual comienza únicamente cuando
+una persona ejecuta explícitamente un lote desde el dashboard o mediante CLI.
 
 Las correcciones alimentan dos capas distintas:
 

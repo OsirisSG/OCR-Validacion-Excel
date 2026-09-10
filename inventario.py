@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
 from configuracion import RAIZ_PROYECTO
+from utilidades.persistencia import escribir_json_seguro
 
 
 VERSION_INVENTARIO = 1
@@ -79,13 +79,7 @@ def crear_inventario(estructura: dict, ruta_salida: str | Path | None = None,
         "configuracion": {"hash_completo": bool(calcular_hash)},
     }
     destino = Path(ruta_salida) if ruta_salida else RAIZ_PROYECTO / "inventario_proyecto.json"
-    destino.parent.mkdir(parents=True, exist_ok=True)
-    temporal = destino.with_suffix(destino.suffix + ".tmp")
-    with open(temporal, "w", encoding="utf-8") as salida:
-        json.dump(documento, salida, ensure_ascii=False, indent=2)
-        salida.flush()
-        os.fsync(salida.fileno())
-    os.replace(temporal, destino)
+    escribir_json_seguro(destino, documento, lanzar=True)
     documento["archivo_salida"] = str(destino)
     return documento
 
@@ -116,4 +110,3 @@ def estructura_desde_inventario(inventario: dict) -> dict:
         "casos_validos": inventario.get("casos_validos", 0),
         "casos_incompletos": inventario.get("casos_incompletos", 0),
     }
-

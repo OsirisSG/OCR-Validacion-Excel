@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import threading
 import types
@@ -6,6 +7,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import pytest
 
 import ocr_engine
 import validacion
@@ -307,7 +309,8 @@ def test_validacion_empresarial_procesa_todas_y_reanuda_desde_cache(monkeypatch,
     primera_evidencia = next(iter(parciales[0]["avances_ids"].values()))
     assert primera_evidencia["imagenes"][0]["nombre"] == "a.jpg"
     assert primera_evidencia["trazabilidad"][0]["estado_imagen"] == "procesada_con_texto"
-    assert json.loads(avance_ids.read_text(encoding="utf-8"))["avances_ids"] == {}
+    avance_final = json.loads(avance_ids.read_text(encoding="utf-8"))["avances_ids"]
+    assert next(iter(avance_final.values()))["estado"] == "completado"
     assert len(primera["resultados"]) == 1
     assert primera["resultados"][0]["progreso"]["revisadas"] == 3
     assert primera["resultados"][0]["campos"]["module_part_number"]["estado"] == \
@@ -319,6 +322,46 @@ def test_validacion_empresarial_procesa_todas_y_reanuda_desde_cache(monkeypatch,
     assert all(t["desde_cache"] for t in segunda["resultados"][0]["trazabilidad"])
     assert len(segunda["resultados"][0]["historial_ejecuciones"]) == 2
     assert segunda["resultados"][0]["historial_ejecuciones"][1]["imagenes_revisadas"] == 3
+
+
+def test_bloqueo_de_avances_no_aborta_ocr_ni_resultado(monkeypatch, tmp_path):
+    from utilidades.persistencia import AdvertenciaPersistencia
+
+    raiz = tmp_path / "Proyecto_1ST"
+    caso = _caso(raiz)
+    imagen = caso / "PHOTOS" / "NACH" / "a.jpg"
+    imagen.write_bytes(b"foto")
+    estructura = mapear_estructura(raiz)
+    archivo_estructura = guardar_estructura(estructura, tmp_path / "estructura.json")
+    avance_ids = tmp_path / ".cache_ocr" / "avances_ids.json"
+    destino = tmp_path / "resultados.json"
+    reemplazar_real = os.replace
+
+    def reemplazar(origen, final):
+        if Path(final).resolve() == avance_ids.resolve():
+            raise PermissionError(13, "antivirus mantiene abierto avances_ids.json")
+        reemplazar_real(origen, final)
+
+    monkeypatch.setattr("utilidades.persistencia.os.replace", reemplazar)
+    monkeypatch.setattr("utilidades.persistencia.time.sleep", lambda _segundos: None)
+    monkeypatch.setattr(validacion, "extraer_texto_empresarial", lambda ruta, *_args, **_kwargs: {
+        "imagen": ruta, "motor": "easyocr", "tokens": [], "lineas_texto": [],
+        "texto_completo": "", "confianza_media": None, "dimensiones": [100, 50],
+        "estado_imagen": "descartada_sin_texto", "qrs": [],
+    })
+    config = {"fase1": {}, "ocr": {}, "normalizacion": {}, "empresarial": {
+        "archivo_cache": str(tmp_path / "cache.json"),
+        "archivo_avance_ids": str(avance_ids),
+        "base_conocimiento": str(tmp_path / "base.json")}}
+
+    with pytest.warns(AdvertenciaPersistencia):
+        salida = validacion.validar_lote_empresarial(
+            archivo_estructura, config, archivo_salida=destino)
+
+    assert len(salida["resultados"]) == 1
+    assert destino.is_file()
+    assert salida["advertencias_persistencia"]
+    assert salida["resultados"][0]["progreso"]["revisadas"] == 1
 
 
 def test_temperatura_ocr_contraria_a_ruta_genera_conflicto(tmp_path):

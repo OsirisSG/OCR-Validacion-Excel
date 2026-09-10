@@ -52,6 +52,7 @@ from aprendizaje import (GestorAprendizaje, hash_archivo, normalizar_codigo,
 from ocr_engine import rotar_imagen_libre  # noqa: E402
 from recursos import detectar_recursos  # noqa: E402
 from flujo_empresarial import BaseConocimiento, CLAVES_PLANTILLA  # noqa: E402
+from utilidades.persistencia import escribir_json_seguro  # noqa: E402
 
 CONFIG = cargar_config()
 REGLAS = cargar_reglas()
@@ -196,6 +197,7 @@ _pipeline_continuar.set()
 _pipeline_cancelar = threading.Event()
 _pipeline_detener_fin_id = threading.Event()
 _pipeline_hilo: threading.Thread | None = None
+_pipeline_excel_lock = threading.Lock()
 _externas_lock = threading.Lock()
 _entrenamiento_lock = threading.Lock()
 _entrenamiento_estado = {"estado": "inactivo", "resultado": None, "error": None}
@@ -208,18 +210,23 @@ _pipeline_estado: dict = {
     "imagenes_restantes": 0, "imagen_actual": None, "actualizado_en": None,
     "recursos": None, "nombre_excel": None, "ultimo_id": None,
     "ultimo_id_nombre": None, "reanudable": False, "solicitud": None,
+    "archivo_excel_parcial": None, "excel_parcial_actualizado_en": None,
+    "advertencia_excel_parcial": None, "excel_parcial_pendiente": False,
+    "advertencias_cache": [],
 }
 
 
-def _persistir_checkpoint_pipeline() -> None:
+def _persistir_checkpoint_pipeline() -> bool:
     """Guarda el estado operativo con reemplazo atómico para sobrevivir reinicios."""
-    RUTA_CHECKPOINT_PIPELINE.parent.mkdir(parents=True, exist_ok=True)
-    temporal = RUTA_CHECKPOINT_PIPELINE.with_suffix(".tmp")
     with _pipeline_lock:
         serializable = deepcopy(_pipeline_estado)
-    temporal.write_text(json.dumps(serializable, ensure_ascii=False, indent=2, default=str),
-                        encoding="utf-8")
-    temporal.replace(RUTA_CHECKPOINT_PIPELINE)
+    resultado = escribir_json_seguro(RUTA_CHECKPOINT_PIPELINE, serializable)
+    if not resultado:
+        with _pipeline_lock:
+            advertencias = _pipeline_estado.setdefault("advertencias_cache", [])
+            if resultado.error and resultado.error not in advertencias:
+                advertencias.append(resultado.error)
+    return bool(resultado)
 
 
 def _recuperar_checkpoint_pipeline() -> None:
@@ -527,9 +534,7 @@ def _orientacion_base_publica(ocr: dict) -> int:
 
 
 def _guardar_json_atomico(ruta: Path, documento: dict) -> None:
-    temporal = ruta.with_suffix(ruta.suffix + ".tmp")
-    temporal.write_text(json.dumps(documento, ensure_ascii=False, indent=2), encoding="utf-8")
-    temporal.replace(ruta)
+    escribir_json_seguro(ruta, documento, lanzar=True)
 
 
 def _buscar_unidad_ocr(unidades: list[dict], texto: str,
@@ -618,12 +623,101 @@ def _registrar_error_pipeline(ruta: Path, exc: Exception) -> Path:
     return archivo
 
 
+def _registrar_advertencia_excel_parcial(mensaje: str) -> None:
+    with _pipeline_lock:
+        _pipeline_estado.update(
+            advertencia_excel_parcial=mensaje, excel_parcial_pendiente=False,
+            actualizado_en=datetime.now().isoformat(timespec="milliseconds"))
+    _persistir_checkpoint_pipeline()
+
+
+def _exportar_excel_parcial_pipeline() -> str | None:
+    """Genera un Excel recuperable sin convertir sus fallos en errores OCR."""
+    if not _pipeline_excel_lock.acquire(blocking=False):
+        return _pipeline_estado.get("archivo_excel_parcial")
+    try:
+        with _pipeline_lock:
+            estado = deepcopy(_pipeline_estado)
+        if not estado.get("excel_parcial_pendiente"):
+            return estado.get("archivo_excel_parcial")
+
+        filas: list[dict] = []
+        claves_checkpoint = {
+            str(item.get("case_key")) for item in estado.get("resultados_parciales", [])
+            if item.get("case_key") and item.get("estado") not in {"procesando", "cancelada"}}
+        if RUTA_VALIDACION.is_file() and claves_checkpoint:
+            try:
+                validacion = json.loads(RUTA_VALIDACION.read_text(encoding="utf-8"))
+                filas.extend(fila for fila in validacion.get("resultados", [])
+                             if str(fila.get("case_key")) in claves_checkpoint)
+            except (OSError, ValueError, json.JSONDecodeError):
+                pass
+
+        ruta_avances = RAIZ_PROYECTO / CONFIG.get("empresarial", {}).get(
+            "archivo_avance_ids", ".cache_ocr/avances_ids.json")
+        if ruta_avances.is_file():
+            try:
+                avances = json.loads(ruta_avances.read_text(encoding="utf-8"))
+                for avance in (avances.get("avances_ids") or {}).values():
+                    fila = avance.get("fila_parcial")
+                    if fila and avance.get("estado") == "procesando":
+                        filas = [item for item in filas
+                                 if item.get("case_key") != fila.get("case_key")]
+                        filas.append(fila)
+            except (OSError, ValueError, json.JSONDecodeError):
+                pass
+
+        datos_parciales = {
+            "raiz": estado.get("ruta"), "perfil": "empresarial", "parcial": True,
+            "generado_en": datetime.now().isoformat(timespec="seconds"),
+            "resultados": filas,
+        }
+        ruta_json = RAIZ_PROYECTO / ".cache_ocr" / "validacion_excel_parcial.json"
+        resultado_json = escribir_json_seguro(ruta_json, datos_parciales)
+        if not resultado_json:
+            with _pipeline_lock:
+                advertencias = _pipeline_estado.setdefault("advertencias_cache", [])
+                if resultado_json.error and resultado_json.error not in advertencias:
+                    advertencias.append(resultado_json.error)
+
+        nombre = str(estado.get("nombre_excel") or CONFIG.get("fase3", {}).get(
+            "archivo_salida", "resultado_maestro.xlsx"))
+        base = Path(nombre).stem or "resultado_maestro"
+        ruta_excel = RAIZ_PROYECTO / f"{base}_parcial.xlsx"
+        from generar_excel import generar_excel
+        ruta_plantilla = estado.get("ruta_plantilla")
+        generado = (generar_excel(
+            ruta_json, ruta_excel, CONFIG, ruta_plantilla=ruta_plantilla,
+            datos_validacion=datos_parciales)
+            if ruta_plantilla else generar_excel(
+                ruta_json, ruta_excel, CONFIG, datos_validacion=datos_parciales))
+        with _pipeline_lock:
+            _pipeline_estado.update(
+                archivo_excel_parcial=str(generado),
+                excel_parcial_actualizado_en=datetime.now().isoformat(timespec="seconds"),
+                advertencia_excel_parcial=None, excel_parcial_pendiente=False,
+                actualizado_en=datetime.now().isoformat(timespec="milliseconds"))
+        _persistir_checkpoint_pipeline()
+        return str(generado)
+    except Exception as exc:
+        _registrar_advertencia_excel_parcial(
+            f"El avance OCR quedó guardado, pero el Excel parcial no pudo actualizarse: "
+            f"{type(exc).__name__}: {exc}")
+        return None
+    finally:
+        _pipeline_excel_lock.release()
+
+
 def _esperar_continuacion() -> None:
     """Pausa cooperativa: nunca interrumpe una inferencia a la mitad."""
     if _pipeline_cancelar.is_set():
+        _exportar_excel_parcial_pipeline()
         raise PipelineCancelado("Procesamiento cancelado por el usuario.")
+    if not _pipeline_continuar.is_set():
+        _exportar_excel_parcial_pipeline()
     while not _pipeline_continuar.wait(timeout=0.25):
         if _pipeline_cancelar.is_set():
+            _exportar_excel_parcial_pipeline()
             raise PipelineCancelado("Procesamiento cancelado por el usuario.")
 
 
@@ -1535,6 +1629,9 @@ def iniciar_pipeline(solicitud: SolicitudPipeline):
             "ruta_inventario": ruta_inventario,
             "ultimo_id": None, "ultimo_id_nombre": None,
             "reanudable": False, "solicitud": solicitud_guardada,
+            "archivo_excel_parcial": None, "excel_parcial_actualizado_en": None,
+            "advertencia_excel_parcial": None, "excel_parcial_pendiente": False,
+            "advertencias_cache": [],
             "actualizado_en": datetime.now().isoformat(timespec="milliseconds"),
         })
     _persistir_checkpoint_pipeline()
@@ -1560,7 +1657,7 @@ def pausar_pipeline():
         _pipeline_continuar.clear()
         _pipeline_estado.update(
             estado="pausado", mensaje="Pausa solicitada; se detendrá al terminar la imagen actual",
-            eta_segundos=None, reanudable=True,
+            eta_segundos=None, reanudable=True, excel_parcial_pendiente=True,
             actualizado_en=datetime.now().isoformat(timespec="milliseconds"))
     _persistir_checkpoint_pipeline()
     return {"estado": "pausado", "seguro": True}
@@ -1628,6 +1725,7 @@ def cancelar_pipeline(solicitud: SolicitudDetencion | None = None):
             mensaje = "Se detendrá al finalizar la imagen actual y conservará el avance"
         _pipeline_estado.update(
             estado="cancelando", mensaje=mensaje, reanudable=True,
+            excel_parcial_pendiente=True,
             actualizado_en=datetime.now().isoformat(timespec="milliseconds"))
     _persistir_checkpoint_pipeline()
     return {"estado": "cancelando", "seguro": True, "accion": solicitud.accion}
@@ -1729,6 +1827,19 @@ def descargar_excel():
     archivo = Path(ruta).resolve()
     if not archivo.is_file() or archivo.suffix.lower() != ".xlsx":
         raise HTTPException(404, "El Excel asociado ya no está disponible.")
+    return FileResponse(archivo, filename=archivo.name,
+                        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+@app.get("/api/pipeline/excel-parcial")
+def descargar_excel_parcial():
+    with _pipeline_lock:
+        declarada = _pipeline_estado.get("archivo_excel_parcial")
+    if not declarada:
+        raise HTTPException(404, "Todavía no se ha generado un Excel parcial.")
+    archivo = Path(declarada).resolve()
+    if not archivo.is_relative_to(RAIZ_PROYECTO.resolve()) or not archivo.is_file():
+        raise HTTPException(404, "El Excel parcial ya no está disponible.")
     return FileResponse(archivo, filename=archivo.name,
                         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 

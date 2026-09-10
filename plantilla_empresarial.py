@@ -16,6 +16,7 @@ from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.table import Table, TableStyleInfo
+from utilidades.persistencia import escribir_json_seguro
 
 
 HOJA_CAPTURA = "Captura_pruebas"
@@ -228,9 +229,7 @@ class RegistroPlantillas:
 
     def _guardar(self, datos: dict) -> None:
         self.directorio.mkdir(parents=True, exist_ok=True)
-        temporal = self.indice.with_suffix(".tmp")
-        temporal.write_text(json.dumps(datos, ensure_ascii=False, indent=2), encoding="utf-8")
-        temporal.replace(self.indice)
+        escribir_json_seguro(self.indice, datos, lanzar=True)
 
     def listar(self) -> list[dict]:
         salida = []

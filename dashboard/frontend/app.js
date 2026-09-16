@@ -120,6 +120,16 @@ function persistirRutasRecientes(rutas) {
 }
 const textoUnidad = (unidad) => unidad?.texto_original || unidad?.texto || "";
 const textoVisible = (unidad) => unidad?.texto || unidad?.texto_original || "";
+function imagenesParaRevisar(imagenes, ocultar) {
+  return ocultar ? imagenes.filter(i => i.estado_imagen !== "verificada" || i.revision_sin_datos) : imagenes;
+}
+function useAvisoBorrador(pendiente, ocupado) {
+  useEffect(() => {
+    const avisar = e => { if (pendiente) e.detail.pendiente = true; if (ocupado) e.detail.ocupado = true; };
+    window.addEventListener("ocr-consultar-borradores", avisar);
+    return () => window.removeEventListener("ocr-consultar-borradores", avisar);
+  }, [pendiente, ocupado]);
+}
 function propuestaTextoOrientacion(recorte, grados) {
   const angulo = ((Number(grados) % 360) + 360) % 360;
   const candidato = (recorte?.candidatos_orientacion || []).find(c => Number(c.grados) === angulo);
@@ -136,7 +146,8 @@ function unidadesOcr(ocr = {}) {
   const vistas = espaciales.filter((unidad, indice, todas) => textoUnidad(unidad)
     && todas.findIndex((otra) => firmaUnidad(otra) === firmaUnidad(unidad)) === indice);
   if (ocr.texto_completo) {
-    vistas.push({ texto: ocr.texto_completo, bbox: null, tipo_unidad: "bloque completo" });
+    vistas.push({ texto: ocr.texto_completo, texto_original: ocr.texto_completo_original || ocr.texto_completo,
+      confirmado_manualmente: Boolean(ocr.texto_completo_confirmado), bbox: null, tipo_unidad: "bloque completo" });
   }
   return vistas.map((unidad, indice) => ({
     ...unidad, unidad_id: `${unidad.tipo_unidad}-${indice}-${firmaUnidad(unidad)}`,
@@ -762,7 +773,7 @@ function TarjetaExterna({ prueba, alActualizarRevision }) {
       const resultado = await enviarJSON("/api/externas/correcciones", {
         prueba_id: prueba.id, texto_ocr: textoUnidad(seleccionada),
         texto_correcto: textoCorrecto, bbox: seleccionada?.bbox || null,
-        accion: accionSupervision,
+        accion: accionSupervision === "aceptar" && textoCorrecto !== textoVisible(seleccionada) ? "corregir" : accionSupervision,
       });
       setRespuesta({ ok: true, resultado });
       await alActualizarRevision();
@@ -965,8 +976,8 @@ function TarjetaExterna({ prueba, alActualizarRevision }) {
       ${resultadoRegion && !resultadoRegion.ok && html`<div class="mensaje-error">${resultadoRegion.mensaje}</div>`}
 
       ${((prueba.correcciones || []).length > 0 || (prueba.anotaciones || []).length > 0) && html`
-        <div class="historial-aprendizaje">
-          <h3 class="titulo-seccion">Lista de aprendizaje supervisado</h3>
+        <details class="historial-aprendizaje">
+          <summary>Lista de aprendizaje supervisado (${(prueba.correcciones || []).length + (prueba.anotaciones || []).length}) · desplegar / ocultar</summary>
           ${(prueba.correcciones || []).map((item) => html`<div key=${`c-${item.id}`} class="evidencia-aprendizaje">
             <span class="chip neutro">Corrección OCR</span><strong class="mono">${item.texto_correcto}</strong>
             ${item.texto_ocr !== item.texto_correcto && html`<small class="mono">Antes: ${item.texto_ocr}</small>`}
@@ -976,7 +987,7 @@ function TarjetaExterna({ prueba, alActualizarRevision }) {
             <span class="chip neutro">Texto omitido</span><strong class="mono">${item.texto_correcto}</strong>
             <small>${prueba.imagen} · región ${item.bbox.join(", ")}</small>
           </div>`)}
-        </div>`}
+        </details>`}
     </div>`}
     ${respuesta?.ok && html`<div class="aviso">${respuesta.revision
       ? "Estado de revisión actualizado."
@@ -1288,6 +1299,7 @@ function EditorUnionZona({ item, pruebaId, valor, onChange, onActualizado }) {
   const [propuesta, setPropuesta] = useState(null);
   const [texto, setTexto] = useState("");
   const [ocupado, setOcupado] = useState(false);
+  useAvisoBorrador(Boolean(propuesta), ocupado);
   const [mensaje, setMensaje] = useState("");
   const vigente = useRef(0);
   const cajaClave = JSON.stringify(valor);
@@ -1329,6 +1341,7 @@ function EditorUnionZona({ item, pruebaId, valor, onChange, onActualizado }) {
   }
   return html`<section class="editor-union-zona">
     <h3>Completar o unir texto de una zona</h3>
+    ${valor && !propuesta && html`<${HerramientasRegion} key=${JSON.stringify(valor)} item=${item} bbox=${valor} />`}
     <p>Dibuja una zona o usa “Unir bloques” y pulsa los recuadros. Arrastra las esquinas azules para ajustar el área.</p>
     <div class="acciones-tabla">
       <button class="boton" type="button" disabled=${ocupado || !valor} onClick=${() => preparar(false)}>Unir textos existentes</button>
@@ -1338,6 +1351,8 @@ function EditorUnionZona({ item, pruebaId, valor, onChange, onActualizado }) {
     </div>
     ${ocupado && html`<p role="status">Procesando la zona…</p>`}
     ${propuesta && html`<div>
+      <${HerramientasRegion} key=${JSON.stringify(propuesta.bbox)} item=${item} bbox=${propuesta.bbox}
+        candidatos=${propuesta.candidatos_orientacion || []} texto=${texto} onTexto=${setTexto} />
       <p>Se reemplazarán ${propuesta.bloques} bloques al confirmar. Región: ${propuesta.bbox.join(", ")}.</p>
       ${JSON.stringify(propuesta.bbox) !== cajaClave && html`<p class="aviso">El área se amplió para incluir completos los bloques que tocaste. Revisa el alcance antes de confirmar.</p>`}
       <label>Texto anterior<pre class="zona-texto-anterior">${propuesta.anterior || "Sin lectura previa"}</pre></label>
@@ -1353,9 +1368,77 @@ function EditorUnionZona({ item, pruebaId, valor, onChange, onActualizado }) {
   </section>`;
 }
 
+function HerramientasRegion({item, bbox, candidatos = [], texto = "", onTexto, pruebaId}) {
+  const [giro, setGiro] = useState(0);
+  const [aviso, setAviso] = useState("");
+  const [lecturas, setLecturas] = useState(null);
+  const [ocupado, setOcupado] = useState(false);
+  const automatico = useRef(null);
+  const vigente = useRef(true);
+  useEffect(()=>{vigente.current=true;return()=>{vigente.current=false;};},[]);
+  useAvisoBorrador(false, ocupado);
+  const opciones = lecturas || candidatos;
+  function elegir(grados) {
+    const propuesta = propuestaTextoOrientacion({candidatos_orientacion:opciones},grados);
+    if (propuesta.texto && onTexto) {
+      if (texto && texto !== automatico.current && texto !== propuesta.texto && !window.confirm("¿Sustituir el texto escrito por esta lectura?")) return;
+      onTexto(propuesta.texto);
+      automatico.current=propuesta.texto;
+      setAviso("Lectura copiada. Revisa y guarda para confirmar el cambio.");
+    } else setAviso("Giro de vista: el texto y las coordenadas guardadas no cambian.");
+    setGiro(propuesta.angulo);
+  }
+  async function comparar() {
+    if (ocupado) return;
+    setOcupado(true);setAviso("Comparando orientaciones de esta zona…");
+    try {
+      const r=await enviarJSON("/api/aprendizaje/zonas",{prueba_id:pruebaId,imagen_id:item.id,bbox,exacta:true,releer:true});
+      if (!vigente.current) return;
+      setLecturas(r.candidatos_orientacion || []);
+      setAviso("Elige una tarjeta o gira para copiar su lectura a la casilla. Después confirma el texto.");
+    } catch(e) {if(vigente.current)setAviso(e.message);}
+    finally {if(vigente.current)setOcupado(false);}
+  }
+  return html`<section class="herramientas-region" aria-label="Imagen y herramientas de la selección">
+    <div class="cabecera-recorte"><div><span class="sobrelinea">SELECCIÓN ACTIVA</span>
+      <h3>Revisa la imagen y su texto</h3></div><span class="insignia-recorte">${giro}°</span></div>
+    <${VistaRecorteZona} item=${item} bbox=${bbox} grados=${giro} />
+    <div class="acciones-tabla"><button type="button" class="boton" onClick=${()=>elegir(giro-90)}>↶ 90°</button>
+      <button type="button" class="boton" onClick=${()=>elegir(giro+90)}>↷ 90°</button>
+      <button type="button" class="boton" onClick=${()=>elegir(0)}>Restablecer giro</button></div>
+    ${pruebaId && html`<button type="button" class="boton" disabled=${ocupado} onClick=${comparar}>
+      ${ocupado ? "Comparando…" : "Comparar lecturas de esta zona"}</button>`}
+    <div class="lista-candidatos-orientacion">${opciones.map(c=>html`<button type="button"
+      class="boton candidato-orientacion" aria-pressed=${giro===Number(c.grados)} onClick=${()=>elegir(c.grados)}>
+      <strong>${c.grados}° · ${(c.confianza*100).toFixed(1)}%</strong><span>${c.texto || "Sin lectura"}</span></button>`)}</div>
+    <small role="status">${aviso || "Amplía o gira el recorte para leerlo cómodamente. El guardado se confirma en el formulario."}</small>
+  </section>`;
+}
+
+function VistaRecorteZona({item, bbox, grados = 0}) {
+  const [zoom, setZoom] = useState(100);
+  const [x,y,w,h] = bbox;
+  const vertical = grados % 180 !== 0;
+  const ancho = vertical ? h : w, alto = vertical ? w : h;
+  const dimensiones = item.resultado_ocr.dimensiones;
+  return html`<div>
+    <div class="acciones-tabla"><button type="button" class="boton" onClick=${()=>setZoom(Math.max(100,zoom-25))}>−</button>
+      <span>${zoom}%</span><button type="button" class="boton" onClick=${()=>setZoom(Math.min(400,zoom+25))}>+</button>
+      <button type="button" class="boton" onClick=${()=>setZoom(100)}>Restablecer zoom del recorte</button></div>
+    <div class="vista-recorte-zona"><svg viewBox=${`0 0 ${ancho} ${alto}`} role="img" aria-label="Región ajustada en la orientación elegida"
+      style=${{width:`${zoom}%`,maxWidth:"none",display:"block"}}>
+      <g transform=${`translate(${ancho/2} ${alto/2}) rotate(${grados}) translate(${-w/2} ${-h/2})`}>
+        <svg width=${w} height=${h} viewBox=${`${x} ${y} ${w} ${h}`} overflow="hidden">
+          <image href=${item.ruta_api_orientada || item.ruta_api} width=${dimensiones[0]} height=${dimensiones[1]} />
+        </svg>
+      </g></svg></div>
+  </div>`;
+}
+
 function EditorDimensionBloque({ item, pruebaId, origen, regiones, setRegiones, activa, activar, onActualizado, cerrar }) {
   const [firma, setFirma] = useState("");
   const [ocupado, setOcupado] = useState(false);
+  useAvisoBorrador(true, ocupado);
   const [mensaje, setMensaje] = useState("");
   const vigente = useRef("");
   vigente.current = JSON.stringify(regiones.map(r => r.bbox));
@@ -1365,7 +1448,17 @@ function EditorDimensionBloque({ item, pruebaId, origen, regiones, setRegiones, 
       .then(r => { if (vivo) setFirma(r.firma); }).catch(e => { if (vivo) setMensaje(e.message); });
     return () => { vivo = false; vigente.current = "cerrado"; };
   }, []);
-  function modificar(i, cambios) { setRegiones(rs => rs.map((r,j) => i === j ? {...r, ...cambios} : r)); }
+  function modificar(i, cambios) { setRegiones(rs => rs.map((r,j) => i === j ? {...r,
+    ...(cambios.bbox ? {candidatos:[],giro:0,textoAutomatico:null} : {}), ...cambios} : r)); }
+  function elegirOrientacion(i, grados) {
+    const r = regiones[i];
+    const propuesta = propuestaTextoOrientacion({candidatos_orientacion:r.candidatos},grados);
+    if (propuesta.texto && r.texto && r.texto !== r.textoAutomatico && r.texto !== propuesta.texto &&
+        !window.confirm("Hay texto escrito manualmente. ¿Sustituirlo por esta lectura?")) return;
+    modificar(i,{giro:propuesta.angulo,confirmado:false,
+      ...(propuesta.texto ? {texto:propuesta.texto,textoAutomatico:propuesta.texto} : {})});
+    if (!propuesta.texto) setMensaje("No hay lectura para este giro. Pulsa Releer esta región para comparar orientaciones.");
+  }
   async function releer(i) {
     const clave = vigente.current;
     setOcupado(true); setMensaje("");
@@ -1374,7 +1467,8 @@ function EditorDimensionBloque({ item, pruebaId, origen, regiones, setRegiones, 
         bbox:regiones[i].bbox, exacta:true, releer:true});
       if (clave !== vigente.current) { setMensaje("La región cambió: vuelve a releerla."); return; }
       if (firma !== r.firma) throw new Error("El resultado cambió. Cierra este editor y selecciona de nuevo el bloque.");
-      modificar(i, {texto:r.texto, confirmado:false});
+      modificar(i, {texto:r.texto, textoAutomatico:r.texto, confirmado:false,
+        candidatos:r.candidatos_orientacion || [], giro:r.orientacion_grados || 0});
       setMensaje(r.orientacion_dudosa ? "Orientación dudosa: revisa el texto antes de confirmarlo." : "Lectura propuesta; confirma su contenido.");
     } catch(e) { setMensaje(e.message); } finally { setOcupado(false); }
   }
@@ -1399,6 +1493,15 @@ function EditorDimensionBloque({ item, pruebaId, origen, regiones, setRegiones, 
     ${regiones.map((r,i) => html`<div key=${i} class="zona-dimension-fila">
       <button type="button" class="boton" aria-pressed=${activa===i} disabled=${ocupado} onClick=${()=>activar(i,r.bbox)}>Editar región ${i+1}</button>
       <small> ${r.bbox.join(", ")} · ${r.confirmado ? "Confirmada para guardar" : "Pendiente de confirmar"}</small>
+      <${VistaRecorteZona} item=${item} bbox=${r.bbox} grados=${r.giro || 0} />
+      <div class="acciones-tabla">
+        <button type="button" class="boton" disabled=${ocupado} onClick=${()=>elegirOrientacion(i,(r.giro || 0)-90)}>↶ 90°</button>
+        <span>${r.giro || 0}°</span>
+        <button type="button" class="boton" disabled=${ocupado} onClick=${()=>elegirOrientacion(i,(r.giro || 0)+90)}>↷ 90°</button>
+      </div>
+      <div class="lista-candidatos-orientacion">${(r.candidatos || []).map(c=>html`<button type="button" class="boton candidato-orientacion"
+        disabled=${ocupado} aria-pressed=${(r.giro || 0)===c.grados} onClick=${()=>elegirOrientacion(i,c.grados)}>
+        <strong>${c.grados}° · ${(c.confianza*100).toFixed(1)}%</strong><span>${c.texto || "Sin lectura"}</span></button>`)}</div>
       <div class="acciones-tabla">${["X","Y","Ancho","Alto"].map((label,k)=>html`<label>${label}<input type="number" class="campo"
         value=${r.bbox[k]} disabled=${ocupado} min=${k<2?0:2} onChange=${e=>{
           const b=[...r.bbox]; b[k]=Math.round(Number(e.target.value));
@@ -1406,6 +1509,13 @@ function EditorDimensionBloque({ item, pruebaId, origen, regiones, setRegiones, 
           if (!Number.isFinite(b[k]) || b[0]<0 || b[1]<0 || b[2]<2 || b[3]<2 || b[0]+b[2]>w || b[1]+b[3]>h) return;
           modificar(i,{bbox:b,confirmado:false}); activar(i,b);
         }} /></label>`)}</div>
+      <div class="acciones-tabla" aria-label="Mover bloque sin cambiar su tamaño">
+        <span>Mover región · 5 px</span>${[["←",-5,0],["↑",0,-5],["↓",0,5],["→",5,0]].map(([flecha,dx,dy])=>html`
+          <button type="button" class="boton" disabled=${ocupado} onClick=${()=>{
+            const b=[...r.bbox], [w,h]=item.resultado_ocr.dimensiones;
+            b[0]=Math.max(0,Math.min(w-b[2],b[0]+dx)); b[1]=Math.max(0,Math.min(h-b[3],b[1]+dy));
+            modificar(i,{bbox:b,confirmado:false}); activar(i,b);
+          }}>${flecha}</button>`)}</div>
       <button type="button" class="boton" disabled=${ocupado || !firma} onClick=${()=>releer(i)}>Releer esta región</button>
       <textarea class="campo mono" rows="3" value=${r.texto} disabled=${ocupado} maxLength="8192"
         placeholder="Relee o escribe el texto exacto de esta región" onChange=${e=>modificar(i,{texto:e.target.value,confirmado:false})} />
@@ -1416,21 +1526,23 @@ function EditorDimensionBloque({ item, pruebaId, origen, regiones, setRegiones, 
       onClick=${guardar}>Guardar y reemplazar bloque original</button>
     <button type="button" class="boton" disabled=${ocupado} onClick=${cerrar}>Cancelar ajuste</button>
     <p role="status">${ocupado ? "Procesando…" : mensaje}</p>
-    <small>Podrás deshacer desde “Deshacer última edición”. No se entrena automáticamente.</small>
+    <small>Los giros de este recorte son de vista y ayudan a elegir el texto; no giran la foto guardada ni entrenan automáticamente. Podrás deshacer desde “Deshacer última edición”.</small>
   </section>`;
 }
 
 function SelectorRegion({ item, valor, onChange, onSelectText, giroVista = 0, panelTexto = null,
+  textoRegion = "", onTextoRegion,
   panelCorreccion = null, correccionAbierta = false, onSeleccionarRegion,
   pruebaId = null, onZonaActualizada = null }) {
   const [zoom, setZoom] = useState(100);
   const [modo, setModo] = useState(panelTexto ? "mover" : "seleccionar");
+  const [panelActivo, setPanelActivo] = useState("texto");
   const [origenBloque, setOrigenBloque] = useState(null);
   const [regionesBloque, setRegionesBloque] = useState([]);
   const [regionActiva, setRegionActiva] = useState(0);
   function cambiarCaja(b) {
     onChange(b);
-    if (modo === "ajustar" && origenBloque && b) setRegionesBloque(rs=>rs.map((r,i)=>i===regionActiva ? {...r,bbox:b,confirmado:false} : r));
+    if (modo === "ajustar" && origenBloque && b) setRegionesBloque(rs=>rs.map((r,i)=>i===regionActiva ? {...r,bbox:b,confirmado:false,candidatos:[],giro:0,textoAutomatico:null} : r));
   }
   useEffect(() => { if (correccionAbierta) setModo("mover"); }, [correccionAbierta]);
   const scrollRef = useRef(null);
@@ -1528,12 +1640,14 @@ function SelectorRegion({ item, valor, onChange, onSelectText, giroVista = 0, pa
       <button type="button" class="boton" onClick=${() => setZoom(Math.max(100, zoom - 25))}>−</button>
       <button type="button" class="boton" onClick=${() => setZoom(Math.min(600, zoom + 25))}>+</button>
       <button type="button" class="boton" onClick=${() => { setZoom(100); scrollRef.current?.scrollTo(0, 0); }}>Ajustar a pantalla</button>
-      <button type="button" class="boton" aria-pressed=${modo === "seleccionar"} onClick=${() => { setModo("seleccionar"); onSeleccionarRegion?.(); }}>Seleccionar texto</button>
+      <button type="button" class="boton" aria-pressed=${modo === "seleccionar"} onClick=${() => { setModo("seleccionar");setPanelActivo("texto"); onSeleccionarRegion?.(); }}>Seleccionar texto</button>
       ${pruebaId && html`<button type="button" class="boton" aria-pressed=${modo === "unir"}
-        onClick=${() => { setModo("unir"); onChange(null); onSeleccionarRegion?.(); }}>Unir bloques</button>`}
+        onClick=${() => { setModo("unir");setPanelActivo("unir"); onChange(null); onSeleccionarRegion?.(); }}>Unir bloques</button>`}
       <button type="button" class="boton" aria-pressed=${modo === "mover"} onClick=${() => setModo("mover")}>Mover imagen</button>
       ${pruebaId && html`<button type="button" class="boton" aria-pressed=${modo === "ajustar"}
-        onClick=${()=>{setModo("ajustar");setOrigenBloque(null);setRegionesBloque([]);onChange(null);onSeleccionarRegion?.();}}>Ajustar / dividir bloque</button>`}
+        onClick=${()=>{setModo("ajustar");if (!origenBloque) {setRegionesBloque([]);onChange(null);} onSeleccionarRegion?.();}}>Ajustar / dividir bloque</button>`}
+      ${pruebaId && html`<button type="button" class="boton"
+        onClick=${()=>{setModo("ajustar");onSeleccionarRegion?.();}}>Mover bloque</button>`}
       ${modo === "ajustar" && !origenBloque && html`<small>Pulsa el bloque OCR que deseas modificar.</small>`}
       <small>Amplía con la rueda. Selecciona una región o cambia a Mover imagen para desplazarte.</small>
     </div>
@@ -1563,9 +1677,7 @@ function SelectorRegion({ item, valor, onChange, onSelectText, giroVista = 0, pa
             }
             if (modo === "seleccionar") return;
             if (modo !== "unir") {
-              if (pruebaId && linea.edicion_zona) {
-                setModo("unir"); onChange([...linea.bbox]); onSeleccionarRegion?.();
-              } else onSelectText?.(linea);
+              onSelectText?.(linea);
               return;
             }
             const b = linea.bbox, a = valor;
@@ -1578,7 +1690,7 @@ function SelectorRegion({ item, valor, onChange, onSelectText, giroVista = 0, pa
           style=${estiloCaja(anotacion.bbox)} title=${`Manual: ${anotacion.texto_correcto}`} />`)}
       ${(vistaPrevia || valor) && html`<span class="caja-region caja-seleccion"
         style=${estiloCaja(vistaPrevia || valor)} />`}
-      ${modo === "ajustar" && regionesBloque.map((r,i)=>html`<span class="caja-region caja-borrador-dimension"
+      ${origenBloque && regionesBloque.map((r,i)=>html`<span class="caja-region caja-borrador-dimension"
         style=${estiloCaja(r.bbox)}>${i+1}</span>`)}
       ${valor && modo !== "mover" && [[0,0],[1,0],[0,1],[1,1]].map(([cx,cy]) => html`
         <button type="button" class="tirador-zona" aria-label="Ajustar esquina de región"
@@ -1597,17 +1709,19 @@ function SelectorRegion({ item, valor, onChange, onSelectText, giroVista = 0, pa
       <span><i class="leyenda-caja seleccion"></i>Selección actual</span>
     </div>
     </div>
-    ${pruebaId && modo === "ajustar" && origenBloque && html`<${EditorDimensionBloque}
+    ${pruebaId && origenBloque && html`<${EditorDimensionBloque}
       key=${`${item.id}-${origenBloque.join(",")}`} item=${item} pruebaId=${pruebaId} origen=${origenBloque}
       regiones=${regionesBloque} setRegiones=${setRegionesBloque} activa=${regionActiva}
       activar=${(i,b)=>{setRegionActiva(i);onChange(b);}} onActualizado=${onZonaActualizada}
-      cerrar=${()=>{setOrigenBloque(null);setRegionesBloque([]);onChange(null);setModo("unir");}} />`}
-    ${pruebaId && modo !== "mover" && modo !== "ajustar" && html`<${EditorUnionZona} key=${item.id} item=${item}
+      cerrar=${()=>{setOrigenBloque(null);setRegionesBloque([]);onChange(null);setModo("unir");setPanelActivo("unir");}} />`}
+    ${pruebaId && !origenBloque && !correccionAbierta && panelActivo === "unir" && html`<${EditorUnionZona} key=${item.id} item=${item}
       pruebaId=${pruebaId} valor=${valor} onChange=${onChange} onActualizado=${onZonaActualizada} />`}
-    ${panelTexto && modo === "seleccionar" && html`<aside class="editor-region-form" aria-label="Texto omitido">
-      <button type="button" class="boton" onClick=${() => setModo("mover")}>Cerrar texto omitido</button>
+    ${panelTexto && !origenBloque && !correccionAbierta && panelActivo === "texto" && (modo === "seleccionar" || (modo === "mover" && valor)) && html`<aside class="editor-region-form" aria-label="Texto omitido">
+      <button type="button" class="boton" onClick=${() => {if (!textoRegion || window.confirm("¿Cerrar la selección? El texto escrito se conservará hasta cambiar de imagen.")) {onChange(null);setModo("mover");}}}>Cerrar texto omitido</button>
+      ${valor && html`<${HerramientasRegion} key=${`${item.id}-${valor.join(",")}`} item=${item} bbox=${valor} pruebaId=${pruebaId}
+        texto=${textoRegion} onTexto=${onTextoRegion} />`}
       ${panelTexto}</aside>`}
-    ${correccionAbierta && html`<section class="editor-region-form" aria-label="Corregir texto reconocido">${panelCorreccion}</section>`}
+    ${correccionAbierta && !origenBloque && html`<section class="editor-region-form" aria-label="Corregir texto reconocido">${panelCorreccion}</section>`}
     </div>
   </div>`;
 }
@@ -1813,6 +1927,9 @@ function PanelImagen({ titulo, item, vacio, onSelectText, edicionActiva, rotacio
 }
 
 function VistaDetalle({ nombre }) {
+  const [ocultarVerificadas, setOcultarVerificadas] = useState(false);
+  const [guardandoImagen, setGuardandoImagen] = useState(false);
+  const [avisoNavegacion, setAvisoNavegacion] = useState("");
   const [detalle, setDetalle, errorDetalle] = useApi(`/api/pruebas/${encodeURIComponent(nombre)}`, [nombre]);
   const [config, , errorConfig] = useApi("/api/config");
   const [aprendizaje, setAprendizaje] = useApi("/api/aprendizaje", [nombre]);
@@ -1844,6 +1961,7 @@ function VistaDetalle({ nombre }) {
     const imagenes = detalle?.imagenes?.length ? detalle.imagenes
       : [detalle?.etiqueta, detalle?.referencia].filter(Boolean);
     const primeraImagen = imagenes[0];
+    setOcultarVerificadas(false); setAvisoNavegacion("");
     const ocr = primeraImagen?.resultado_ocr || {};
     const unidades = unidadesOcr(ocr);
     const primero = unidades[0];
@@ -1871,8 +1989,10 @@ function VistaDetalle({ nombre }) {
   const comp = detalle.comparacion;
   const imagenesDetalle = detalle.imagenes?.length ? detalle.imagenes
     : [detalle.etiqueta, detalle.referencia].filter(Boolean);
-  const imagenSeleccionada = imagenesDetalle.find((imagen) => imagen.id === imagenId)
-    || imagenesDetalle[0];
+  const imagenesVisibles = imagenesParaRevisar(imagenesDetalle, ocultarVerificadas);
+  const imagenSeleccionada = imagenesVisibles.find((imagen) => imagen.id === imagenId)
+    || imagenesVisibles[0];
+  const indiceImagen = imagenesVisibles.findIndex(i => i.id === imagenSeleccionada?.id);
   const ocrSeleccionado = imagenSeleccionada?.resultado_ocr || {};
   const qrsDetalle = imagenesDetalle.flatMap((imagen) =>
     (imagen.resultado_ocr?.qrs || []).map((qr) => ({ ...qr, imagenNombre: imagen.nombre,
@@ -1888,10 +2008,22 @@ function VistaDetalle({ nombre }) {
     Object.entries(regla.alcance || {}).every(([clave, valor]) =>
       String(detalle[clave] || "") === String(valor)));
 
-  function cambiarImagen(nuevoId, centrarVisor = false) {
+  function permitirCambioImagen() {
+    const estado = {pendiente:false, ocupado:false};
+    window.dispatchEvent(new CustomEvent("ocr-consultar-borradores", {detail:estado}));
+    if (guardandoCorreccion || guardandoRegion || guardandoOrientacion || guardandoImagen || estado.ocupado) {
+      setAvisoNavegacion("Espera a que termine la operación antes de cambiar de imagen."); return false;
+    }
+    const borrador = textoCorrecto !== textoVisible(unidadSeleccionada) || Boolean(textoRegion.trim()) || Boolean(region) || estado.pendiente;
+    if (borrador && !window.confirm("Hay cambios sin guardar en esta imagen. ¿Descartarlos y continuar?")) return false;
+    setAvisoNavegacion(""); return true;
+  }
+  function cambiarImagen(nuevoId, centrarVisor = false, confirmado = false, lista = imagenesDetalle) {
+    if (!confirmado && nuevoId === imagenSeleccionada?.id) return true;
+    if (!confirmado && !permitirCambioImagen()) return false;
     setGiroRecorte(null); setMensajeOrientacion("");
     setImagenId(nuevoId);
-    const imagen = imagenesDetalle.find((item) => item.id === nuevoId);
+    const imagen = lista.find((item) => item.id === nuevoId);
     const ocr = imagen?.resultado_ocr || {};
     const primera = unidadesOcr(ocr)[0];
     const valor = textoVisible(primera);
@@ -1903,7 +2035,7 @@ function VistaDetalle({ nombre }) {
     setRoiOcr(null);
     setTextoRegion("");
     setResultadoRegion(null);
-    if (!revisionCompletada) {
+    if (!revisionCompletada && nuevoId) {
       setModoEdicion(true);
       window.setTimeout(() => (centrarVisor
         ? document.getElementById(`visor-imagen-${nuevoId}`)
@@ -1911,8 +2043,30 @@ function VistaDetalle({ nombre }) {
         behavior: "smooth", block: "start",
       }), 0);
     }
+    return true;
   }
+  function alternarVerificadas() {
+    const nuevo = !ocultarVerificadas;
+    const visibles = imagenesParaRevisar(imagenesDetalle, nuevo);
+    if (!visibles.some(i => i.id === imagenSeleccionada?.id)) {
+      if (!permitirCambioImagen()) return;
+      cambiarImagen(visibles[0]?.id || "", false, true);
+    }
+    setOcultarVerificadas(nuevo);
+  }
+  const controlesImagen = html`<nav class="navegacion-imagenes" aria-label="Navegar imágenes">
+    <button type="button" class="boton" disabled=${indiceImagen <= 0 || guardandoImagen}
+      onClick=${()=>cambiarImagen(imagenesVisibles[indiceImagen-1].id)}>← Anterior</button>
+    <span role="status">${imagenesVisibles.length ? `Imagen ${indiceImagen+1} de ${imagenesVisibles.length}${ocultarVerificadas ? " sin verificar" : ""}` : "No hay imágenes visibles"}</span>
+    <button type="button" class="boton" disabled=${indiceImagen < 0 || indiceImagen >= imagenesVisibles.length-1 || guardandoImagen}
+      onClick=${()=>cambiarImagen(imagenesVisibles[indiceImagen+1].id)}>Siguiente →</button>
+    <button type="button" class="boton" aria-pressed=${ocultarVerificadas} disabled=${guardandoImagen}
+      onClick=${alternarVerificadas}>${ocultarVerificadas ? "Mostrar todas las imágenes" : "Ocultar imágenes verificadas"}</button>
+    ${avisoNavegacion && html`<p role="alert">${avisoNavegacion}</p>`}
+    ${!imagenesVisibles.length && html`<p>${imagenesDetalle.length ? "Todas las imágenes están verificadas. Puedes mostrarlas nuevamente." : "Esta carpeta no contiene imágenes."}</p>`}
+  </nav>`;
   function seleccionarUnidad(imagen, unidad) {
+    if (imagen?.id !== imagenSeleccionada?.id && !permitirCambioImagen()) return;
     setGiroRecorte(null); setMensajeOrientacion("");
     const candidatas = unidadesOcr(imagen?.resultado_ocr || {});
     const exacta = candidatas.find((item) => firmaUnidad(item) === firmaUnidad(unidad)) || candidatas[0];
@@ -1940,11 +2094,22 @@ function VistaDetalle({ nombre }) {
         texto_ocr: textoUnidad(unidadSeleccionada),
         texto_correcto: textoCorrecto,
         bbox: unidadSeleccionada?.bbox || null,
-        accion: accionSupervision,
+        accion: accionSupervision === "aceptar" && textoCorrecto !== textoVisible(unidadSeleccionada) ? "corregir" : accionSupervision,
       });
-      setResultadoCorreccion({ ok: true, resultado });
       const actualizado = await pedirJSON(`/api/pruebas/${encodeURIComponent(nombre)}`);
       setDetalle(actualizado);
+      const imagenActualizada = (actualizado.imagenes || []).find(i=>i.id===imagenSeleccionada?.id);
+      const guardada = unidadesOcr(imagenActualizada?.resultado_ocr || {}).find(u=>
+        u.tipo_unidad === unidadSeleccionada?.tipo_unidad &&
+        JSON.stringify(u.bbox || null) === JSON.stringify(unidadSeleccionada?.bbox || null));
+      if (!["ilegible","no_es_campo"].includes(accionSupervision)) {
+        if (!guardada || textoVisible(guardada).trim() !== textoCorrecto.trim()) {
+          throw new Error("El servidor respondió, pero la lectura recargada no coincide con tu corrección. Conservamos tu borrador; no la damos por confirmada.");
+        }
+        setUnidadId(guardada.unidad_id);
+        setTextoCorrecto(textoVisible(guardada));
+      }
+      setResultadoCorreccion({ ok: true, resultado });
       setAprendizaje(await pedirJSON("/api/aprendizaje"));
     } catch (error) {
       setResultadoCorreccion({ ok: false, mensaje: error.message });
@@ -2053,16 +2218,27 @@ function VistaDetalle({ nombre }) {
     }
   }
   async function verificarImagen(imagen) {
+    if (guardandoImagen) return;
+    if (ocultarVerificadas && !permitirCambioImagen()) return;
+    setGuardandoImagen(true);
     setResultadoCorreccion(null);
     try {
       const resultado = await enviarJSON("/api/imagenes/verificar", {
         prueba_id: detalle.id, imagen_id: imagen.id,
       });
       setResultadoCorreccion({ ok: true, imagenVerificada: true, resultado });
-      setDetalle(await pedirJSON(`/api/pruebas/${encodeURIComponent(nombre)}`));
+      const actualizado = await pedirJSON(`/api/pruebas/${encodeURIComponent(nombre)}`);
+      if (ocultarVerificadas) {
+        const lista = actualizado.imagenes?.length ? actualizado.imagenes : [actualizado.etiqueta, actualizado.referencia].filter(Boolean);
+        const restantes = imagenesParaRevisar(lista, true);
+        const indice = lista.findIndex(i=>i.id===imagen.id);
+        const siguiente = lista.slice(indice+1).find(i=>restantes.some(r=>r.id===i.id)) || restantes[restantes.length-1];
+        cambiarImagen(siguiente?.id || "", false, true, lista);
+      }
+      setDetalle(actualizado);
     } catch (error) {
       setResultadoCorreccion({ ok: false, mensaje: error.message });
-    }
+    } finally { setGuardandoImagen(false); }
   }
   async function atenderAlerta(alerta) {
     try {
@@ -2311,7 +2487,8 @@ function VistaDetalle({ nombre }) {
       <button type="button" class="boton boton-compacto" onClick=${() => atenderAlerta(alerta)}>
         Marcar atendido</button></div>`)}
 
-    ${modoEdicion && !revisionCompletada ? html`<div class="tarjeta aprendizaje-panel">
+    ${controlesImagen}
+    ${modoEdicion && !revisionCompletada && imagenSeleccionada ? html`<div class="tarjeta aprendizaje-panel">
       <div>
         <p class="sobrelinea">APRENDIZAJE SUPERVISADO</p>
         <h3 class="titulo-seccion">Corregir una lectura</h3>
@@ -2326,6 +2503,7 @@ function VistaDetalle({ nombre }) {
         onSelectText=${seleccionarUnidad} onRotate=${rotarImagen} onMarkNoData=${marcarSinDatos}
         onVerifyImage=${verificarImagen}
         visorRegion=${html`<${SelectorRegion} item=${imagenSeleccionada} valor=${region} onChange=${setRegion}
+          textoRegion=${textoRegion} onTextoRegion=${setTextoRegion}
           pruebaId=${detalle.id} onZonaActualizada=${async () => setDetalle(await pedirJSON(`/api/pruebas/${encodeURIComponent(nombre)}`))}
           onSelectText=${(unidad) => seleccionarUnidad(imagenSeleccionada, unidad)}
           correccionAbierta=${mostrarCorreccion} onSeleccionarRegion=${() => setMostrarCorreccion(false)}
@@ -2346,6 +2524,9 @@ function VistaDetalle({ nombre }) {
             onClick=${() => descartarTexto(d, true)}>Deshacer descarte</button></div>`)}
       ${mostrarCorreccion && unidadesCorregibles.length ? html`
         <form id="formulario-correccion-activa" class="formulario-correccion" onSubmit=${confirmarCorreccion}>
+          ${!recorteSeleccionado && unidadSeleccionada?.bbox && html`<${HerramientasRegion}
+            key=${`${imagenSeleccionada.id}-${unidadSeleccionada.bbox.join(",")}`} item=${imagenSeleccionada}
+            bbox=${unidadSeleccionada.bbox} texto=${textoCorrecto} onTexto=${setTextoCorrecto} pruebaId=${detalle.id} />`}
           ${recorteSeleccionado && html`<div class="orientacion-regional-editor">
             <strong>${recorteSeleccionado.orientacion_dudosa ? "Orientación dudosa · revisa esta región" : "Orientación de esta región"}</strong>
             <img class="preview-region-orientacion" alt="Recorte seleccionado en la orientación elegida"
@@ -2373,7 +2554,7 @@ function VistaDetalle({ nombre }) {
           <label>Imagen
             <select class="campo" value=${imagenSeleccionada?.id || ""}
               onChange=${(e) => cambiarImagen(e.target.value)}>
-              ${imagenesDetalle.map((imagen) => html`<option key=${imagen.id} value=${imagen.id}>
+              ${imagenesVisibles.map((imagen) => html`<option key=${imagen.id} value=${imagen.id}>
                 ${imagen.nombre || imagen.ruta.split(/[\\/]/).pop()} · ${(imagen.rol || "imagen").replaceAll("_", " ")}
               </option>`)}
             </select>
@@ -2496,8 +2677,8 @@ function VistaDetalle({ nombre }) {
         <div class="mensaje-error" role="alert">${resultadoCorreccion.resultado.advertencia_excel}</div>`}
 
       <div class="separador-panel"></div>
-      ${historialAprendizaje.length > 0 && html`<div class="historial-aprendizaje">
-        <h3 class="titulo-seccion">Lista de aprendizaje supervisado</h3>
+      ${historialAprendizaje.length > 0 && html`<details class="historial-aprendizaje">
+        <summary>Lista de aprendizaje supervisado (${historialAprendizaje.length}) · desplegar / ocultar</summary>
         <p class="subtitulo-seccion">Incluye correcciones OCR y textos omitidos guardados manualmente.</p>
         ${historialAprendizaje.map((item) => html`<div key=${item.id} class="evidencia-aprendizaje">
           <span class="chip neutro">${item.tipo}</span>
@@ -2505,7 +2686,7 @@ function VistaDetalle({ nombre }) {
           ${item.original && item.original !== item.correcto && html`<small class="mono">Antes: ${item.original}</small>`}
           <small>${item.imagen}${item.bbox ? ` · región ${item.bbox.join(", ")}` : ""}</small>
         </div>`)}
-      </div>`}
+      </details>`}
     </div>` : html`<div class="tarjeta modo-lectura">
       <strong>${revisionCompletada ? "Revisión completada" : "Modo de consulta"}</strong>
       <p>${revisionCompletada
@@ -2514,7 +2695,7 @@ function VistaDetalle({ nombre }) {
     </div>`}
 
     <div class="selector-imagenes" aria-label="Imágenes del ID">
-      ${imagenesDetalle.map((imagen) => {
+      ${imagenesVisibles.map((imagen) => {
         const estadoVisual = (imagen.revision_sin_datos || imagen.estado_imagen === "revisada_sin_datos")
           ? "sin-texto" : imagen.estado_imagen === "verificada" ? "verificada" : "pendiente";
         const etiquetaEstado = estadoVisual === "sin-texto" ? "Sin texto · revisada"

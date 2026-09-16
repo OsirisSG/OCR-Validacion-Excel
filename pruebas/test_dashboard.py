@@ -368,9 +368,8 @@ def test_detalle_e_imagen_portable_y_restringida():
         "texto_ocr": etiqueta["resultado_ocr"]["tokens"][0]["texto"],
         "texto_correcto": etiqueta["resultado_ocr"]["tokens"][0]["texto"],
     })
-    # En una base local persistente la revisión puede haberse completado antes;
-    # ambos estados rechazan correctamente la escritura inválida.
-    assert correccion_identica.status_code in {400, 409}
+    # Reconfirmar es válido; una revisión cerrada aún puede bloquearlo.
+    assert correccion_identica.status_code in {200, 409}
 
     fuera = cliente.post("/api/aprendizaje/regiones", json={
         "prueba_id": fila["id"], "imagen_id": detalle.json()["imagenes"][0]["id"],
@@ -406,7 +405,7 @@ def test_banco_externo_es_visible_y_restringido():
         "prueba_id": exacta["id"], "texto_ocr": token,
         "texto_correcto": token,
     })
-    assert correccion_identica.status_code == 400
+    assert correccion_identica.status_code == 200
 
 
 def test_region_externa_se_guarda_como_aprendizaje_y_actualiza_excel(

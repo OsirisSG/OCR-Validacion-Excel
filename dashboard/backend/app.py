@@ -676,23 +676,8 @@ def _buscar_unidad_ocr(unidades: list[dict], texto: str,
 
 def _aplicar_correcciones_publicas(ocr: dict, correcciones: list[dict]) -> dict:
     """Refleja en la respuesta el texto humano sin alterar el OCR bruto guardado."""
-    salida = dict(ocr)
-    for clave in ("tokens", "lineas_texto"):
-        unidades = [dict(unidad) for unidad in ocr.get(clave, [])]
-        for unidad in unidades:
-            original = str(unidad.get("texto_original") or unidad.get("texto") or "")
-            coincidencias = [c for c in correcciones
-                             if str(c.get("texto_ocr") or "") == original and
-                             _bbox_igual(c.get("bbox"), unidad.get("bbox"))]
-            if coincidencias:
-                unidad.setdefault("texto_original", original)
-                unidad["texto"] = coincidencias[-1]["texto_correcto"]
-                unidad["confirmado_manualmente"] = True
-        salida[clave] = unidades
-    lineas = salida.get("lineas_texto") or []
-    if lineas and any(linea.get("confirmado_manualmente") for linea in lineas):
-        salida["texto_completo"] = "\n".join(str(linea.get("texto") or "") for linea in lineas)
-    return salida
+    from utilidades.correcciones_ocr import aplicar_correcciones
+    return aplicar_correcciones(ocr, correcciones)
 
 
 def _regenerar_excel(resultado: dict) -> None:
@@ -1207,20 +1192,22 @@ def corregir_lectura(solicitud: SolicitudCorreccion):
         item = fila.get(solicitud.campo)
     if not item or not item.get("resultado_ocr"):
         raise HTTPException(400, f"La prueba no tiene imagen de {solicitud.campo}.")
-    ocr = item["resultado_ocr"]
-    unidades = list(ocr.get("tokens", [])) + list(ocr.get("lineas_texto", []))
-    if ocr.get("texto_completo"):
-        unidades.append({"texto": ocr["texto_completo"], "bbox": None})
-    token = _buscar_unidad_ocr(unidades, solicitud.texto_ocr, solicitud.bbox)
-    if token is None:
-        raise HTTPException(
-            400, "La lectura OCR no coincide de forma única; vuelve a seleccionarla en la imagen.")
     raiz = _resolver_raiz_datos(datos)
     if raiz is None:
         raise HTTPException(503, "La raíz de imágenes no está disponible en este equipo.")
     ruta_local = _resolver_imagen(str(item["ruta"]), datos, raiz)
+    ocr = _aplicar_correcciones_publicas(item["resultado_ocr"], gestor.listar_correcciones_texto([ruta_local]))
+    ocr = gestor.filtrar_no_texto(ocr, ruta_local)
+    unidades = list(ocr.get("tokens", [])) + list(ocr.get("lineas_texto", []))
+    if ocr.get("texto_completo"):
+        unidades.append({"texto": ocr["texto_completo"], "bbox": None,
+                         "texto_original": ocr.get("texto_completo_original") or ocr["texto_completo"]})
+    token = _buscar_unidad_ocr(unidades, solicitud.texto_ocr, solicitud.bbox)
+    if token is None:
+        raise HTTPException(
+            400, "La lectura OCR no coincide de forma única; vuelve a seleccionarla en la imagen.")
     try:
-        correcto = (solicitud.texto_ocr if solicitud.accion == "aceptar"
+        correcto = (str(token.get("texto") or solicitud.texto_ocr) if solicitud.accion == "aceptar"
                     else solicitud.texto_correcto)
         metadatos_supervision = {k: fila.get(k) for k in
             ("tipo_st", "module_version", "temperature_condition", "inflator_type")}
@@ -1230,7 +1217,16 @@ def corregir_lectura(solicitud: SolicitudCorreccion):
             "orientacion_region_grados": token.get("orientacion_region_grados"),
             "marco_region": token.get("marco_region"),
         })
-        if solicitud.accion in {"aceptar", "ilegible", "no_es_campo", "guardar_sin_entrenar"}:
+        if token.get("edicion_zona") and solicitud.accion not in {"ilegible", "no_es_campo"}:
+            from utilidades.edicion_zonas import guardar_bloque
+            if not correcto.strip():
+                raise ValueError("Escribe o confirma el texto del bloque.")
+            if correcto != token.get("texto"):
+                with gestor._conectar() as con:
+                    guardar_bloque(con, hash_archivo(ruta_local), ocr, list(token["bbox"]),
+                                   [{"bbox": list(token["bbox"]), "texto": correcto}])
+            resultado = {"registrada": True, "tipo": "confirmacion_bloque", "entrenamiento": None}
+        elif solicitud.accion in {"ilegible", "no_es_campo"}:
             muestra = gestor.registrar_muestra_visual(
                 ruta_local, solicitud.prueba_id, solicitud.texto_ocr, correcto,
                 token.get("bbox"), accion=solicitud.accion, entrenable=False,
@@ -1244,7 +1240,7 @@ def corregir_lectura(solicitud: SolicitudCorreccion):
             if not correcto.strip():
                 raise ValueError("Escribe el texto correcto antes de confirmar.")
             resultado = gestor.registrar_correccion(
-                solicitud.texto_ocr, correcto, ruta_imagen=str(ruta_local),
+                str(token.get("texto_original") or token.get("texto") or solicitud.texto_ocr), correcto, ruta_imagen=str(ruta_local),
                 bbox=token.get("bbox"), fuente="dashboard", caso_id=solicitud.prueba_id,
                 accion=solicitud.accion,
                 entrenar_visual=solicitud.accion == "confirmar_entrenar",
@@ -1721,17 +1717,19 @@ def corregir_prueba_externa(solicitud: SolicitudCorreccionExterna):
                "parcial" if fila.get("tokens") or fila.get("lineas_texto") else "por_revisar")
     if gestor.estado_revision("externa", solicitud.prueba_id, inicial)["estado"] == "completada":
         raise HTTPException(409, "La revisión está completada. Reábrela antes de editar.")
+    fila = _aplicar_correcciones_publicas(fila, gestor.listar_correcciones_texto([fila["ruta"]]))
     unidades = list(fila.get("tokens", [])) + list(fila.get("lineas_texto", []))
     if fila.get("texto_completo"):
-        unidades.append({"texto": fila["texto_completo"], "bbox": None})
+        unidades.append({"texto": fila["texto_completo"], "bbox": None,
+                         "texto_original": fila.get("texto_completo_original") or fila["texto_completo"]})
     token = _buscar_unidad_ocr(unidades, solicitud.texto_ocr, solicitud.bbox)
     if token is None:
         raise HTTPException(
             400, "La lectura OCR no coincide de forma única; vuelve a seleccionarla.")
     try:
-        correcto = (solicitud.texto_ocr if solicitud.accion == "aceptar"
+        correcto = (str(token.get("texto") or solicitud.texto_ocr) if solicitud.accion == "aceptar"
                     else solicitud.texto_correcto)
-        if solicitud.accion in {"aceptar", "ilegible", "no_es_campo", "guardar_sin_entrenar"}:
+        if solicitud.accion in {"ilegible", "no_es_campo"}:
             muestra = gestor.registrar_muestra_visual(
                 fila["ruta"], solicitud.prueba_id, solicitud.texto_ocr, correcto,
                 token.get("bbox"), accion=solicitud.accion, entrenable=False,
@@ -1744,7 +1742,7 @@ def corregir_prueba_externa(solicitud: SolicitudCorreccionExterna):
             if not correcto.strip():
                 raise ValueError("Escribe el texto correcto antes de confirmar.")
             resultado = gestor.registrar_correccion(
-                solicitud.texto_ocr, correcto, ruta_imagen=fila["ruta"],
+                str(token.get("texto_original") or token.get("texto") or solicitud.texto_ocr), correcto, ruta_imagen=fila["ruta"],
                 bbox=token.get("bbox"), fuente="dashboard_externo",
                 caso_id=solicitud.prueba_id, accion=solicitud.accion,
                 entrenar_visual=solicitud.accion == "confirmar_entrenar",

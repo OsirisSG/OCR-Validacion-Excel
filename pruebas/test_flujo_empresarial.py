@@ -229,7 +229,11 @@ def test_imagen_con_caja_recorta_amplia_y_reconoce(monkeypatch, tmp_path):
     assert salida["estado_imagen"] == "procesada_con_texto"
     assert salida["numero_regiones"] == 1
     assert salida["zoom_aplicado"] > 1
-    assert motor.reconocimientos == 1
+    # El OCR regional compara 0/90/180/270 para conservar alternativas y
+    # confianza por orientación en el dashboard. Por eso una región legible
+    # ejecuta cuatro lecturas base (salvo que exista una orientación forzada).
+    assert motor.reconocimientos == 4
+    assert {c["grados"] for c in salida["recortes"][0]["candidatos_orientacion"]} == {0, 90, 180, 270}
 
 
 def test_zoom_forzado_cambia_dimensiones_que_recibe_easyocr(monkeypatch, tmp_path):

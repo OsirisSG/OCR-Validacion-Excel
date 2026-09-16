@@ -4,6 +4,11 @@ Aplicación local para recorrer lotes de fotografías, extraer nomenclaturas con
 OCR, comparar etiquetas contra imágenes de referencia, generar un Excel maestro
 y consultar los resultados desde un dashboard responsivo.
 
+> **Versión corregida 2026-09-16.** Esta copia integra la base completa más el paquete
+> posterior de correcciones de dashboard, sobrescritura y orientación. Consulta
+> `README_CORRECCIONES_VERSIONES.md` y `docs/correcciones_versiones_20260916.md` antes
+> de reemplazar una instalación que ya tenga aprendizaje guardado.
+
 El procesamiento no utiliza APIs de OCR ni servicios en la nube. EasyOCR es el
 motor de producción: se mantiene una sola instancia por ejecución y usa
 CUDA/MPS cuando están disponibles, con CPU como respaldo seguro.
@@ -167,8 +172,9 @@ paquetes de imagen dependen de la plataforma.
 
 ## Inicio rápido con los datos sintéticos
 
-El repositorio incluye `datos_prueba/`, generado artificialmente y sin datos
-empresariales. Desde la raíz del proyecto ejecuta:
+Si tu copia incluye `datos_prueba/`, ese conjunto es artificial y no contiene datos
+empresariales. El ZIP de corrección no necesita esos fixtures para funcionar. Desde la
+raíz del proyecto puedes ejecutar:
 
 ```bash
 python pipeline.py "datos_prueba/Lote_Pruebas"

@@ -499,9 +499,17 @@ class GestorAprendizaje:
             existente = con.execute(
                 "SELECT * FROM muestras_visuales WHERE firma=?", (firma,)).fetchone()
         if existente:
+            vigente_entrenable = bool(entrenable and accion not in {"aceptar", "ilegible", "no_es_campo", "guardar_sin_entrenar"}
+                                      and str(texto_correcto).strip())
+            with self._conectar() as con:
+                con.execute("""UPDATE muestras_visuales SET entrenable=0, confirmada=0
+                    WHERE imagen_hash=? AND bbox_json=? AND id<>?""",
+                    (imagen_hash, json.dumps(caja), existente["id"]))
+                con.execute("UPDATE muestras_visuales SET confirmada=1, entrenable=?, creado_en=? WHERE id=?",
+                            (int(vigente_entrenable), datetime.now().isoformat(timespec="microseconds"), existente["id"]))
             return {"id": existente["id"], "ruta_recorte": existente["ruta_recorte"],
                     "bbox": caja, "accion": accion,
-                    "entrenable": bool(existente["entrenable"]), "duplicada": True}
+                    "entrenable": vigente_entrenable, "duplicada": True}
         muestra_id = uuid.uuid4().hex
         carpeta = self.directorio / "dataset_visual" / "recortes"
         carpeta.mkdir(parents=True, exist_ok=True)
@@ -514,6 +522,8 @@ class GestorAprendizaje:
                                                          "guardar_sin_entrenar"}
                          and str(texto_correcto).strip())
         with self._conectar() as con:
+            con.execute("""UPDATE muestras_visuales SET entrenable=0, confirmada=0
+                WHERE imagen_hash=? AND bbox_json=?""", (imagen_hash, json.dumps(caja)))
             con.execute("""
                 INSERT INTO muestras_visuales
                 (id, caso_id, imagen_hash, ruta_imagen, ruta_recorte, bbox_json,
@@ -761,14 +771,13 @@ class GestorAprendizaje:
         crudo, correcto = normalizar_codigo(crudo_original), normalizar_codigo(correcto_original)
         if not crudo or not correcto:
             raise ValueError("La lectura OCR y la corrección deben contener texto válido.")
-        if crudo_original == correcto_original:
-            raise ValueError("La corrección es idéntica a la lectura OCR.")
         if imagen_hash is None:
             if not ruta_imagen or not Path(ruta_imagen).is_file():
                 raise ValueError("Se requiere una imagen existente o su hash.")
             imagen_hash = hash_archivo(ruta_imagen)
         duplicada_texto = False
         duplicada_modelo = False
+        confirmado_en = datetime.now().isoformat(timespec="microseconds")
         with self._conectar() as con:
             try:
                 con.execute("""
@@ -776,9 +785,12 @@ class GestorAprendizaje:
                     (imagen_hash, ruta_imagen, texto_ocr, texto_correcto, bbox_json, fuente, creado_en)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
                 """, (imagen_hash, ruta_imagen, crudo_original, correcto_original,
-                      json.dumps(bbox), fuente, _ahora()))
+                      json.dumps(bbox), fuente, confirmado_en))
             except sqlite3.IntegrityError:
                 duplicada_texto = True
+                con.execute("""UPDATE correcciones_texto SET creado_en=?, fuente=?
+                    WHERE imagen_hash=? AND texto_ocr=? AND texto_correcto=? AND bbox_json=?""",
+                    (confirmado_en, fuente, imagen_hash, crudo_original, correcto_original, json.dumps(bbox)))
 
             # Cambios exclusivamente de espacios/saltos se conservan como
             # verdad de layout, pero no contaminan el modelo de códigos.
@@ -789,9 +801,11 @@ class GestorAprendizaje:
                         (imagen_hash, ruta_imagen, texto_ocr, texto_correcto, bbox_json, fuente, creado_en)
                         VALUES (?, ?, ?, ?, ?, ?, ?)
                     """, (imagen_hash, ruta_imagen, crudo, correcto,
-                          json.dumps(bbox), fuente, _ahora()))
+                          json.dumps(bbox), fuente, confirmado_en))
                 except sqlite3.IntegrityError:
                     duplicada_modelo = True
+                    con.execute("""UPDATE correcciones SET creado_en=? WHERE imagen_hash=?
+                        AND texto_ocr=? AND texto_correcto=?""", (confirmado_en, imagen_hash, crudo, correcto))
             else:
                 duplicada_modelo = True
         # Las correcciones quedan en cola. Tanto las reglas de normalización
@@ -1126,7 +1140,8 @@ class GestorAprendizaje:
                      for fila in vigentes.values() if fila["activo"]]
         salida["regiones_no_texto"] = descartes
         if not descartes:
-            return salida
+            from utilidades.correcciones_ocr import aplicar_correcciones
+            return aplicar_correcciones(salida, self.listar_correcciones_texto([ruta_imagen]))
         salida["_ocr_bruto"] = deepcopy(ocr)
         def excluida(unidad):
             b = unidad.get("bbox")
@@ -1157,7 +1172,8 @@ class GestorAprendizaje:
             if normalizar_codigo(c.get("normalizado") or c.get("texto", "")) not in textos_quitados-textos_vivos]
         salida["texto_completo"] = "\n".join(str(u.get("texto", "")) for u in
                                                (salida.get("lineas_texto") or salida.get("tokens") or []))
-        return salida
+        from utilidades.correcciones_ocr import aplicar_correcciones
+        return aplicar_correcciones(salida, self.listar_correcciones_texto([ruta_imagen]))
 
     def aplicar_memoria_imagen(self, tokens: list[dict],
                                ruta_imagen: str | Path | None) -> list[dict]:
@@ -1174,12 +1190,12 @@ class GestorAprendizaje:
             return [dict(token) for token in tokens]
         with self._conectar() as con:
             filas = con.execute("""
-                SELECT id, texto_ocr, texto_correcto, bbox_json, 'literal' AS origen, 0 AS prioridad
+                SELECT id, texto_ocr, texto_correcto, bbox_json, creado_en, 'literal' AS origen, 0 AS prioridad
                 FROM correcciones_texto WHERE imagen_hash=?
                 UNION ALL
-                SELECT id, texto_ocr, texto_correcto, bbox_json, 'codigo_legacy' AS origen, 1 AS prioridad
+                SELECT id, texto_ocr, texto_correcto, bbox_json, creado_en, 'codigo_legacy' AS origen, 1 AS prioridad
                 FROM correcciones WHERE imagen_hash=?
-                ORDER BY prioridad ASC, id DESC
+                ORDER BY prioridad ASC, creado_en DESC, id DESC
             """, (imagen_hash, imagen_hash)).fetchall()
         confirmadas = [{**dict(fila), "bbox": json.loads(fila["bbox_json"])}
                        for fila in filas]

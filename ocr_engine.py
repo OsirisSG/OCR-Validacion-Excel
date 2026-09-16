@@ -35,6 +35,7 @@ Preprocesamiento (orden): carga unicode-safe → búsqueda adaptativa en
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import os
@@ -964,7 +965,7 @@ def _roi_proporcional(imagen: np.ndarray, roi: dict | None) -> tuple[np.ndarray,
     return imagen[py:py + ph, px:px + pw], caja
 
 
-def _recorte_perspectiva(imagen: np.ndarray, puntos) -> np.ndarray:
+def _recorte_perspectiva(imagen: np.ndarray, puntos, devolver_matriz=False):
     """Endereza un cuadrilátero de CRAFT; usa el recorte rectangular si es degenerado."""
     pts = np.asarray(puntos, dtype=np.float32).reshape(4, 2)
     suma, diferencia = pts.sum(axis=1), np.diff(pts, axis=1).reshape(-1)
@@ -974,10 +975,74 @@ def _recorte_perspectiva(imagen: np.ndarray, puntos) -> np.ndarray:
     ancho = int(max(np.linalg.norm(br - bl), np.linalg.norm(tr - tl)))
     alto = int(max(np.linalg.norm(tr - br), np.linalg.norm(tl - bl)))
     if ancho < 2 or alto < 2:
-        return np.empty((0, 0, 3), dtype=imagen.dtype)
+        vacio = np.empty((0, 0, 3), dtype=imagen.dtype)
+        return (vacio, None) if devolver_matriz else vacio
     destino = np.array([[0, 0], [ancho - 1, 0], [ancho - 1, alto - 1], [0, alto - 1]],
                        dtype=np.float32)
-    return cv2.warpPerspective(imagen, cv2.getPerspectiveTransform(orden, destino), (ancho, alto))
+    matriz = cv2.getPerspectiveTransform(orden, destino)
+    if not np.isfinite(matriz).all() or abs(np.linalg.det(matriz)) < 1e-10:
+        vacio = np.empty((0, 0, 3), dtype=imagen.dtype)
+        return (vacio, None) if devolver_matriz else vacio
+    recorte = cv2.warpPerspective(imagen, matriz, (ancho, alto))
+    return (recorte, np.linalg.inv(matriz)) if devolver_matriz else recorte
+
+
+def _bbox_proyectada(bbox, matriz):
+    x, y, w, h = bbox
+    puntos = np.array([[[x,y],[x+w,y],[x+w,y+h],[x,y+h]]], dtype=np.float32)
+    puntos = cv2.perspectiveTransform(puntos, np.asarray(matriz, dtype=np.float64))[0]
+    minimo, maximo = np.floor(puntos.min(axis=0)), np.ceil(puntos.max(axis=0))
+    return [int(minimo[0]), int(minimo[1]), max(1,int(maximo[0]-minimo[0])), max(1,int(maximo[1]-minimo[1]))]
+
+
+def _leer_recorte_orientado(imagen, motor, permitir_giro=True, margen=.08,
+                            orientacion_forzada=None):
+    """Compara orientaciones; devuelve cajas en el recorte sin girar y ambigüedad."""
+    alto, ancho = imagen.shape[:2]
+    matrices = {
+        0: np.eye(3),
+        90: np.array([[0,1,0],[-1,0,alto],[0,0,1]], dtype=float),
+        180: np.array([[-1,0,ancho],[0,-1,alto],[0,0,1]], dtype=float),
+        270: np.array([[0,-1,ancho],[1,0,0],[0,0,1]], dtype=float),
+    }
+    candidatas = []
+    if orientacion_forzada is not None and orientacion_forzada not in (0,90,180,270):
+        raise ValueError("Orientación regional no válida")
+    for angulo in ([orientacion_forzada] if orientacion_forzada is not None else
+                   [0,90,180,270] if permitir_giro else [0]):
+        vista = imagen if angulo == 0 else _rotar_recto(imagen, angulo)
+        lecturas = motor.leer_texto_completo(vista)
+        if not lecturas or max(float(l.get("confianza") or 0) for l in lecturas) < .45:
+            alternativa = motor.leer_texto_completo(aplicar_variante(vista, "clahe", {}))
+            if _calidad(alternativa) > _calidad(lecturas):
+                lecturas = alternativa
+        pesos = [min(32, len(str(l.get("texto", "")).strip())) for l in lecturas]
+        puntuacion = sum(float(l.get("confianza") or 0)*p for l,p in zip(lecturas,pesos)) / max(1,sum(pesos))
+        candidatas.append((puntuacion, angulo, lecturas))
+    candidatas.sort(key=lambda c: c[0], reverse=True)
+    mejor = candidatas[0]
+    # Una confianza alta no demuestra una orientación correcta. Mantener el
+    # ganador y pedir revisión si empata, tiene poca confianza o es muy corto.
+    texto_mejor = "".join(str(l.get("texto") or "") for l in mejor[2]).strip()
+    dudosa = orientacion_forzada is None and (
+        (len(candidatas)>1 and mejor[0]-candidatas[1][0] < margen)
+        or mejor[0] < .60 or len(texto_mejor.replace(" ", "")) <= 2)
+    # Reconstruir ANTES de devolver las cajas a la foto: un renglón vertical
+    # no debe ordenarse de izquierda a derecha junto con otra etiqueta.
+    renglones = reconstruir_lineas_texto(mejor[2])
+    lecturas = [{**l, "bbox": _bbox_proyectada(l["bbox"], matrices[mejor[1]])}
+                for l in renglones if l.get("bbox")]
+    for origen, lectura in zip((l for l in renglones if l.get("bbox")), lecturas):
+        x,y,w,h = origen["bbox"]
+        puntos = np.array([[[x,y],[x+w,y],[x+w,y+h],[x,y+h]]], dtype=np.float32)
+        lectura["poligono_lectura"] = cv2.perspectiveTransform(puntos, matrices[mejor[1]])[0].tolist()
+    return lecturas, {"orientacion_grados": mejor[1], "orientacion_dudosa": dudosa,
+                      "orientacion_confirmada": orientacion_forzada is not None,
+                      "candidatos_orientacion": [{"grados": c[1], "confianza": round(c[0],4),
+                          "texto": "\n".join(str(l.get("texto") or "") for l in
+                                              reconstruir_lineas_texto(c[2]))[:1024]}
+                          for c in candidatas],
+                      "puntuaciones": {str(c[1]): round(c[0],4) for c in candidatas}}
 
 
 def extraer_texto_empresarial(imagen_path: str, config: dict | None = None,
@@ -1000,6 +1065,7 @@ def extraer_texto_empresarial(imagen_path: str, config: dict | None = None,
         resultado = extraer_texto(imagen_path, config)
         imagen_qr = cargar_imagen(imagen_path)
         qrs = detectar_qrs(imagen_qr, f1.get("qr", {}))
+        modelo_completo = getattr(obtener_motor(config)[0], "modelo_visual", None) or {}
         resultado.update({"estado_imagen": ("procesada_con_texto" if resultado.get("lineas_texto")
                                              or resultado.get("tokens") else
                                              "procesada_con_qr" if any(q.get("payload") for q in qrs)
@@ -1007,9 +1073,7 @@ def extraer_texto_empresarial(imagen_path: str, config: dict | None = None,
                           "modo_recorte": "completo", "tiempo_deteccion_seg": 0.0,
                           "tiempo_ocr_seg": round(time.monotonic() - inicio_total, 4),
                           "numero_regiones": 1, "zoom_aplicado": 1.0,
-                          "modelo_visual_version": getattr(motor := obtener_motor(config)[0],
-                                                            "modelo_visual", None).get("version")
-                          if getattr(motor, "modelo_visual", None) else None,
+                          "modelo_visual_version": modelo_completo.get("version"),
                           "qrs": qrs,
                           "recortes": [{"bbox": (0, 0, imagen_qr.shape[1], imagen_qr.shape[0]),
                                         "dimensiones_antes": (imagen_qr.shape[1], imagen_qr.shape[0]),
@@ -1018,8 +1082,11 @@ def extraer_texto_empresarial(imagen_path: str, config: dict | None = None,
         return resultado
 
     imagen_fuente = cargar_imagen(imagen_path)
-    from aprendizaje import GestorAprendizaje
-    preferencia_manual = GestorAprendizaje(config).preferencia_rotacion(imagen_path)
+    from aprendizaje import GestorAprendizaje, hash_archivo
+    gestor = GestorAprendizaje(config)
+    huella_imagen = hash_archivo(imagen_path)
+    preferencias_regionales = gestor.orientaciones_regionales(imagen_path)
+    preferencia_manual = gestor.preferencia_rotacion(imagen_path)
     rotacion_manual = float(preferencia_manual["grados"]) if preferencia_manual else 0.0
     rotacion_manual_definida = preferencia_manual is not None
     imagen_original = rotar_imagen_libre(imagen_fuente, rotacion_manual)
@@ -1046,6 +1113,26 @@ def extraer_texto_empresarial(imagen_path: str, config: dict | None = None,
             cajas = [{"bbox": b, "poligono": None} for b in regiones]
         else:
             cajas = detector(imagen_deteccion)
+        # Rescate acotado cuando CRAFT no encontró ninguna región. Aumentar
+        # resolución para texto pequeño y probar una vista perpendicular.
+        if not cajas and detector is not None and cfg.get("rescatar_deteccion_vacia", True):
+            escala_rescate = min(1.0, 1920 / max(alto,ancho))
+            rescate = (cv2.resize(imagen_original, None, fx=escala_rescate, fy=escala_rescate,
+                                  interpolation=cv2.INTER_AREA)
+                       if escala_rescate < .999 else imagen_original)
+            if escala_rescate > escala:
+                cajas = detector(rescate)
+                escala = escala_rescate
+                imagen_deteccion = rescate
+            if not cajas:
+                h_rescate = imagen_deteccion.shape[0]
+                inversa = np.array([[0,1,0],[-1,0,h_rescate],[0,0,1]], dtype=float)
+                for encontrada in detector(_rotar_recto(imagen_deteccion,90)):
+                    caja_rescate = {**encontrada, "bbox": _bbox_proyectada(encontrada["bbox"],inversa)}
+                    if encontrada.get("poligono"):
+                        caja_rescate["poligono"] = cv2.perspectiveTransform(
+                            np.array([encontrada["poligono"]],dtype=np.float32),inversa)[0].tolist()
+                    cajas.append(caja_rescate)
         offset_manual = (0, 0)
     tiempo_deteccion = time.monotonic() - inicio_total
     if not cajas:
@@ -1082,6 +1169,7 @@ def extraer_texto_empresarial(imagen_path: str, config: dict | None = None,
     inicio_ocr = time.monotonic()
     for caja in cajas:
         x, y, w, h = caja.get("bbox", caja)
+        matriz_perspectiva = None
         if modo == "manual":
             x, y, w, h = caja_manual
             recorte = imagen_deteccion
@@ -1093,14 +1181,18 @@ def extraer_texto_empresarial(imagen_path: str, config: dict | None = None,
             poligono = caja.get("poligono")
             if poligono and cfg.get("corregir_perspectiva", True):
                 puntos = np.asarray(poligono, dtype=np.float32) / escala
-                recorte = _recorte_perspectiva(imagen_original, puntos)
+                recorte, matriz_perspectiva = _recorte_perspectiva(imagen_original, puntos, True)
+                if recorte.size == 0:
+                    recorte = imagen_original[y:y+h, x:x+w]
+                    matriz_perspectiva = None
             else:
                 recorte = imagen_original[y:y + h, x:x + w]
         if recorte.size == 0:
             continue
-        zoom_calculado = altura_objetivo / max(recorte.shape[0], 1)
+        zoom_calculado = altura_objetivo / max(min(recorte.shape[:2]), 1)
         zoom = min(zoom_max, max(zoom_min,
                    float(zoom_forzado) if zoom_forzado is not None else zoom_calculado))
+        zoom = min(zoom, max(1.0, 2560 / max(recorte.shape[:2])))
         zooms.append(zoom)
         preparada = (cv2.resize(recorte, None, fx=zoom, fy=zoom, interpolation=cv2.INTER_CUBIC)
                      if zoom > 1.01 else recorte)
@@ -1108,54 +1200,45 @@ def extraer_texto_empresarial(imagen_path: str, config: dict | None = None,
                              "dimensiones_antes": (recorte.shape[1], recorte.shape[0]),
                              "dimensiones_despues": (preparada.shape[1], preparada.shape[0]),
                              "zoom": round(zoom, 3)})
-        lecturas = motor.leer_texto_completo(preparada)
+        marco = hashlib.sha256(json.dumps({
+            "bbox": [x,y,w,h], "giro_foto": rotacion_manual,
+            "perspectiva": (matriz_perspectiva.round(6).tolist()
+                            if matriz_perspectiva is not None else None),
+        }, sort_keys=True).encode()).hexdigest()
+        recortes_log[-1]["marco"] = marco
+        recortes_log[-1]["poligono_fuente"] = (
+            puntos.tolist() if matriz_perspectiva is not None else None)
+        lecturas, orientacion_region = _leer_recorte_orientado(
+            preparada, motor, permitir_giro=True,
+            margen=float(cfg.get("margen_orientacion", .08)),
+            orientacion_forzada=preferencias_regionales.get(marco))
+        recortes_log[-1].update(orientacion_region)
+        recortes_log[-1]["perspectiva_corregida"] = matriz_perspectiva is not None
+        matriz_local = (matriz_perspectiva if matriz_perspectiva is not None else
+                        np.array([[1,0,x],[0,1,y],[0,0,1]], dtype=float))
+        matriz_local = matriz_local @ np.diag([1/zoom if zoom>1.01 else 1,
+                                              1/zoom if zoom>1.01 else 1, 1])
         for lectura in lecturas:
-            lx, ly, lw, lh = lectura["bbox"]
-            lineas.append({**lectura, "bbox": (x + int(lx / zoom), y + int(ly / zoom),
-                                                max(1, int(lw / zoom)), max(1, int(lh / zoom))),
+            poligono_lectura = cv2.perspectiveTransform(
+                np.array([lectura["poligono_lectura"]], dtype=np.float32), matriz_local)[0].tolist()
+            bx,by,bw,bh = _bbox_proyectada(lectura["bbox"], matriz_local)
+            x0,y0 = min(ancho-1,max(0,bx)),min(alto-1,max(0,by))
+            caja_global = (x0,y0,max(1,min(ancho,bx+bw)-x0),max(1,min(alto,by+bh)-y0))
+            lineas.append({**lectura, "bbox": caja_global,
+                           "poligono_lectura": poligono_lectura,
+                           "marco_region": marco,
+                           "orientacion_region_grados": orientacion_region["orientacion_grados"],
+                           "orientacion_region_dudosa": orientacion_region["orientacion_dudosa"],
                            "region_bbox": (x, y, w, h), "origen": "region"})
 
     umbral = float(f1.get("umbral_confianza_texto_completo", 0.25))
     lineas = [l for l in lineas if float(l.get("confianza") or 0) >= umbral]
     intentos = [{"tipo": "recortes", "variante": "original", "lineas": len(lineas)}]
-    confianza = float(np.mean([l["confianza"] for l in lineas])) if lineas else 0.0
-    if (not lineas or confianza < float(cfg.get("confianza_fallback", 0.45))) and cajas:
-        # Una sola segunda pasada: CLAHE + enfoque y una rotación razonable.
-        respaldo = []
-        for caja in cajas:
-            x, y, w, h = caja.get("bbox", caja)
-            if modo != "manual":
-                x, y, w, h = (int(round(v / escala)) for v in (x, y, w, h))
-                recorte = imagen_original[max(0, y):min(alto, y + h), max(0, x):min(ancho, x + w)]
-            else:
-                x, y, w, h = caja_manual
-                recorte = imagen_deteccion
-            if recorte.size == 0:
-                continue
-            preparada = aplicar_variante(recorte, "clahe", f1.get("preprocesamiento", {}))
-            kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], dtype=np.float32)
-            preparada = cv2.filter2D(preparada, -1, kernel)
-            zoom_respaldo = min(zoom_max, max(zoom_min,
-                float(zoom_forzado) if zoom_forzado is not None
-                else altura_objetivo / max(preparada.shape[0], 1)))
-            if zoom_respaldo > 1.01:
-                preparada = cv2.resize(preparada, None, fx=zoom_respaldo,
-                                       fy=zoom_respaldo, interpolation=cv2.INTER_CUBIC)
-            angulo = 0 if rotacion_manual_definida else (
-                180 if preparada.shape[1] >= preparada.shape[0] else 90)
-            if angulo:
-                preparada = _rotar_recto(preparada, angulo)
-            for lectura in motor.leer_texto_completo(preparada):
-                if float(lectura.get("confianza") or 0) >= umbral:
-                    respaldo.append({**lectura, "region_bbox": (x, y, w, h), "origen": "region"})
-        intentos.append({"tipo": "respaldo", "variante": "clahe_enfoque",
-                         "orientacion_grados": 180 if ancho >= alto else 90,
-                         "lineas": len(respaldo)})
-        if _calidad(respaldo) > _calidad(lineas):
-            lineas = respaldo
 
-    reconstruidas = reconstruir_lineas_texto(lineas)
-    tokens = segmentar_tokens(lineas, int(f1.get("umbral_espacio_px", 40)))
+    # Cada región ya está ordenada en su propio marco. No unir regiones de la
+    # foto que puedan tener orientaciones diferentes o códigos independientes.
+    reconstruidas = [dict(l) for l in lineas]
+    tokens = [dict(l) for l in lineas]
     from aprendizaje import aplicar_modelo_tokens
     cantidad_tokens = len(tokens)
     corregidas = aplicar_modelo_tokens([*tokens, *reconstruidas], config, imagen_path)
@@ -1184,6 +1267,8 @@ def extraer_texto_empresarial(imagen_path: str, config: dict | None = None,
             "tiempo_ocr_seg": round(time.monotonic() - inicio_ocr, 4),
             "numero_regiones": len(cajas), "zoom_aplicado": round(max(zooms or [1.0]), 3),
             "intentos_ocr": intentos, "qrs": qrs, "recortes": recortes_log,
+            "orientaciones_regionales_usadas": preferencias_regionales,
+            "huella_imagen": huella_imagen,
             "modelo_visual_version": ((getattr(motor, "modelo_visual", None) or {}).get("version")),
             "advertencias_motor": list(getattr(motor, "advertencias", []))}
 

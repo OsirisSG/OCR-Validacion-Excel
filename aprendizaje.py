@@ -282,6 +282,17 @@ class GestorAprendizaje:
         con.row_factory = sqlite3.Row
         con.execute("PRAGMA journal_mode=WAL")
         con.executescript("""
+            CREATE TABLE IF NOT EXISTS regiones_no_texto (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, imagen_hash TEXT NOT NULL,
+                bbox_json TEXT NOT NULL, texto_ocr TEXT NOT NULL, activo INTEGER NOT NULL,
+                usuario TEXT NOT NULL, actualizado_en TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS orientaciones_region (
+                imagen_hash TEXT NOT NULL, marco TEXT NOT NULL,
+                grados INTEGER NOT NULL CHECK(grados IN (0,90,180,270)),
+                usuario TEXT NOT NULL, actualizado_en TEXT NOT NULL,
+                PRIMARY KEY(imagen_hash, marco)
+            );
             CREATE TABLE IF NOT EXISTS ejecuciones (
                 id TEXT PRIMARY KEY, creado_en TEXT NOT NULL, raiz TEXT,
                 imagenes INTEGER NOT NULL DEFAULT 0, tokens INTEGER NOT NULL DEFAULT 0
@@ -446,6 +457,9 @@ class GestorAprendizaje:
         imagen = cv2.imdecode(datos, cv2.IMREAD_COLOR)
         if imagen is None:
             raise ValueError("La imagen de entrenamiento está corrupta o no se puede decodificar.")
+        if (metadatos or {}).get("giro_foto"):
+            from ocr_engine import rotar_imagen_libre
+            imagen = rotar_imagen_libre(imagen, float(metadatos["giro_foto"]))
         alto_imagen, ancho_imagen = imagen.shape[:2]
         caja = None
         recorte = imagen
@@ -459,11 +473,27 @@ class GestorAprendizaje:
                 raise ValueError("El recorte de entrenamiento está fuera de la imagen.")
             caja = [x, y, ancho, alto]
             recorte = imagen[y:y + alto, x:x + ancho]
+        poligono = (metadatos or {}).get("poligono_lectura")
+        if poligono is not None:
+            # Las esquinas están en orden de lectura, no ordenadas por x/y:
+            # esto conserva el giro local y la perspectiva en la muestra.
+            puntos = np.asarray(poligono, dtype=np.float32)
+            if puntos.shape != (4,2) or not np.isfinite(puntos).all():
+                raise ValueError("Polígono de supervisión inválido; reprocesa la imagen.")
+            rw = int(round(max(np.linalg.norm(puntos[1]-puntos[0]), np.linalg.norm(puntos[2]-puntos[3]))))
+            rh = int(round(max(np.linalg.norm(puntos[3]-puntos[0]), np.linalg.norm(puntos[2]-puntos[1]))))
+            if not (2 <= rw <= 2*max(imagen.shape[:2]) and 2 <= rh <= 2*max(imagen.shape[:2])):
+                raise ValueError("Dimensiones de la muestra regional inválidas.")
+            destino = np.array([[0,0],[rw-1,0],[rw-1,rh-1],[0,rh-1]],dtype=np.float32)
+            matriz = cv2.getPerspectiveTransform(puntos, destino)
+            recorte = cv2.warpPerspective(imagen, matriz, (rw,rh))
         imagen_hash = hash_archivo(ruta)
         firma = hashlib.sha256(json.dumps({
             "imagen_hash": imagen_hash, "caso_id": str(caso_id), "bbox": caja,
             "texto_ocr": str(texto_ocr), "texto_correcto": str(texto_correcto),
-            "accion": accion, "campo": campo,
+            "accion": accion, "campo": campo, "geometria_version": 2,
+            "giro_foto": (metadatos or {}).get("giro_foto", 0),
+            "poligono_lectura": poligono,
         }, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
         with self._conectar() as con:
             existente = con.execute(
@@ -519,6 +549,32 @@ class GestorAprendizaje:
         """Rotación humana en sentido horario; conserva la interfaz histórica."""
         preferencia = self.preferencia_rotacion(ruta_imagen)
         return float(preferencia["grados"]) if preferencia else 0.0
+
+    def orientaciones_regionales(self, ruta_imagen) -> dict:
+        if not self.db.exists():
+            return {}
+        imagen_hash = hash_archivo(ruta_imagen)
+        with self._conectar() as con:
+            filas = con.execute("SELECT marco, grados FROM orientaciones_region WHERE imagen_hash=?",
+                                (imagen_hash,)).fetchall()
+        return {f["marco"]: f["grados"] for f in filas}
+
+    def guardar_orientacion_regional(self, ruta_imagen, marco, grados, usuario="dashboard"):
+        if not isinstance(marco, str) or len(marco) != 64:
+            raise ValueError("El recorte no tiene una geometría válida; reprocesa la imagen.")
+        if grados not in (None, 0, 90, 180, 270):
+            raise ValueError("El giro debe ser 0, 90, 180 o 270 grados.")
+        imagen_hash = hash_archivo(ruta_imagen)
+        with self._conectar() as con:
+            if grados is None:
+                con.execute("DELETE FROM orientaciones_region WHERE imagen_hash=? AND marco=?",
+                            (imagen_hash, marco))
+            else:
+                con.execute("""INSERT INTO orientaciones_region VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(imagen_hash,marco) DO UPDATE SET grados=excluded.grados,
+                    usuario=excluded.usuario, actualizado_en=excluded.actualizado_en""",
+                    (imagen_hash, marco, grados, usuario, _ahora()))
+        return {"marco": marco, "grados": grados}
 
     def modelo_visual_activo(self) -> dict | None:
         if not self.db.exists():
@@ -612,7 +668,7 @@ class GestorAprendizaje:
         imagen_hash = hash_archivo(ruta_imagen)
         actualizadas = 0
         with self._conectar() as con:
-            for tabla in ("correcciones_texto", "correcciones", "anotaciones_regiones"):
+            for tabla in ("correcciones_texto", "correcciones", "anotaciones_regiones", "regiones_no_texto"):
                 filas = con.execute(
                     f"SELECT id, bbox_json FROM {tabla} WHERE imagen_hash=?",
                     (imagen_hash,)).fetchall()
@@ -912,7 +968,7 @@ class GestorAprendizaje:
         return [dict(f) for f in filas if not hashes or f["imagen_hash"] in hashes]
 
     def listar_correcciones_texto(self, rutas_imagen: list[str | Path]) -> list[dict]:
-        """Correcciones humanas por hash; conserva duplicados espaciales por bbox."""
+        """Correcciones y aceptaciones guardadas por imagen y caja exactas."""
         if not self.db.exists():
             return []
         hashes = []
@@ -930,8 +986,20 @@ class GestorAprendizaje:
                 SELECT * FROM correcciones_texto
                 WHERE imagen_hash IN ({marcadores}) ORDER BY id
             """, hashes).fetchall()
+            aceptaciones = con.execute(f"""
+                SELECT 'aceptada-' || id AS id, imagen_hash, ruta_imagen,
+                       texto_ocr, texto_correcto, bbox_json,
+                       'aceptar_ocr' AS fuente, creado_en
+                FROM muestras_visuales
+                WHERE imagen_hash IN ({marcadores}) AND accion='aceptar'
+                      AND confirmada=1 AND texto_correcto=texto_ocr
+                ORDER BY creado_en, rowid
+            """, hashes).fetchall()
         salida = []
-        for fila in filas:
+        # En igualdad de fecha, una corrección explícita prevalece sobre
+        # la aceptación de la lectura original. No se modifica el historial.
+        registros = sorted([*aceptaciones, *filas], key=lambda f: f["creado_en"])
+        for fila in registros:
             item = dict(fila)
             item["bbox"] = json.loads(item.pop("bbox_json"))
             salida.append(item)
@@ -1025,6 +1093,71 @@ class GestorAprendizaje:
             if evidencia:
                 evidencia["version_modelo"] = modelo["version"]
             return corregido, evidencia
+
+    def marcar_no_texto(self, ruta_imagen, bbox, texto, usuario="dashboard", activo=True) -> dict:
+        """Supervisión negativa localizada; nunca entrena con una transcripción vacía."""
+        if not bbox or len(bbox) != 4 or min(bbox[2:]) <= 0 or min(bbox[:2]) < 0:
+            raise ValueError("Selecciona un bloque OCR con coordenadas válidas.")
+        firma = hash_archivo(ruta_imagen)
+        caja = json.dumps(list(bbox))
+        with self._conectar() as con:
+            # Se conserva historial; la última acción de cada caja es la vigente.
+            con.execute("INSERT INTO regiones_no_texto (imagen_hash,bbox_json,texto_ocr,activo,usuario,actualizado_en) VALUES (?,?,?,?,?,?)",
+                        (firma, caja, texto, int(activo), usuario, _ahora()))
+        return {"guardado": True, "activo": activo, "entrenamiento": False}
+
+    def filtrar_no_texto(self, ocr: dict, ruta_imagen) -> dict:
+        """Filtra una copia; el OCR bruto sigue disponible para deshacer."""
+        from copy import deepcopy
+        salida = deepcopy(ocr)
+        if not ruta_imagen or not Path(ruta_imagen).is_file():
+            return salida
+        from utilidades.edicion_zonas import aplicar
+        with self._conectar() as con:
+            salida = aplicar(con, hash_archivo(ruta_imagen), salida)
+        ocr = deepcopy(salida)
+        with self._conectar() as con:
+            filas = con.execute("SELECT * FROM regiones_no_texto WHERE imagen_hash=? ORDER BY id DESC",
+                                (hash_archivo(ruta_imagen),)).fetchall()
+        vigentes = {}
+        for fila in filas:
+            vigentes.setdefault(fila["bbox_json"], dict(fila))
+        descartes = [{**fila, "bbox": json.loads(fila["bbox_json"])}
+                     for fila in vigentes.values() if fila["activo"]]
+        salida["regiones_no_texto"] = descartes
+        if not descartes:
+            return salida
+        salida["_ocr_bruto"] = deepcopy(ocr)
+        def excluida(unidad):
+            b = unidad.get("bbox")
+            if not b or len(b) != 4 or b[2] <= 0 or b[3] <= 0:
+                return False
+            for d in descartes:
+                x,y,w,h = d["bbox"]
+                inter = max(0, min(b[0]+b[2], x+w)-max(b[0],x)) * max(0,min(b[1]+b[3],y+h)-max(b[1],y))
+                if inter / (b[2]*b[3]) >= .85:
+                    return True
+            return False
+        for clave in ("tokens", "lineas_texto", "codigos_detectados"):
+            salida[clave] = [u for u in salida.get(clave, []) if not excluida(u)]
+        quitados = [u for u in ocr.get("tokens", []) if excluida(u)]
+        for linea in salida.get("lineas_texto", []):
+            b = linea.get("bbox")
+            if not b:
+                continue
+            def dentro(t):
+                q = t.get("bbox")
+                return q and b[0] <= q[0]+q[2]/2 <= b[0]+b[2] and b[1] <= q[1]+q[3]/2 <= b[1]+b[3]
+            if any(dentro(t) for t in quitados):
+                linea["texto"] = " ".join(t.get("texto", "") for t in salida.get("tokens", []) if dentro(t))
+        salida["lineas_texto"] = [l for l in salida["lineas_texto"] if str(l.get("texto", "")).strip()]
+        textos_quitados = {normalizar_codigo(t.get("texto", "")) for t in quitados}
+        textos_vivos = {normalizar_codigo(t.get("texto", "")) for t in salida.get("tokens", [])}
+        salida["codigos_detectados"] = [c for c in salida["codigos_detectados"]
+            if normalizar_codigo(c.get("normalizado") or c.get("texto", "")) not in textos_quitados-textos_vivos]
+        salida["texto_completo"] = "\n".join(str(u.get("texto", "")) for u in
+                                               (salida.get("lineas_texto") or salida.get("tokens") or []))
+        return salida
 
     def aplicar_memoria_imagen(self, tokens: list[dict],
                                ruta_imagen: str | Path | None) -> list[dict]:

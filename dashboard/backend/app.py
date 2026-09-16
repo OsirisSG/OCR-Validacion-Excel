@@ -32,6 +32,7 @@ import sys
 import threading
 import time
 import traceback
+from contextlib import asynccontextmanager
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path, PureWindowsPath
@@ -129,6 +130,122 @@ class SolicitudAnotacionRegion(BaseModel):
     usuario: str = Field(default="dashboard", min_length=1, max_length=128)
 
 
+class SolicitudNoTexto(SolicitudAnotacionRegion):
+    texto_correcto: str = Field(default="", max_length=8192)
+    restaurar: bool = False
+
+
+class SolicitudOrientacionRegional(BaseModel):
+    prueba_id: str = Field(min_length=1, max_length=128)
+    imagen_id: str = Field(min_length=1, max_length=128)
+    marco: str = Field(pattern="^[a-f0-9]{64}$")
+    grados: int | None = None
+
+
+def _resolver_region_orientacion(prueba_id, imagen_id, marco):
+    datos = _cargar_datos()
+    fila = next((f for f in (datos or {}).get("resultados", [])
+                 if _id_fila(f) == prueba_id), None)
+    if fila is None:
+        raise HTTPException(404, "Carpeta no encontrada.")
+    item = next((i for i in fila.get("imagenes", []) if i.get("id") == imagen_id), None)
+    if item is None:
+        raise HTTPException(404, "Imagen no encontrada.")
+    region = next((r for r in ((item.get("resultado_ocr") or {}).get("recortes") or [])
+                   if r.get("marco") == marco), None)
+    if region is None:
+        raise HTTPException(409, "El recorte cambió. Actualiza el detalle y selecciónalo otra vez.")
+    raiz = _resolver_raiz_datos(datos)
+    if raiz is None:
+        raise HTTPException(503, "No se encuentra la raíz de imágenes.")
+    ruta = _resolver_imagen(str(item["ruta"]), datos, raiz)
+    huella = (item.get("resultado_ocr") or {}).get("huella_imagen")
+    if not huella or hash_archivo(ruta) != huella:
+        raise HTTPException(409, "La imagen cambió desde su OCR. Reprocésala antes de elegir orientación.")
+    return fila, item, region, ruta
+
+
+@app.post("/api/aprendizaje/orientacion-region")
+def guardar_orientacion_region(solicitud: SolicitudOrientacionRegional):
+    fila, item, region, ruta = _resolver_region_orientacion(
+        solicitud.prueba_id, solicitud.imagen_id, solicitud.marco)
+    gestor = GestorAprendizaje(CONFIG)
+    if gestor.estado_revision("carpeta", solicitud.prueba_id,
+            _fila_publica(fila)["revision"]["estado"])["estado"] == "completada":
+        raise HTTPException(409, "Reabre la revisión antes de editar.")
+    # No cambiar preferencias mientras el pipeline está utilizando el modelo.
+    if _pipeline_hilo and _pipeline_hilo.is_alive():
+        raise HTTPException(409, "Detén conservando el avance antes de cambiar la orientación regional.")
+    try:
+        resultado = gestor.guardar_orientacion_regional(ruta, solicitud.marco, solicitud.grados)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"guardada": True, **resultado,
+            "mensaje": "Orientación guardada. Reprocesa la imagen visible para actualizar texto y cajas."}
+
+
+@app.get("/api/imagen/region-orientacion")
+def vista_region_orientacion(prueba_id: str, imagen_id: str, marco: str, grados: int = 0):
+    if grados not in (0,90,180,270):
+        raise HTTPException(400, "Ángulo no válido.")
+    _, item, region, ruta = _resolver_region_orientacion(prueba_id, imagen_id, marco)
+    import cv2
+    from ocr_engine import cargar_imagen, _recorte_perspectiva, _rotar_recto
+    ocr = item.get("resultado_ocr") or {}
+    foto = rotar_imagen_libre(cargar_imagen(str(ruta)),
+                             float(ocr.get("rotacion_manual_aplicada_grados") or 0))
+    if region.get("poligono_fuente"):
+        recorte = _recorte_perspectiva(foto, region["poligono_fuente"])
+    else:
+        x,y,w,h = map(int,region["bbox"])
+        recorte = foto[max(0,y):y+h,max(0,x):x+w]
+    if not recorte.size:
+        raise HTTPException(409, "Recorte vacío; reprocesa la imagen.")
+    recorte = _rotar_recto(recorte, grados)
+    escala = min(1.0, 768/max(recorte.shape[:2]))
+    if escala < 1:
+        recorte = cv2.resize(recorte, None, fx=escala, fy=escala)
+    ok, imagen = cv2.imencode(".png", recorte)
+    if not ok:
+        raise HTTPException(500, "No se pudo preparar la previsualización.")
+    return Response(imagen.tobytes(), media_type="image/png")
+
+
+@app.post("/api/aprendizaje/no-texto")
+def marcar_region_no_texto(solicitud: SolicitudNoTexto):
+    datos = _cargar_datos()
+    if not datos:
+        raise HTTPException(404, "Sin datos procesados.")
+    fila = next((f for f in datos["resultados"] if _id_fila(f) == solicitud.prueba_id), None)
+    if fila is None:
+        raise HTTPException(404, "Carpeta no encontrada.")
+    gestor = GestorAprendizaje(CONFIG)
+    if gestor.estado_revision("carpeta", solicitud.prueba_id,
+                             _fila_publica(fila)["revision"]["estado"])["estado"] == "completada":
+        raise HTTPException(409, "Reabre la revisión antes de editar.")
+    item = next((i for i in fila.get("imagenes", []) if i.get("id") == solicitud.imagen_id), None)
+    if not item:
+        raise HTTPException(404, "Imagen no encontrada en esta carpeta.")
+    raiz = _resolver_raiz_datos(datos)
+    if raiz is None:
+        raise HTTPException(503, "Raíz de imágenes no disponible.")
+    ruta = _resolver_imagen(str(item["ruta"]), datos, raiz)
+    ocr = item.get("resultado_ocr") or {}
+    if solicitud.restaurar:
+        unidades = gestor.filtrar_no_texto(ocr, ruta).get("regiones_no_texto", [])
+    else:
+        unidades = [*ocr.get("tokens", []), *ocr.get("lineas_texto", [])]
+    unidad = next((u for u in unidades if _bbox_igual(u.get("bbox"), solicitud.bbox)), None)
+    if unidad is None:
+        raise HTTPException(400, "Selecciona una detección existente o un descarte activo.")
+    resultado = gestor.marcar_no_texto(ruta, solicitud.bbox,
+        str(unidad.get("texto_ocr") or unidad.get("texto") or ""),
+        solicitud.usuario, activo=not solicitud.restaurar)
+    gestor.actualizar_revision("carpeta", solicitud.prueba_id, estado="parcial")
+    _regenerar_excel(resultado)
+    return resultado
+
+
 class SolicitudRevision(BaseModel):
     tipo: str = Field(pattern="^(carpeta|externa)$")
     item_id: str = Field(min_length=1, max_length=128)
@@ -171,6 +288,12 @@ class SolicitudImagenSinDatos(BaseModel):
     prueba_id: str = Field(min_length=1, max_length=128)
     imagen_id: str | None = Field(default=None, max_length=128)
     motivo: str | None = Field(default=None, max_length=512)
+    usuario: str = Field(default="dashboard", min_length=1, max_length=128)
+
+
+class SolicitudImagenVerificada(BaseModel):
+    prueba_id: str = Field(min_length=1, max_length=128)
+    imagen_id: str = Field(min_length=1, max_length=128)
     usuario: str = Field(default="dashboard", min_length=1, max_length=128)
 
 
@@ -573,12 +696,44 @@ def _aplicar_correcciones_publicas(ocr: dict, correcciones: list[dict]) -> dict:
 
 
 def _regenerar_excel(resultado: dict) -> None:
-    """Actualiza el artefacto sin perder una corrección si Excel falla."""
+    """La corrección ya está guardada; programa su exportación durable."""
     try:
-        from generar_excel import generar_excel
-        resultado["excel_actualizado"] = str(generar_excel())
+        resultado["revision_excel"] = _cola_excel.solicitar()
+        resultado["excel_pendiente"] = True
     except Exception as exc:
-        resultado["advertencia_excel"] = str(exc)
+        resultado["advertencia_excel"] = f"Corrección guardada, no se pudo encolar Excel: {exc}"
+
+
+_excel_escritura_lock = threading.Lock()
+
+
+def _generar_excel_serializado(*args, **kwargs):
+    from generar_excel import generar_excel
+    with _excel_escritura_lock:
+        return generar_excel(*args, **kwargs)
+
+
+from utilidades.cola_excel import ColaExcel
+
+_cola_excel = ColaExcel(RAIZ_PROYECTO / ".cache_ocr" / "cola_excel.sqlite3",
+                       _generar_excel_serializado)
+
+
+@asynccontextmanager
+async def _lifespan_dashboard(_app):
+    _cola_excel.iniciar()
+    try:
+        yield
+    finally:
+        _cola_excel.detener()
+
+
+app.router.lifespan_context = _lifespan_dashboard
+
+
+@app.get("/api/excel/cola")
+def estado_cola_excel():
+    return _cola_excel.estado()
 
 
 def _capacidad_pipeline() -> dict:
@@ -684,7 +839,7 @@ def _exportar_excel_parcial_pipeline() -> str | None:
             "archivo_salida", "resultado_maestro.xlsx"))
         base = Path(nombre).stem or "resultado_maestro"
         ruta_excel = RAIZ_PROYECTO / f"{base}_parcial.xlsx"
-        from generar_excel import generar_excel
+        generar_excel = _generar_excel_serializado
         ruta_plantilla = estado.get("ruta_plantilla")
         generado = (generar_excel(
             ruta_json, ruta_excel, CONFIG, ruta_plantilla=ruta_plantilla,
@@ -1067,6 +1222,14 @@ def corregir_lectura(solicitud: SolicitudCorreccion):
     try:
         correcto = (solicitud.texto_ocr if solicitud.accion == "aceptar"
                     else solicitud.texto_correcto)
+        metadatos_supervision = {k: fila.get(k) for k in
+            ("tipo_st", "module_version", "temperature_condition", "inflator_type")}
+        metadatos_supervision.update({
+            "giro_foto": float(ocr.get("orientacion_texto_grados") or 0),
+            "poligono_lectura": token.get("poligono_lectura"),
+            "orientacion_region_grados": token.get("orientacion_region_grados"),
+            "marco_region": token.get("marco_region"),
+        })
         if solicitud.accion in {"aceptar", "ilegible", "no_es_campo", "guardar_sin_entrenar"}:
             muestra = gestor.registrar_muestra_visual(
                 ruta_local, solicitud.prueba_id, solicitud.texto_ocr, correcto,
@@ -1074,8 +1237,7 @@ def corregir_lectura(solicitud: SolicitudCorreccion):
                 campo=solicitud.campo, fase=item.get("fase"), tor=item.get("tor"),
                 confianza=token.get("confianza"), modelo_origen=ocr.get("modelo_visual_version")
                 or ocr.get("motor"), usuario=solicitud.usuario,
-                metadatos={k: fila.get(k) for k in
-                ("tipo_st", "module_version", "temperature_condition", "inflator_type")})
+                metadatos=metadatos_supervision)
             resultado = {"registrada": True, "tipo": "supervision_visual",
                          "muestra_visual": muestra, "entrenamiento": None}
         else:
@@ -1089,8 +1251,7 @@ def corregir_lectura(solicitud: SolicitudCorreccion):
                 campo=solicitud.campo, fase=item.get("fase"), tor=item.get("tor"),
                 confianza=token.get("confianza"), modelo_origen=ocr.get("modelo_visual_version")
                 or ocr.get("motor"), usuario=solicitud.usuario,
-                metadatos={k: fila.get(k) for k in
-                ("tipo_st", "module_version", "temperature_condition", "inflator_type")})
+                metadatos=metadatos_supervision)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     gestor.actualizar_revision("carpeta", solicitud.prueba_id, estado="parcial")
@@ -1206,10 +1367,18 @@ def guardar_rotacion(solicitud: SolicitudRotacion):
         ocr_objetivo = fila
         _, salida_externa = rutas(CONFIG)
     try:
+        if gestor.filtrar_no_texto(ocr_objetivo, ruta).get("ediciones_zona"):
+            raise HTTPException(409, "Deshaz las uniones de esta imagen antes de cambiar su giro guardado. El zoom y el giro de vista siguen disponibles.")
         dimensiones_respaldo = _dimensiones_ocr_desde_archivo(ruta, ocr_objetivo)
         giro = _rotar_resultado_existente(
             ocr_objetivo, solicitud.grados, dimensiones_respaldo,
             restaurar_automatico=solicitud.usar_automatico)
+        # Los recortes guardados pertenecen al marco anterior. No mostrar ni
+        # entrenar con polígonos regionales obsoletos tras girar toda la foto.
+        ocr_objetivo["recortes"] = []
+        for unidad in [*ocr_objetivo.get("tokens", []), *ocr_objetivo.get("lineas_texto", [])]:
+            unidad.pop("poligono_lectura", None)
+            unidad.pop("marco_region", None)
         resultado = (gestor.eliminar_rotacion(ruta) if solicitud.usar_automatico
                      else gestor.actualizar_rotacion(ruta, solicitud.grados))
         resultado.update(gestor.rotar_evidencias_imagen(
@@ -1290,6 +1459,97 @@ def marcar_imagen_sin_datos(solicitud: SolicitudImagenSinDatos):
     gestor.actualizar_revision(solicitud.tipo, solicitud.prueba_id, estado="parcial")
     resultado["mensaje"] = "Imagen revisada y registrada sin datos de texto útiles."
     return resultado
+
+
+def _restaurar_estado_con_texto(item: dict) -> None:
+    item.pop("revision_sin_datos", None)
+    item.pop("revision_imagen", None)
+    item.pop("motivo_sin_datos", None)
+    item["estado_imagen"] = "pendiente"
+    ocr = item.get("resultado_ocr")
+    if isinstance(ocr, dict):
+        ocr.pop("revision_sin_datos", None)
+        ocr.pop("motivo_sin_datos", None)
+        ocr["estado_imagen"] = "pendiente"
+
+
+@app.post("/api/imagenes/con-texto")
+def restaurar_imagen_con_texto(solicitud: SolicitudImagenSinDatos):
+    if _pipeline_hilo is not None and _pipeline_hilo.is_alive():
+        raise HTTPException(409, "Detén conservando el avance antes de restaurar la imagen.")
+    gestor = GestorAprendizaje(CONFIG)
+    if solicitud.tipo == "carpeta":
+        datos = deepcopy(_cargar_datos())
+        fila = next((f for f in (datos or {}).get("resultados", []) if _id_fila(f) == solicitud.prueba_id), None)
+        if fila is None:
+            raise HTTPException(404, "Carpeta no encontrada.")
+        item = next((i for i in fila.get("imagenes", []) if i.get("id") == solicitud.imagen_id), None)
+        if item is None:
+            raise HTTPException(404, "Imagen no encontrada en esta carpeta.")
+        raiz = _resolver_raiz_datos(datos)
+        if raiz is None:
+            raise HTTPException(503, "La raíz de imágenes no está disponible.")
+        ruta = _resolver_imagen(str(item["ruta"]), datos, raiz)
+        _restaurar_estado_con_texto(item)
+        for alias in (fila.get("etiqueta"), fila.get("referencia")):
+            if alias and str(alias.get("ruta")) == str(item["ruta"]):
+                _restaurar_estado_con_texto(alias)
+        for traza in fila.get("trazabilidad", []):
+            if str(traza.get("ruta_absoluta")) in {str(ruta), str(item["ruta"])}:
+                traza.update(estado_imagen="pendiente", requiere_revision=True, mensaje_error=None)
+        destino = RUTA_VALIDACION
+    else:
+        from pruebas_externas import cargar, rutas
+        datos = deepcopy(cargar(CONFIG))
+        item = next((f for f in datos.get("resultados", []) if f.get("id") == solicitud.prueba_id), None)
+        if item is None:
+            raise HTTPException(404, "Prueba externa no encontrada.")
+        ruta = Path(str(item.get("ruta") or "")).resolve()
+        if not ruta.is_file():
+            raise HTTPException(404, "La imagen ya no está disponible.")
+        _restaurar_estado_con_texto(item)
+        _, destino = rutas(CONFIG)
+    # Si falla la escritura JSON, la transacción no elimina la marca persistida.
+    with gestor._conectar() as con:
+        con.execute("DELETE FROM imagenes_sin_datos WHERE imagen_hash=?", (hash_archivo(ruta),))
+        _guardar_json_atomico(destino, datos)
+    _cache.update({"mtime": None, "datos": None})
+    gestor.actualizar_revision(solicitud.tipo, solicitud.prueba_id, estado="parcial")
+    resultado = {"restaurada": True, "estado_imagen": "pendiente",
+                 "mensaje": "Marca sin texto retirada. La imagen queda pendiente de revisión. Si no tiene lecturas, reprocesa esta imagen."}
+    _regenerar_excel(resultado)
+    return resultado
+
+
+@app.post("/api/imagenes/verificar")
+def verificar_imagen(solicitud: SolicitudImagenVerificada):
+    """Confirma que una imagen con texto ya fue revisada por una persona."""
+    datos = _cargar_datos()
+    fila = next((f for f in (datos or {}).get("resultados", [])
+                 if _id_fila(f) == solicitud.prueba_id), None)
+    if fila is None:
+        raise HTTPException(404, "La carpeta indicada no existe.")
+    item = next((imagen for imagen in fila.get("imagenes", [])
+                 if imagen.get("id") == solicitud.imagen_id), None)
+    if item is None:
+        raise HTTPException(404, "La imagen indicada no pertenece a la carpeta.")
+    if item.get("revision_sin_datos") or item.get("estado_imagen") == "revisada_sin_datos":
+        raise HTTPException(409, "Esta imagen ya fue confirmada sin texto.")
+    ahora = datetime.now().isoformat(timespec="seconds")
+    revision = {"estado": "verificada", "usuario": solicitud.usuario, "fecha": ahora}
+    item["estado_imagen"] = "verificada"
+    item["revision_imagen"] = revision
+    if item.get("resultado_ocr") is not None:
+        item["resultado_ocr"]["estado_imagen"] = "verificada"
+    for traza in fila.get("trazabilidad", []):
+        if str(traza.get("ruta_absoluta")) == str(item.get("ruta")):
+            traza.update({"estado_imagen": "verificada", "requiere_revision": False})
+    _guardar_json_atomico(RUTA_VALIDACION, datos)
+    _cache.update({"mtime": None, "datos": None})
+    GestorAprendizaje(CONFIG).actualizar_revision(
+        "carpeta", solicitud.prueba_id, estado="parcial")
+    return {"verificada": True, "revision_imagen": revision,
+            "mensaje": "Imagen verificada y marcada en verde."}
 
 
 def _externas_publicas(incluir_ocultos: bool = False) -> dict:
@@ -1409,11 +1669,7 @@ def actualizar_revision(solicitud: SolicitudRevision):
             solicitud.oculto, estado_inicial)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
-    try:
-        from generar_excel import generar_excel
-        resultado["excel_actualizado"] = str(generar_excel())
-    except Exception as exc:
-        resultado["advertencia_excel"] = str(exc)
+    _regenerar_excel(resultado)
     return resultado
 
 
@@ -1674,6 +1930,9 @@ def reanudar_pipeline():
             raise HTTPException(409, "No existe un avance pausado que se pueda reanudar.")
         hilo_vivo = bool(_pipeline_hilo and _pipeline_hilo.is_alive())
         if hilo_vivo and _pipeline_estado["estado"] == "pausado":
+            # Publicar la revisión antes de despertar al hilo OCR.
+            _esperar_continuacion.revision_conocimiento = getattr(
+                _esperar_continuacion, "revision_conocimiento", 0) + 1
             _pipeline_continuar.set()
             _pipeline_estado.update(
                 estado="procesando", mensaje="Procesamiento reanudado",
@@ -1930,7 +2189,7 @@ def corregir_campo_caso(clave: str, campo: str, solicitud: SolicitudCampoManual)
     gestor.actualizar_revision("carpeta", clave, estado="parcial")
     respuesta = {"campo": campo, "dato": dato, "conflictos": fila["conflictos"]}
     try:
-        from generar_excel import generar_excel
+        generar_excel = _generar_excel_serializado
         respuesta["archivo_excel"] = str(generar_excel(
             RUTA_VALIDACION, datos.get("archivo_excel"), CONFIG,
             ruta_plantilla=datos.get("ruta_plantilla")))
@@ -2120,6 +2379,9 @@ def detalle(clave: str):
                     f"&rotacion={rotacion_ocr}&ajuste={ajuste_ocr}")
             except (HTTPException, OSError):
                 pass
+        if raiz_local:
+            ruta_filtro = _reubicar_ruta(str(item["ruta"]), datos, raiz_local)
+            publico["resultado_ocr"] = gestor.filtrar_no_texto(publico.get("resultado_ocr") or {}, ruta_filtro)
         detalle_json["imagenes"].append(publico)
     return detalle_json
 
@@ -2154,6 +2416,126 @@ def imagen_orientada(ruta: str, rotacion: float = 0, ajuste: float = 0.0):
     if not objetivo.is_relative_to(permitida):
         raise HTTPException(403, "Ruta fuera de la raíz de datos permitida.")
     return _imagen_transformada(objetivo, rotacion, ajuste)
+
+
+class RegionAjustada(BaseModel):
+    bbox: list[int] = Field(min_length=4, max_length=4)
+    texto: str = Field(min_length=1, max_length=8192)
+
+
+class SolicitudZona(BaseModel):
+    prueba_id: str
+    imagen_id: str
+    bbox: list[int] = Field(min_length=4, max_length=4)
+    accion: str = "previsualizar"
+    releer: bool = False
+    firma: str = ""
+    texto: str = Field(default="", max_length=8192)
+    exacta: bool = False
+    origen: list[int] | None = None
+    regiones: list[RegionAjustada] = Field(default_factory=list, max_length=2)
+
+
+_zona_lock = threading.Lock()
+
+
+@app.post("/api/aprendizaje/zonas")
+def editar_zona(solicitud: SolicitudZona):
+    from utilidades.edicion_zonas import (expandir, firma, guardar, deshacer,
+                                          validar_caja, unidades, interseca, guardar_bloque)
+    if solicitud.accion not in ("previsualizar", "guardar", "deshacer", "estado", "guardar_bloque"):
+        raise HTTPException(400, "Acción desconocida.")
+    if not _zona_lock.acquire(blocking=False):
+        raise HTTPException(409, "Hay otra zona en proceso. Espera a que termine.")
+    try:
+        if _pipeline_hilo is not None and _pipeline_hilo.is_alive():
+            raise HTTPException(409, "Detén conservando el avance antes de editar zonas; pausar mantiene el hilo activo.")
+        datos = _cargar_datos()
+        fila = next((f for f in (datos or {}).get("resultados", [])
+                     if _id_fila(f) == solicitud.prueba_id), None)
+        if fila is None:
+            raise HTTPException(404, "Carpeta no encontrada.")
+        item = next((i for i in fila.get("imagenes", []) if i.get("id") == solicitud.imagen_id), None)
+        if item is None:
+            raise HTTPException(404, "Imagen no encontrada en esta carpeta.")
+        gestor = GestorAprendizaje(CONFIG)
+        if gestor.estado_revision("carpeta", solicitud.prueba_id,
+                                  _fila_publica(fila)["revision"]["estado"])["estado"] == "completada":
+            raise HTTPException(409, "Reabre la revisión antes de editar.")
+        raiz = _resolver_raiz_datos(datos)
+        if raiz is None:
+            raise HTTPException(503, "La raíz de imágenes no está disponible.")
+        ruta = _resolver_imagen(str(item["ruta"]), datos, raiz)
+        imagen_hash = hash_archivo(ruta)
+        ocr = _aplicar_correcciones_publicas(item.get("resultado_ocr") or {},
+                                           gestor.listar_correcciones_texto([ruta]))
+        ocr = gestor.filtrar_no_texto(ocr, ruta)
+        version = firma(ocr, imagen_hash)
+        if solicitud.accion == "estado":
+            return {"firma": version, "bbox": solicitud.bbox}
+        if solicitud.accion in ("guardar", "deshacer", "guardar_bloque") and solicitud.firma != version:
+            raise HTTPException(409, "La imagen cambió. Vuelve a previsualizar la zona.")
+        if solicitud.accion == "guardar_bloque":
+            regiones = [{"bbox": r.bbox, "texto": r.texto} for r in solicitud.regiones]
+            if any(interseca(r["bbox"], a.get("bbox")) for r in regiones
+                   for a in gestor.listar_anotaciones([ruta])):
+                raise HTTPException(409, "Una región toca una anotación manual previa. Ajusta sus límites para conservarla.")
+            with gestor._conectar() as con:
+                identificador = guardar_bloque(con, imagen_hash, ocr, solicitud.origen, regiones)
+            resultado = {"guardado": True, "edicion_id": identificador, "entrenamiento": False}
+        elif solicitud.accion == "deshacer":
+            with gestor._conectar() as con:
+                cambio = deshacer(con, imagen_hash, ocr)
+            resultado = {"guardado": cambio}
+        else:
+            validar_caja(solicitud.bbox, ocr.get("dimensiones") or [])
+            bbox = solicitud.bbox if getattr(solicitud, "exacta", False) and solicitud.accion == "previsualizar" else expandir(solicitud.bbox, ocr)
+            validar_caja(bbox, ocr.get("dimensiones") or [])
+            # Las anotaciones entrenables conservan su identidad. No ocultarlas
+            # silenciosamente ni duplicarlas mediante una unión nueva.
+            if any(interseca(bbox, a.get("bbox")) for a in gestor.listar_anotaciones([ruta])):
+                raise HTTPException(409, "Esta zona incluye una anotación manual de texto omitido. Ajusta el área para excluirla; la unión actual trabaja sobre bloques OCR.")
+            afectadas = [u for u in unidades(ocr) if interseca(bbox, u.get("bbox"))]
+            anterior = "\n".join(str(u.get("texto", "")) for u in afectadas)
+            if solicitud.accion == "previsualizar":
+                propuesta, orientacion = anterior, {}
+                if solicitud.releer:
+                    import cv2
+                    from ocr_engine import cargar_imagen, obtener_motor, _leer_recorte_orientado
+                    foto = cargar_imagen(str(ruta))
+                    manual = float(ocr.get("rotacion_manual_aplicada_grados") or 0)
+                    prioritaria = bool(ocr.get("orientacion_manual_prioritaria"))
+                    giro = manual if prioritaria else manual + _orientacion_base_publica(ocr)
+                    foto = rotar_imagen_libre(foto, giro)
+                    ajuste = 0 if prioritaria else float(ocr.get("deskew_texto_aplicado_grados") or ocr.get("deskew_aplicado_grados") or 0)
+                    alto, ancho = foto.shape[:2]
+                    if abs(ajuste) >= .05:
+                        matriz = cv2.getRotationMatrix2D((ancho/2, alto/2), ajuste, 1)
+                        foto = cv2.warpAffine(foto, matriz, (ancho, alto), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+                    if [ancho, alto] != list(ocr.get("dimensiones") or []):
+                        raise HTTPException(409, "El marco de la imagen cambió; reprocesa esta imagen antes de releer regiones.")
+                    x,y,w,h = bbox
+                    recorte = foto[y:y+h, x:x+w]
+                    escala = min(3.0, max(1.0, 160/min(w,h)), 2400/max(w,h))
+                    if abs(escala-1) > .01:
+                        recorte = cv2.resize(recorte, None, fx=escala, fy=escala, interpolation=cv2.INTER_CUBIC)
+                    motor, _ = obtener_motor(CONFIG)
+                    lecturas, orientacion = _leer_recorte_orientado(recorte, motor)
+                    propuesta = "\n".join(str(u.get("texto", "")) for u in lecturas)
+                return {"bbox": bbox, "anterior": anterior, "texto": propuesta,
+                        "bloques": len(afectadas), "firma": version, **orientacion}
+            if list(bbox) != solicitud.bbox:
+                raise HTTPException(409, "La selección cambió. Previsualiza otra vez antes de confirmar.")
+            with gestor._conectar() as con:
+                identificador = guardar(con, imagen_hash, ocr, bbox, solicitud.texto)
+            resultado = {"guardado": True, "edicion_id": identificador, "entrenamiento": False}
+        gestor.actualizar_revision("carpeta", solicitud.prueba_id, estado="parcial")
+        _regenerar_excel(resultado)
+        return resultado
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    finally:
+        _zona_lock.release()
 
 
 # Frontend estático: se monta al final para no tapar los endpoints /api.

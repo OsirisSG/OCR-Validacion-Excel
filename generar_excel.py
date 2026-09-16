@@ -172,6 +172,14 @@ def generar_excel(ruta_validacion: str | Path | None = None,
     else:
         datos = datos_validacion
 
+    from copy import deepcopy
+    datos = deepcopy(datos)
+    gestor_filtro = GestorAprendizaje(config)
+    for fila in datos.get("resultados", []):
+        for item in [*fila.get("imagenes", []), fila.get("etiqueta"), fila.get("referencia")]:
+            if item and item.get("ruta"):
+                item["resultado_ocr"] = gestor_filtro.filtrar_no_texto(
+                    item.get("resultado_ocr") or {}, item["ruta"])
     plantilla_config = ruta_plantilla or f3.get("plantilla_empresarial")
     if datos.get("perfil") == "empresarial" and plantilla_config:
         plantilla = Path(str(plantilla_config).strip().strip('"\''))

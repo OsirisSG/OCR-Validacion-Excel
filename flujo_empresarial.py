@@ -30,7 +30,7 @@ PATRON_CASO = re.compile(
 )
 PATRON_TOR = re.compile(r"^TOR\s+(.+)$", re.IGNORECASE)
 EXTENSIONES_IMAGEN = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp"}
-VERSION_PARSER = "empresarial-1"
+VERSION_PARSER = "empresarial-4-regiones-independientes"
 
 CLAVES_PLANTILLA = (
     "week", "test_reason", "test_number", "test_date", "test_place",

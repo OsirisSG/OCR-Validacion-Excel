@@ -393,6 +393,8 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
     if casos_omitidos:
         casos = [c for c in casos if c["case_key"] not in casos_omitidos]
     cfg_emp = config.get("empresarial", {})
+    control_original = control
+    revision_conocimiento = getattr(control_original, "revision_conocimiento", 0)
     gestor_aprendizaje = GestorAprendizaje(config)
     estado_modelos = gestor_aprendizaje.estado()
     cache = CacheOCR(
@@ -438,6 +440,61 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
             resultados_existentes = []
     if casos_filtrados or casos_omitidos:
         resultados_previos = resultados_existentes
+    def refrescar_conocimiento() -> None:
+        """Recarga supervisión al reanudar; no entrena ni cambia resultados terminados."""
+        nonlocal gestor_aprendizaje, conocimiento, estado_modelos
+        nonlocal anotaciones_por_ruta, muestras_por_ruta, resultados_existentes, resultados_previos
+        gestor_nuevo = GestorAprendizaje(config)
+        modelos_nuevos = gestor_nuevo.estado()
+        rutas_fotos = [f["ruta"] for f in todas_las_fotos]
+        anotaciones_nuevas = defaultdict(list)
+        for anotacion in gestor_nuevo.listar_anotaciones(rutas_fotos):
+            if anotacion.get("ruta_imagen"):
+                anotaciones_nuevas[str(anotacion["ruta_imagen"])].append(anotacion)
+        muestras_nuevas = defaultdict(list)
+        for muestra in gestor_nuevo.listar_muestras_visuales(rutas_fotos):
+            muestras_nuevas[str(muestra.get("ruta_imagen"))].append(muestra)
+        conocimiento_nuevo = BaseConocimiento(
+            RAIZ_PROYECTO / cfg_emp.get("base_conocimiento", "base_conocimiento.json"),
+            cfg_emp.get("reglas_minimo_ids", 3), cfg_emp.get("reglas_consenso_minimo", 0.90))
+        existentes_nuevos = resultados_existentes
+        if destino.is_file():
+            existentes_nuevos = json.loads(destino.read_text(encoding="utf-8")).get("resultados", [])
+        firma_supervision = {
+            "anterior": cache.config_version,
+            "modelos": modelos_nuevos,
+            "correcciones": gestor_nuevo.listar_correcciones_texto(rutas_fotos),
+            "anotaciones": anotaciones_nuevas,
+        }
+        nueva_version_cache = hashlib.sha256(json.dumps(
+            firma_supervision, sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()[:16]
+        # Mantener el objeto de caché y sus escrituras pendientes intactos.
+        # Las imágenes siguientes se vuelven a leer con la supervisión actual,
+        # sin reiniciar los bucles ni repetir las ya terminadas en este hilo.
+        gestor_aprendizaje = gestor_nuevo
+        estado_modelos = modelos_nuevos
+        conocimiento = conocimiento_nuevo
+        anotaciones_por_ruta = anotaciones_nuevas
+        muestras_por_ruta = muestras_nuevas
+        resultados_existentes = existentes_nuevos
+        cache.config_version = nueva_version_cache
+        if casos_filtrados or casos_omitidos:
+            resultados_previos = existentes_nuevos
+        por_clave = {r.get("case_key") or r.get("ruta"): r for r in existentes_nuevos}
+        resultados[:] = [por_clave.get(r.get("case_key") or r.get("ruta"), r)
+                        for r in resultados]
+
+    conocimiento_actualizado = False
+    def control_actualizado() -> None:
+        nonlocal revision_conocimiento, conocimiento_actualizado
+        if control_original:
+            control_original()
+        revision = getattr(control_original, "revision_conocimiento", 0)
+        if revision != revision_conocimiento:
+            refrescar_conocimiento()
+            revision_conocimiento = revision
+            conocimiento_actualizado = True
+    control = control_actualizado
     inicio = time.monotonic()
     total_imagenes = sum(len(c.get("fotos", [])) if c.get("estructura_valida")
                          else len(_imagenes_legacy_caso(c)) for c in casos)
@@ -495,7 +552,11 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
                              "motivo_sin_datos": revision_sin_datos.get("motivo"),
                              "modo_recorte": "revision_manual"}
             try:
-                resultado = resultado or cache.obtener(ruta)
+                resultado = resultado or (None if conocimiento_actualizado else cache.obtener(ruta))
+                if (resultado and not revision_sin_datos and
+                        resultado.get("orientaciones_regionales_usadas", {}) !=
+                        gestor_aprendizaje.orientaciones_regionales(ruta)):
+                    resultado = None
             except OSError:
                 resultado = resultado
             desde_cache = resultado is not None
@@ -548,6 +609,11 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
                 alertas.append({"codigo": "ERROR_CACHE", "nivel": "warning",
                                 "imagen": Path(ruta).name,
                                 "mensaje": "No se pudo confirmar la escritura del caché; se reintentará."})
+            resultado = gestor_aprendizaje.filtrar_no_texto(resultado, ruta)
+            if any(r.get("orientacion_dudosa") for r in resultado.get("recortes", []) or []):
+                alertas.append({"codigo": "ORIENTACION_DUDOSA", "nivel": "warning",
+                    "imagen": Path(ruta).name,
+                    "mensaje": "Hay regiones cuya orientación requiere confirmación humana."})
             estado_imagen = resultado.get("estado_imagen", "procesada_con_texto")
             if estado_imagen in {"procesada_con_texto", "procesada_con_qr"}:
                 con_texto += 1
@@ -694,6 +760,7 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
                 consolidado["conflictos"] = [
                     campo for campo in consolidado["conflictos"] if campo != clave]
         consolidado["requiere_revision"] = bool(
+            any(a.get("codigo") == "ORIENTACION_DUDOSA" for a in alertas) or
             consolidado["conflictos"] or any(
                 dato.get("requiere_revision") for dato in consolidado["campos"].values()))
         progreso = {"total_imagenes": len(fotos), "revisadas": len(trazabilidad),
@@ -710,7 +777,8 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
                 grupo["imagenes"].append(alerta["imagen"])
         alertas = list(alertas_agrupadas.values())
         estado = ("con_conflictos" if consolidado["conflictos"] else
-                  "procesada_con_advertencias" if consolidado["campos_faltantes"] or errores else
+                  "procesada_con_advertencias" if consolidado["campos_faltantes"] or errores or
+                    any(a.get("codigo") == "ORIENTACION_DUDOSA" for a in alertas) else
                   "procesada")
         fila = {
             "case_key": caso["case_key"], "id": hashlib.sha256(caso["case_key"].encode()).hexdigest()[:16],
@@ -999,6 +1067,8 @@ def _validar_carpeta(carpeta: dict, config: dict, f2: dict,
 
 
 def _compacto(resultado_ocr: dict | None) -> dict | None:
+    if resultado_ocr and resultado_ocr.get("_ocr_bruto"):
+        resultado_ocr = resultado_ocr["_ocr_bruto"]
     """Versión ligera del resultado OCR para el JSON (sin campos voluminosos)."""
     if resultado_ocr is None:
         return None
@@ -1017,7 +1087,8 @@ def _compacto(resultado_ocr: dict | None) -> dict | None:
         "intentos_ocr", "motor", "dispositivo", "advertencias_motor",
         "dimensiones", "estado_imagen", "modo_recorte", "tiempo_deteccion_seg",
         "tiempo_ocr_seg", "numero_regiones", "zoom_aplicado", "roi_usado", "error",
-        "qrs", "recortes", "modelo_visual_version")}
+        "qrs", "recortes", "modelo_visual_version", "huella_imagen",
+        "orientaciones_regionales_usadas")}
 
 
 def _imagen_salida(item: dict, rol: str) -> dict:

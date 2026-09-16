@@ -100,3 +100,19 @@ Los fallos dependientes de fixtures no se “arreglaron” inventando datos, por
 - `iniciar.command`
 
 Consulta `docs/correcciones_versiones_20260916.md` para una explicación más técnica del flujo de datos y de las decisiones de integración.
+
+## Corrección V2 — reconfirmación de lecturas basadas en símbolos (2026-09-16)
+
+Se corrigió un caso que podía impedir sobrescribir una corrección ya guardada cuando la lectura OCR original estaba formada sólo por signos o puntuación. Ejemplos reales de este patrón son `;`, `|`, `.`, `:` o combinaciones parecidas que visualmente corresponden a dígitos/letras.
+
+Antes, la memoria textual pasaba primero esas lecturas por `normalizar_codigo()`. Como esa función conserva únicamente el alfabeto operativo de códigos, una lectura como `;` se convertía en texto vacío y la segunda confirmación podía ser rechazada aunque la caja seleccionada fuera correcta.
+
+La V2 separa ambos conceptos:
+
+- `correcciones_texto` conserva cualquier texto visible confirmado por la persona y permite sobrescribirlo cronológicamente.
+- El modelo ligero de códigos sólo recibe pares que sí contienen caracteres válidos para ese modelo.
+- La búsqueda de la unidad OCR prioriza texto y `bbox` exactos antes de normalizar.
+- Si `tokens` y `lineas_texto` contienen dos representaciones de la misma caja, una `bbox` exacta se considera una sola selección humana.
+- Se añadió `pruebas/test_reconfirmacion_simbolos_unittest.py` para cubrir `; → 4 → 41`, volver a una corrección anterior y reconfirmación a través del handler del dashboard.
+
+Para una instalación que ya usa la versión consolidada anterior basta con sustituir `aprendizaje.py` y `dashboard/backend/app.py`, y reiniciar el servidor. No se debe reemplazar ni borrar `.aprendizaje/aprendizaje.sqlite3`.

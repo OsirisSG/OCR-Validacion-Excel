@@ -662,12 +662,55 @@ def _guardar_json_atomico(ruta: Path, documento: dict) -> None:
 
 def _buscar_unidad_ocr(unidades: list[dict], texto: str,
                        bbox: list[int] | None = None) -> dict | None:
-    buscado = normalizar_codigo(texto)
-    candidatas = [unidad for unidad in unidades if normalizar_codigo(
-        unidad.get("texto_original") or unidad.get("texto", "")) == buscado]
+    """Localiza primero por texto/caja exactos y normaliza sólo como respaldo.
+
+    Esto es importante al reconfirmar OCR que originalmente fue sólo puntuación
+    (p. ej. ``;`` leído en una imagen que realmente dice ``41``):
+    ``normalizar_codigo(';')`` queda vacío y no debe volver ambigua la selección.
+    """
+    texto_crudo = str(texto or "").strip()
+
+    def textos(unidad: dict) -> set[str]:
+        return {
+            str(unidad.get("texto_original") or "").strip(),
+            str(unidad.get("texto") or "").strip(),
+        } - {""}
+
+    # Una caja exacta es la identidad espacial más fuerte del formulario.
+    # Dentro de ella aceptamos el original o el texto actualmente proyectado.
     if bbox is not None:
-        return next((unidad for unidad in candidatas
-                     if _bbox_igual(unidad.get("bbox"), bbox)), None)
+        por_caja = [u for u in unidades if _bbox_igual(u.get("bbox"), bbox)]
+        exactas = [u for u in por_caja if texto_crudo in textos(u)]
+        if exactas:
+            # tokens y lineas_texto pueden contener dos representaciones de la
+            # misma caja; con bbox exacta ambas son la misma selección humana.
+            return exactas[0]
+        if por_caja:
+            firmas = {(tuple(u.get("bbox") or []), tuple(sorted(textos(u)))) for u in por_caja}
+            if len(firmas) == 1:
+                # Permite un cliente que conserva la lectura visible anterior
+                # justo después de una reconfirmación, sin confundir otra región.
+                return por_caja[0]
+        if not por_caja:
+            return None
+
+    exactas = [u for u in unidades if texto_crudo in textos(u)]
+    if bbox is None:
+        sin_caja = [u for u in exactas if u.get("bbox") is None]
+        if len(sin_caja) == 1:
+            return sin_caja[0]
+        if len(exactas) == 1:
+            return exactas[0]
+
+    buscado = normalizar_codigo(texto_crudo)
+    if not buscado:
+        return None
+    candidatas = [unidad for unidad in unidades if any(
+        normalizar_codigo(valor) == buscado for valor in textos(unidad))]
+    if bbox is not None:
+        por_caja = [unidad for unidad in candidatas
+                    if _bbox_igual(unidad.get("bbox"), bbox)]
+        return por_caja[0] if len(por_caja) == 1 else None
     sin_caja = [unidad for unidad in candidatas if unidad.get("bbox") is None]
     if len(sin_caja) == 1:
         return sin_caja[0]

@@ -768,9 +768,13 @@ class GestorAprendizaje:
                              metadatos: dict | None = None) -> dict:
         crudo_original = str(texto_ocr).strip()
         correcto_original = str(texto_correcto).strip()
+        # La memoria textual debe aceptar cualquier lectura visible, incluso si el
+        # OCR original contiene sólo signos (";", "|", ".", etc.).  La
+        # normalización alfanumérica se usa únicamente para el modelo ligero de
+        # códigos; no debe impedir guardar o sobrescribir la verdad humana.
+        if not crudo_original or not correcto_original:
+            raise ValueError("La lectura OCR y la corrección deben contener texto visible.")
         crudo, correcto = normalizar_codigo(crudo_original), normalizar_codigo(correcto_original)
-        if not crudo or not correcto:
-            raise ValueError("La lectura OCR y la corrección deben contener texto válido.")
         if imagen_hash is None:
             if not ruta_imagen or not Path(ruta_imagen).is_file():
                 raise ValueError("Se requiere una imagen existente o su hash.")
@@ -792,9 +796,10 @@ class GestorAprendizaje:
                     WHERE imagen_hash=? AND texto_ocr=? AND texto_correcto=? AND bbox_json=?""",
                     (confirmado_en, fuente, imagen_hash, crudo_original, correcto_original, json.dumps(bbox)))
 
-            # Cambios exclusivamente de espacios/saltos se conservan como
-            # verdad de layout, pero no contaminan el modelo de códigos.
-            if crudo != correcto:
+            # Cambios exclusivamente de espacios/saltos y lecturas que no
+            # contienen caracteres del alfabeto operativo se conservan como
+            # verdad textual/layout, pero no contaminan el modelo de códigos.
+            if crudo and correcto and crudo != correcto:
                 try:
                     con.execute("""
                         INSERT INTO correcciones
@@ -828,7 +833,7 @@ class GestorAprendizaje:
             "duplicada": duplicada_texto,
             "texto_ocr": crudo_original,
             "texto_correcto": correcto_original,
-            "tipo": "layout" if crudo == correcto else "modelo_codigo",
+            "tipo": "modelo_codigo" if crudo and correcto and crudo != correcto else "layout",
             "entrenamiento": entrenamiento,
             "muestra_visual": muestra_visual,
             "advertencia_visual": advertencia_visual,

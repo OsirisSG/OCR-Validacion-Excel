@@ -117,6 +117,7 @@ class SolicitudCorreccion(BaseModel):
     texto_ocr: str = Field(min_length=1, max_length=4096)
     texto_correcto: str = Field(default="", max_length=4096)
     bbox: list[int] | None = Field(default=None, min_length=4, max_length=4)
+    tipo_unidad: str | None = Field(default=None, max_length=32)
     accion: str = Field(default="confirmar_entrenar", pattern=(
         "^(aceptar|corregir|ilegible|no_es_campo|guardar_sin_entrenar|confirmar_entrenar)$"))
     usuario: str = Field(default="dashboard", min_length=1, max_length=128)
@@ -661,7 +662,8 @@ def _guardar_json_atomico(ruta: Path, documento: dict) -> None:
 
 
 def _buscar_unidad_ocr(unidades: list[dict], texto: str,
-                       bbox: list[int] | None = None) -> dict | None:
+                       bbox: list[int] | None = None,
+                       tipo_unidad: str | None = None) -> dict | None:
     """Localiza primero por texto/caja exactos y normaliza sólo como respaldo.
 
     Esto es importante al reconfirmar OCR que originalmente fue sólo puntuación
@@ -669,6 +671,13 @@ def _buscar_unidad_ocr(unidades: list[dict], texto: str,
     ``normalizar_codigo(';')`` queda vacío y no debe volver ambigua la selección.
     """
     texto_crudo = str(texto or "").strip()
+    # El frontend sabe si el usuario eligió un renglón, token o bloque completo.
+    # Usar esa identidad evita resolver accidentalmente otra representación que
+    # comparte la misma bbox (algo frecuente cuando tokens y líneas coexisten).
+    if tipo_unidad:
+        del_tipo = [u for u in unidades if u.get("tipo_unidad") == tipo_unidad]
+        if del_tipo:
+            unidades = del_tipo
 
     def textos(unidad: dict) -> set[str]:
         return {
@@ -1241,11 +1250,14 @@ def corregir_lectura(solicitud: SolicitudCorreccion):
     ruta_local = _resolver_imagen(str(item["ruta"]), datos, raiz)
     ocr = _aplicar_correcciones_publicas(item["resultado_ocr"], gestor.listar_correcciones_texto([ruta_local]))
     ocr = gestor.filtrar_no_texto(ocr, ruta_local)
-    unidades = list(ocr.get("tokens", [])) + list(ocr.get("lineas_texto", []))
+    unidades = ([{**u, "tipo_unidad": "token"} for u in ocr.get("tokens", [])] +
+                [{**u, "tipo_unidad": "renglón"} for u in ocr.get("lineas_texto", [])])
     if ocr.get("texto_completo"):
         unidades.append({"texto": ocr["texto_completo"], "bbox": None,
+                         "tipo_unidad": "bloque completo",
                          "texto_original": ocr.get("texto_completo_original") or ocr["texto_completo"]})
-    token = _buscar_unidad_ocr(unidades, solicitud.texto_ocr, solicitud.bbox)
+    token = _buscar_unidad_ocr(unidades, solicitud.texto_ocr, solicitud.bbox,
+                              getattr(solicitud, "tipo_unidad", None))
     if token is None:
         raise HTTPException(
             400, "La lectura OCR no coincide de forma única; vuelve a seleccionarla en la imagen.")

@@ -2094,6 +2094,7 @@ function VistaDetalle({ nombre }) {
         texto_ocr: textoUnidad(unidadSeleccionada),
         texto_correcto: textoCorrecto,
         bbox: unidadSeleccionada?.bbox || null,
+        tipo_unidad: unidadSeleccionada?.tipo_unidad || null,
         accion: accionSupervision === "aceptar" && textoCorrecto !== textoVisible(unidadSeleccionada) ? "corregir" : accionSupervision,
       });
       const actualizado = await pedirJSON(`/api/pruebas/${encodeURIComponent(nombre)}`);
@@ -2117,19 +2118,21 @@ function VistaDetalle({ nombre }) {
       setGuardandoCorreccion(false);
     }
   }
-  function elegirGiroRecorte(grados) {
+  function elegirGiroRecorte(grados, copiarTexto = true) {
     const propuesta = propuestaTextoOrientacion(recorteSeleccionado, grados);
     const clave = `${imagenSeleccionada?.id}|${recorteSeleccionado?.marco}|${unidadSeleccionada?.unidad_id}`;
-    if (propuesta.texto && propuesta.texto.trim()) {
+    if (copiarTexto && propuesta.texto && propuesta.texto.trim()) {
       const previo = textoOrientacionRef.current;
       const textoBase = previo?.clave === clave ? previo.texto : textoVisible(unidadSeleccionada);
       if (textoCorrecto && textoCorrecto !== textoBase && textoCorrecto !== propuesta.texto &&
           !window.confirm("Escribiste una corrección. ¿Reemplazarla por el texto de esta orientación?")) return;
       setTextoCorrecto(propuesta.texto);
       textoOrientacionRef.current = { clave, texto: propuesta.texto };
-      setMensajeOrientacion("Lectura copiada a Texto correcto como borrador. Corresponde al recorte completo: comprueba que coincide con el bloque seleccionado antes de aplicar supervisión.");
+      setMensajeOrientacion("Lectura regional copiada como borrador. Úsala sólo si corresponde exactamente al bloque seleccionado.");
+    } else if (copiarTexto) {
+      setMensajeOrientacion("Esta orientación regional no tiene una lectura disponible. Se conserva tu Texto correcto.");
     } else {
-      setMensajeOrientacion("Esta orientación no tiene una lectura disponible. Se conserva tu Texto correcto; guardar el giro no ejecuta una nueva lectura.");
+      setMensajeOrientacion("Vista regional girada. El texto del bloque exacto no se modifica.");
     }
     setGiroRecorte(propuesta.angulo);
   }
@@ -2524,30 +2527,34 @@ function VistaDetalle({ nombre }) {
             onClick=${() => descartarTexto(d, true)}>Deshacer descarte</button></div>`)}
       ${mostrarCorreccion && unidadesCorregibles.length ? html`
         <form id="formulario-correccion-activa" class="formulario-correccion" onSubmit=${confirmarCorreccion}>
-          ${!recorteSeleccionado && unidadSeleccionada?.bbox && html`<${HerramientasRegion}
-            key=${`${imagenSeleccionada.id}-${unidadSeleccionada.bbox.join(",")}`} item=${imagenSeleccionada}
-            bbox=${unidadSeleccionada.bbox} texto=${textoCorrecto} onTexto=${setTextoCorrecto} pruebaId=${detalle.id} />`}
+          ${unidadSeleccionada?.bbox && html`<div class="seleccion-exacta-correccion">
+            <p class="sobrelinea">BLOQUE EXACTO QUE SE GUARDARÁ</p>
+            <${HerramientasRegion}
+              key=${`${imagenSeleccionada.id}-${unidadSeleccionada.tipo_unidad}-${unidadSeleccionada.bbox.join(",")}`} item=${imagenSeleccionada}
+              bbox=${unidadSeleccionada.bbox} texto=${textoCorrecto} onTexto=${setTextoCorrecto} pruebaId=${detalle.id} />
+          </div>`}
           ${recorteSeleccionado && html`<div class="orientacion-regional-editor">
-            <strong>${recorteSeleccionado.orientacion_dudosa ? "Orientación dudosa · revisa esta región" : "Orientación de esta región"}</strong>
+            <strong>${recorteSeleccionado.orientacion_dudosa ? "Orientación dudosa del recorte regional" : "Orientación del recorte regional (avanzado)"}</strong>
+            <p class="subtitulo-seccion">Este panel corresponde al recorte grande que originó uno o más renglones. La corrección de texto se guarda usando la caja exacta mostrada arriba.</p>
             <img class="preview-region-orientacion" alt="Recorte seleccionado en la orientación elegida"
               src=${`/api/imagen/region-orientacion?prueba_id=${encodeURIComponent(detalle.id)}&imagen_id=${encodeURIComponent(imagenSeleccionada.id)}&marco=${recorteSeleccionado.marco}&grados=${anguloRecorte}`} />
             <div class="acciones-revision">
-              <button type="button" class="boton" onClick=${() => elegirGiroRecorte((anguloRecorte+270)%360)}>↶ 90°</button>
+              <button type="button" class="boton" onClick=${() => elegirGiroRecorte((anguloRecorte+270)%360, false)}>↶ 90°</button>
               <strong>${anguloRecorte}°</strong>
-              <button type="button" class="boton" onClick=${() => elegirGiroRecorte((anguloRecorte+90)%360)}>↷ 90°</button>
+              <button type="button" class="boton" onClick=${() => elegirGiroRecorte((anguloRecorte+90)%360, false)}>↷ 90°</button>
               <button type="button" class="boton" disabled=${guardandoOrientacion} onClick=${() => guardarGiroRecorte()}>Guardar orientación regional</button>
               <button type="button" class="boton" disabled=${guardandoOrientacion} onClick=${() => guardarGiroRecorte(true)}>Volver a automático</button>
             </div>
             <div class="lista-candidatos-orientacion">
               ${(recorteSeleccionado.candidatos_orientacion || []).map((c) => html`<button type="button"
                 class="boton candidato-orientacion" aria-pressed=${anguloRecorte === c.grados}
-                onClick=${() => elegirGiroRecorte(c.grados)}>
+                onClick=${() => elegirGiroRecorte(c.grados, false)}>
                 <strong>${c.grados}° · ${(c.confianza*100).toFixed(1)}%</strong><span>${c.texto || "Sin lectura"}</span>
               </button>`)}
             </div>
-            <small>Al elegir un giro se copia su lectura disponible a Texto correcto, sin guardarla.
-              Las alternativas corresponden al recorte completo, no necesariamente a un solo renglón.
-              Si cambian las cajas, guarda la orientación y reprocesa antes de aplicar supervisión.</small>
+            <small>Estas alternativas corresponden al recorte regional completo y sirven para decidir su orientación.
+              Ya no reemplazan automáticamente el Texto correcto del renglón. Para obtener propuestas del bloque exacto, usa
+              “Comparar lecturas de esta zona” en el panel superior. Si cambian las cajas, guarda la orientación y reprocesa antes de aplicar supervisión.</small>
             ${mensajeOrientacion && html`<p role="status">${mensajeOrientacion}</p>`}
             <button type="button" class="boton" disabled=${guardandoOrientacion} onClick=${() => reprocesar(false,true)}>Reprocesar imagen visible</button>
           </div>`}

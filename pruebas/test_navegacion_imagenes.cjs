@@ -26,6 +26,7 @@ vm.runInContext(fs.readFileSync(path.join(base,'app.js'),'utf8'),ctx);
 ctx.useApi=url=>url.startsWith('/api/pruebas/')?[detail,d=>{detail=d;},null]:[{},()=>{},null];
 ctx.enviarJSON=async(url,data)=>{
  if(url==='/api/imagenes/verificar') detail={...detail,imagenes:detail.imagenes.map(i=>i.id===data.imagen_id?{...i,estado_imagen:'verificada'}:i)};
+ if(url==='/api/aprendizaje/zonas') return {candidatos_orientacion:[{grados:90,texto:'A.90',confianza:0.95}]};
  if(url==='/api/aprendizaje/correcciones') {
   ultimaCorreccion=data;
   detail={...detail,imagenes:detail.imagenes.map(i=>i.id!==data.imagen_id?i:{...i,resultado_ocr:{...i.resultado_ocr,
@@ -67,10 +68,14 @@ const editor=tree=>all(tree).find(n=>typeof n.type==='function'&&n.type.name==='
  t=render();editor(t).props.onSelectText(detail.imagenes[0],detail.imagenes[0].resultado_ocr.lineas_texto[0]);t=render();
  btn(t,'↷ 90°').props.onClick();t=render();
  let campo=all(t).find(n=>n.type==='textarea'&&n.props.placeholder==='Escribe el texto correcto');
- assert.equal(campo.props.value,'A.90','La rotación original copia la lectura');
+ assert.equal(campo.props.value,'A','La rotación regional no debe pisar el texto del renglón exacto');
+ campo.props.onChange({target:{value:'A.90'}});t=render();
+ campo=all(t).find(n=>n.type==='textarea'&&n.props.placeholder==='Escribe el texto correcto');
+ assert.equal(campo.props.value,'A.90','El bloque exacto conserva su propio borrador');
  let form=all(t).find(n=>n.props.id==='formulario-correccion-activa');
  await form.props.onSubmit({preventDefault(){}});t=render();
  assert.equal(ultimaCorreccion.texto_correcto,'A.90');
+ assert.equal(ultimaCorreccion.tipo_unidad,'renglón');
  assert.equal(editor(t).props.item.resultado_ocr.lineas_texto[0].texto,'A.90');
  campo=all(t).find(n=>n.type==='textarea'&&n.props.placeholder==='Escribe el texto correcto');
  campo.props.onChange({target:{value:'A.91'}});t=render();
@@ -82,5 +87,5 @@ const editor=tree=>all(tree).find(n=>typeof n.type==='function'&&n.type.name==='
  assert.equal(ultimaCorreccion.texto_ocr,'A');
  assert.equal(editor(t).props.item.resultado_ocr.lineas_texto[0].texto,'A.91');
  assert.equal(all(t).find(n=>n.type==='textarea'&&n.props.placeholder==='Escribe el texto correcto').props.value,'A.91');
- console.log('OK: giro original → texto correcto → guardar → sobrescribir y recargar sin perder selección.');
+ console.log('OK: giro regional aislado → lectura exacta → guardar → sobrescribir y recargar sin perder selección.');
 })().catch(e=>{console.error(e);process.exitCode=1;});

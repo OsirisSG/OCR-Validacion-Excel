@@ -1,0 +1,11 @@
+const fs = require('fs');
+const assert = require('assert');
+const path = require('path');
+const source = fs.readFileSync(path.join(__dirname, '../dashboard/frontend/app.js'), 'utf8');
+assert(source.includes('BLOQUE EXACTO QUE SE GUARDARÁ'));
+assert(source.includes('tipo_unidad: unidadSeleccionada?.tipo_unidad || null'));
+assert(source.includes('Comparar lecturas de esta zona'));
+assert(source.includes('Estas alternativas corresponden al recorte regional completo'));
+assert(source.includes('elegirGiroRecorte(c.grados, false)'));
+assert(source.includes('El texto del bloque exacto no se modifica.'));
+console.log('OK: la corrección usa siempre bbox exacta y la orientación regional queda separada del texto del renglón.');

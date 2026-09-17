@@ -116,3 +116,9 @@ La V2 separa ambos conceptos:
 - Se añadió `pruebas/test_reconfirmacion_simbolos_unittest.py` para cubrir `; → 4 → 41`, volver a una corrección anterior y reconfirmación a través del handler del dashboard.
 
 Para una instalación que ya usa la versión consolidada anterior basta con sustituir `aprendizaje.py` y `dashboard/backend/app.py`, y reiniciar el servidor. No se debe reemplazar ni borrar `.aprendizaje/aprendizaje.sqlite3`.
+
+## V4 — orientación regional antes que corrección textual
+
+La V3 hacía una suposición demasiado fuerte: trataba la `bbox` de un renglón nacido de una región con orientación dudosa como si ya fuera definitiva. En V4, si el recorte regional sigue `orientacion_dudosa` y no `orientacion_confirmada`, primero se obliga a fijar el giro y reprocesar. La corrección textual queda temporalmente bloqueada tanto en frontend como en backend. Después del reproceso vuelve a estar disponible la sobrescritura normal.
+
+Consulta `LEEME_PATCH_ORIENTACION_SEGURA_V4.md` para el flujo exacto y el caso de las capturas de `IMG_5330` / `IMG_5329`.

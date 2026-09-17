@@ -56,7 +56,7 @@ class SobrescrituraPublicaTest(unittest.TestCase):
                  'normalizar_codigo':lambda s:s,'hash_archivo':hash_archivo}
             tree=ast.parse((Path(__file__).resolve().parents[1]/'dashboard/backend/app.py').read_text(encoding='utf-8'))
             functions=[n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name in
-                       ('corregir_lectura','_buscar_unidad_ocr','_aplicar_correcciones_publicas')]
+                       ('corregir_lectura','_buscar_unidad_ocr','_orientacion_regional_pendiente','_aplicar_correcciones_publicas')]
             for n in functions:n.decorator_list=[]
             exec(compile(ast.Module(body=functions,type_ignores=[]),'handler','exec'),env)
             req=SimpleNamespace(prueba_id='caso',imagen_id='foto',campo='etiqueta',texto_ocr='ABC',

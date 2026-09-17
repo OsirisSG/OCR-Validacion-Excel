@@ -88,4 +88,18 @@ const editor=tree=>all(tree).find(n=>typeof n.type==='function'&&n.type.name==='
  assert.equal(editor(t).props.item.resultado_ocr.lineas_texto[0].texto,'A.91');
  assert.equal(all(t).find(n=>n.type==='textarea'&&n.props.placeholder==='Escribe el texto correcto').props.value,'A.91');
  console.log('OK: giro regional aislado → lectura exacta → guardar → sobrescribir y recargar sin perder selección.');
+ // Si la orientación regional es dudosa y aún no fue confirmada, la geometría
+ // del renglón es provisional: no debe mostrarse como bloque definitivo ni
+ // permitirse aplicar supervisión hasta reprocesar.
+ detail.imagenes[0].resultado_ocr.recortes[0].orientacion_dudosa=true;
+ detail.imagenes[0].resultado_ocr.recortes[0].orientacion_confirmada=false;
+ t=render();editor(t).props.onSelectText(detail.imagenes[0],detail.imagenes[0].resultado_ocr.lineas_texto[0]);t=render();
+ const herramientaExacta=all(t).find(n=>typeof n.type==='function'&&n.type.name==='HerramientasRegion'&&n.props.pruebaId==='caso');
+ assert(!herramientaExacta,'No debe presentar como definitiva la caja derivada de una orientación regional dudosa');
+ campo=all(t).find(n=>n.type==='textarea'&&String(n.props.placeholder).includes('Primero confirma la orientación regional'));
+ assert(campo&&campo.props.disabled,'La corrección textual debe bloquearse hasta reprocesar');
+ const aplicar=btn(t,'Aplicar supervisión');
+ assert(aplicar&&aplicar.props.disabled,'Aplicar supervisión debe quedar deshabilitado con geometría provisional');
+ assert(all(t).some(n=>n.type==='button'&&n.children.some(c=>typeof c==='string'&&c.includes('y reprocesar esta imagen'))),'Debe ofrecer un flujo explícito orientación → reproceso');
+ console.log('OK: orientación regional dudosa bloquea la corrección textual y obliga a reprocesar primero.');
 })().catch(e=>{console.error(e);process.exitCode=1;});

@@ -488,6 +488,23 @@ OCR-Validacion-Excel/
 └── errores/                      # Bitácoras técnicas curadas
 ```
 
+## Reporte BMG 1ST + 2ST (V7)
+
+La V7 conserva el flujo OCR/corrección por giro de V6 y añade un reporte BMG
+basado en `plantillas/reporte_bmg_1st_2st.xlsx`. El mismo libro reúne 1ST y
+2ST, mantiene `Versuchsmatrix` como listado detallado y presenta en
+`Übersicht Standversuche` una matriz por temperatura/tipo de inflador.
+
+El color de cada número de prueba representa exclusivamente el tiempo de
+apertura (`opening_time_ms`): verde hasta 6 ms inclusive, amarillo por encima
+de 6 y hasta 7 ms inclusive, rojo por encima de 7 ms y gris cuando el dato no
+existe o requiere revisión. En el dashboard, las celdas de la matriz del
+Resumen llevan a la fila correspondiente de Listado; en el Excel generado,
+las celdas del resumen enlazan a la fila de `Versuchsmatrix`.
+
+Consulta `LEEME_MATRIZ_APERTURA_V7.md` para el detalle de reglas, capacidad y
+archivos modificados.
+
 ## Limitaciones actuales
 
 - El flujo legacy conserva su comparación etiqueta/referencia. El empresarial

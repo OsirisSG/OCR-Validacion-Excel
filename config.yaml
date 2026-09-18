@@ -135,6 +135,12 @@ fase3:
   hoja_matriz: "Matriz de cumplimiento"
   hoja_textos: "Textos por imagen"
   hoja_revision: "Bandeja de revisión"
+  reporte_bmg:
+    activar: true
+    plantilla: plantillas/reporte_bmg_1st_2st.xlsx
+    combinar_1st_2st: true
+    hoja_resumen: "Übersicht Standversuche"
+    hoja_lista: "Versuchsmatrix"
 
 # Flujo por ID para proyectos con <ID> <VERSION> <INFLADOR> <TEMPERATURA>.
 empresarial:
@@ -209,6 +215,7 @@ colores:
   verde: "#22c55e"
   amarillo: "#f59e0b"
   rojo: "#ef4444"
+  gris: "#9ca3af"
 
 dashboard:
   # Raíz permitida para servir imágenes originales en el detalle (seguridad:

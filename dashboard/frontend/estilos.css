@@ -766,3 +766,26 @@ td.numero { font-variant-numeric: tabular-nums; }
   font-size: 1rem;
   color: var(--texto-1);
 }
+
+
+/* V7 · Matriz de tiempo de apertura 1ST + 2ST */
+.matriz-apertura-tarjeta { margin-top: 18px; overflow-x: auto; }
+.matriz-apertura-encabezado { display: flex; gap: 18px; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; }
+.leyenda-apertura { display: flex; flex-wrap: wrap; gap: 8px 14px; font-size: 12px; color: var(--texto-secundario); }
+.leyenda-apertura span { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.leyenda-apertura i { width: 16px; height: 10px; border-radius: 2px; border: 1px solid rgba(255,255,255,.25); }
+.matrices-apertura { display: grid; gap: 22px; margin-top: 16px; }
+.matriz-etapa { min-width: 760px; border: 1px solid var(--borde); border-radius: 10px; padding: 12px; background: var(--fondo); }
+.matriz-etapa-titulo { font-weight: 800; margin-bottom: 10px; }
+.matriz-apertura-grid { display: grid; grid-template-columns: repeat(7, minmax(88px, 1fr)); gap: 4px; align-items: end; }
+.matriz-apertura-columna { display: flex; min-width: 0; flex-direction: column; justify-content: flex-end; }
+.matriz-apertura-celdas { display: grid; grid-auto-rows: 29px; gap: 2px; }
+.matriz-celda { border: 1px solid rgba(0,0,0,.28); border-radius: 2px; color: #081018; font: 700 12px/1.1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; min-width: 0; padding: 4px 3px; text-align: center; }
+button.matriz-celda { cursor: pointer; transition: transform .08s ease, filter .08s ease, box-shadow .08s ease; }
+button.matriz-celda:hover, button.matriz-celda:focus-visible { filter: brightness(1.08); transform: translateY(-1px); box-shadow: 0 0 0 2px rgba(96,165,250,.55); outline: none; }
+.matriz-celda-vacia { background: transparent; border-color: transparent; }
+.matriz-columna-meta { display: grid; gap: 2px; margin-top: 6px; text-align: center; font-size: 11px; }
+.matriz-columna-meta strong { font-weight: 800; }
+.matriz-columna-meta span { color: var(--texto-secundario); }
+.tabla-pruebas tbody tr.fila-foco-matriz { outline: 3px solid #60a5fa; outline-offset: -3px; background: rgba(96,165,250,.14); }
+@media (max-width: 850px) { .matriz-apertura-tarjeta { padding-bottom: 16px; } .matriz-etapa { min-width: 700px; } }

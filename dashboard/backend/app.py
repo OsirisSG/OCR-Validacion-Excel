@@ -46,7 +46,7 @@ from pydantic import BaseModel, Field  # noqa: E402
 from fastapi.responses import FileResponse, Response  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 
-from configuracion import cargar_config, cargar_reglas, clasificar  # noqa: E402
+from configuracion import cargar_config, cargar_reglas, clasificar, evaluar_criterio  # noqa: E402
 from aprendizaje import (GestorAprendizaje, hash_archivo, normalizar_codigo,
                          dimensiones_rotadas, rotar_bbox,
                          transformar_bbox_entre_rotaciones)  # noqa: E402
@@ -1015,6 +1015,95 @@ def _lote_de(fila: dict) -> str:
     return partes[-2] if len(partes) >= 2 else "Sin lote"
 
 
+MATRIZ_APERTURA_COLUMNAS = [
+    {"id": "HT_UGL", "temperature_condition": "HT", "inflator_type": "UGL",
+     "temperatura": "+85°C", "generador": "UGL", "esperados": 5},
+    {"id": "HT_OGL", "temperature_condition": "HT", "inflator_type": "OGL",
+     "temperatura": "+85°C", "generador": "OGL", "esperados": 5},
+    {"id": "HT_NOM", "temperature_condition": "HT", "inflator_type": "NOM",
+     "temperatura": "+85°C", "generador": "nominal", "esperados": 10},
+    {"id": "RT_NOM", "temperature_condition": "RT", "inflator_type": "NOM",
+     "temperatura": "RT", "generador": "nominal", "esperados": 10},
+    {"id": "NT_NOM", "temperature_condition": "NT", "inflator_type": "NOM",
+     "temperatura": "-35°C", "generador": "nominal", "esperados": 10},
+    {"id": "NT_OGL", "temperature_condition": "NT", "inflator_type": "OGL",
+     "temperatura": "-35°C", "generador": "OGL", "esperados": 5},
+    {"id": "NT_UGL", "temperature_condition": "NT", "inflator_type": "UGL",
+     "temperatura": "-35°C", "generador": "UGL", "esperados": 5},
+]
+
+
+def _campo_resultado(fila: dict, clave: str, *, solo_confiable: bool = False):
+    dato = (fila.get("campos") or {}).get(clave)
+    if isinstance(dato, dict):
+        if solo_confiable and (dato.get("requiere_revision") or
+                               dato.get("estado") in {"conflicto", "pendiente_revision"}):
+            return None
+        return dato.get("valor")
+    if dato not in {None, ""}:
+        return dato
+    if clave in fila:
+        return fila.get(clave)
+    return (fila.get("metadata_ruta") or {}).get(clave)
+
+
+def _numero_ms(valor):
+    if isinstance(valor, bool) or valor in {None, "", "--", "-"}:
+        return None
+    try:
+        return float(str(valor).strip().lower().replace("ms", "").replace(",", "."))
+    except (TypeError, ValueError):
+        return None
+
+
+def _estado_apertura_fila(fila: dict) -> tuple[str, float | None]:
+    valor = _numero_ms(_campo_resultado(fila, "opening_time_ms", solo_confiable=True))
+    if valor is None:
+        return "gris", None
+    criterio = REGLAS.get("criterios", {}).get("tiempo_apertura_ms") or {
+        "verde": "<= 6", "amarillo": "6-7", "rojo": "> 7"}
+    return evaluar_criterio(criterio, valor) or "gris", valor
+
+
+def _clave_prueba_orden(valor):
+    try:
+        return (0, int(str(valor).strip()))
+    except (TypeError, ValueError):
+        return (1, str(valor or ""))
+
+
+def _matriz_apertura(filas: list[dict]) -> dict | None:
+    if not any(str(f.get("tipo_st") or "").upper() in {"1ST", "2ST"} for f in filas):
+        return None
+    etapas = []
+    for tipo_st in ("1ST", "2ST"):
+        columnas = []
+        etapa = [f for f in filas if str(f.get("tipo_st") or "").upper() == tipo_st]
+        for spec in MATRIZ_APERTURA_COLUMNAS:
+            grupo = [f for f in etapa
+                     if str(f.get("temperature_condition") or "").upper() == spec["temperature_condition"]
+                     and str(f.get("inflator_type") or "").upper() == spec["inflator_type"]]
+            grupo.sort(key=lambda f: _clave_prueba_orden(f.get("test_number") or f.get("identificador")),
+                       reverse=True)
+            alto = max(10, len(grupo))
+            celdas = [None] * max(0, alto - len(grupo))
+            for fila in grupo:
+                celdas.append({
+                    "id": fila.get("id"),
+                    "test_number": fila.get("test_number") or fila.get("identificador") or fila.get("nombre"),
+                    "estado": fila.get("semaforo_apertura") or "gris",
+                    "opening_time_ms": fila.get("opening_time_ms"),
+                    "enlace": fila.get("enlace"),
+                })
+            columnas.append({**spec, "celdas": celdas})
+        etapas.append({"tipo_st": tipo_st, "columnas": columnas})
+    return {
+        "etapas": etapas,
+        "regla": {"verde": "≤ 6 ms", "amarillo": "> 6 y ≤ 7 ms",
+                  "rojo": "> 7 ms", "gris": "valor aún no conocido"},
+    }
+
+
 def _fila_publica(fila: dict, revisiones: dict | None = None,
                   alertas_atendidas: set | None = None) -> dict:
     """Fila para listado/tabla: ligera + semáforo evaluado con el motor de reglas."""
@@ -1030,6 +1119,7 @@ def _fila_publica(fila: dict, revisiones: dict | None = None,
     revision = (revisiones or {}).get(("carpeta", item_id)) or {
         "tipo": "carpeta", "item_id": item_id, "estado": inicial,
         "oculto": False, "actualizado_en": None}
+    semaforo_apertura, opening_time_ms = _estado_apertura_fila(fila)
     return {
         "id": item_id,
         "nombre": fila["nombre"],
@@ -1058,6 +1148,9 @@ def _fila_publica(fila: dict, revisiones: dict | None = None,
                           fila.get("metadata_ruta", {}).get("module_version"),
         "inflator_type": fila.get("inflator_type") or
                          fila.get("metadata_ruta", {}).get("inflator_type"),
+        "opening_time_ms": opening_time_ms,
+        "semaforo_apertura": semaforo_apertura,
+        "test_number": fila.get("test_number") or _campo_resultado(fila, "test_number"),
         "ruta": fila.get("ruta"), "ruta_relativa": fila.get("ruta_relativa"),
         "estructura_valida": fila.get("estructura_valida"),
         "estado": fila.get("estado", "detectada"), "progreso": fila.get("progreso", {}),
@@ -2071,6 +2164,7 @@ def resumen():
         "pct": {k: round(100 * v / total, 1) for k, v in conteo.items()} if total else {},
         "confianza_promedio": round(sum(confianzas) / len(confianzas), 1) if confianzas else None,
         "distribucion_por_lote": por_lote,
+        "matriz_apertura": _matriz_apertura(filas),
         "generado_en": datos.get("generado_en"),
         "raiz": _raiz_publica(datos),
         "raiz_origen": datos.get("raiz"),

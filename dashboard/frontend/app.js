@@ -260,6 +260,59 @@ function EstadoError({ mensaje = "No fue posible cargar el dashboard." }) {
 
 /* ----------------------------- Vistas ----------------------------- */
 
+function MatrizApertura({ matriz, colores }) {
+  if (!matriz?.etapas?.length) return null;
+  const paleta = {
+    verde: colores.verde || "#22c55e", amarillo: colores.amarillo || "#f59e0b",
+    rojo: colores.rojo || "#ef4444", gris: colores.gris || "#9ca3af",
+  };
+  const abrirEnListado = (item) => {
+    if (!item) return;
+    try {
+      sessionStorage.setItem("foco_listado", JSON.stringify({
+        id: item.id, query: String(item.test_number || ""),
+      }));
+    } catch (_) {}
+    location.hash = "#/tabla";
+  };
+  const textoTiempo = (item) => item?.opening_time_ms === null || item?.opening_time_ms === undefined
+    ? "Tiempo de apertura aún no conocido"
+    : `Tiempo de apertura: ${item.opening_time_ms} ms`;
+  return html`<div class="tarjeta matriz-apertura-tarjeta">
+    <div class="matriz-apertura-encabezado">
+      <div>
+        <h3 class="titulo-seccion" style=${{ margin: 0 }}>Matriz de tiempo de apertura</h3>
+        <p class="subtitulo-seccion" style=${{ marginBottom: 0 }}>
+          1ST y 2ST en un solo resumen. Haz clic en una prueba para localizar su carpeta en el Listado.
+        </p>
+      </div>
+      <div class="leyenda-apertura" aria-label="Leyenda tiempo de apertura">
+        ${Object.entries(matriz.regla || {}).map(([estado, etiqueta]) => html`
+          <span key=${estado}><i style=${{ background: paleta[estado] }}></i>${etiqueta}</span>`)}
+      </div>
+    </div>
+    <div class="matrices-apertura">
+      ${matriz.etapas.map((etapa) => html`<section class="matriz-etapa" key=${etapa.tipo_st}>
+        <div class="matriz-etapa-titulo">Overview results (${etapa.tipo_st})</div>
+        <div class="matriz-apertura-grid">
+          ${etapa.columnas.map((col) => html`<div class="matriz-apertura-columna" key=${col.id}>
+            <div class="matriz-apertura-celdas">
+              ${col.celdas.map((item, idx) => item
+                ? html`<button key=${item.id || idx} type="button"
+                    class=${`matriz-celda estado-${item.estado || "gris"}`}
+                    style=${{ background: paleta[item.estado] || paleta.gris }}
+                    title=${`${item.test_number} · ${textoTiempo(item)} · abrir en Listado`}
+                    onClick=${() => abrirEnListado(item)}>${item.test_number}</button>`
+                : html`<span key=${`vacio-${idx}`} class="matriz-celda matriz-celda-vacia" aria-hidden="true"></span>`)}
+            </div>
+            <div class="matriz-columna-meta"><strong>${col.temperatura}</strong><span>${col.generador}</span></div>
+          </div>`)}
+        </div>
+      </section>`)}
+    </div>
+  </div>`;
+}
+
 function VistaResumen() {
   const [resumen, , errorResumen] = useApi("/api/resumen");
   const [config, , errorConfig] = useApi("/api/config");
@@ -291,6 +344,8 @@ function VistaResumen() {
         <${BarrasLote} porLote=${resumen.distribucion_por_lote} colores=${colores} />
       </div>
     </div>
+
+    <${MatrizApertura} matriz=${resumen.matriz_apertura} colores=${colores} />
 
     <div class="aviso ayuda-carga">
       <strong>Para procesar otra carpeta</strong>
@@ -1082,7 +1137,12 @@ function VistaExternas({ caso }) {
 }
 
 function VistaTabla() {
-  const [consulta, setConsulta] = useState("");
+  const [focoInicial] = useState(() => {
+    try { return JSON.parse(sessionStorage.getItem("foco_listado") || "null"); }
+    catch (_) { return null; }
+  });
+  const [focoId, setFocoId] = useState(focoInicial?.id || null);
+  const [consulta, setConsulta] = useState(focoInicial?.query || "");
   const [estado, setEstado] = useState("");
   const [pagina, setPagina] = useState(0);
   const [mostrarOcultos, setMostrarOcultos] = useState(false);
@@ -1101,6 +1161,18 @@ function VistaTabla() {
     }, 1200);
     return () => clearInterval(id);
   }, [rutaFilas]);
+
+  useEffect(() => {
+    if (!focoId || !filas?.items?.length || !refTabla.current) return;
+    const selector = `tbody tr[data-id="${focoId}"]`;
+    const nodo = refTabla.current.querySelector(selector);
+    if (!nodo) return;
+    nodo.scrollIntoView({ behavior: "smooth", block: "center" });
+    nodo.focus();
+    try { sessionStorage.removeItem("foco_listado"); } catch (_) {}
+    const temporizador = setTimeout(() => setFocoId(null), 3500);
+    return () => clearTimeout(temporizador);
+  }, [filas, focoId]);
 
   const alPulsarTecla = useCallback((ev) => {
     if (ev.key !== "ArrowDown" && ev.key !== "ArrowUp" && ev.key !== "Enter") return;
@@ -1162,7 +1234,8 @@ function VistaTabla() {
           <th>Progreso</th><th>Estado</th><th>Revisión</th><th>Acciones</th>
         </tr></thead>
         <tbody>
-          ${filas.items.map((f) => html`<tr key=${f.id} tabIndex=${0}
+          ${filas.items.map((f) => html`<tr key=${f.id} tabIndex=${0} data-id=${f.id}
+            class=${focoId === f.id ? "fila-foco-matriz" : ""}
             aria-label=${`Abrir detalle de ${f.identificador || f.nombre}`}
             onClick=${() => { location.hash = f.enlace || `#/detalle/${encodeURIComponent(f.id)}`; }}>
             <td data-etiqueta="Identificador"><strong>${f.identificador || f.nombre}</strong></td>

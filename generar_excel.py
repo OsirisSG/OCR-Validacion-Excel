@@ -189,6 +189,18 @@ def generar_excel(ruta_validacion: str | Path | None = None,
             raise FileNotFoundError(f"No se encontró la plantilla Excel: {plantilla}")
         return generar_desde_plantilla(plantilla, ruta_salida, datos.get("resultados", []))
 
+    # Reporte BMG 1ST + 2ST: usa el libro de referencia sin alterar el
+    # generador empresarial genérico. Una plantilla explícita siempre tiene prioridad.
+    reporte_bmg = f3.get("reporte_bmg", {})
+    if datos.get("perfil") == "empresarial" and reporte_bmg.get("activar", False):
+        from reporte_bmg import generar_reporte_bmg
+        plantilla_bmg = Path(str(reporte_bmg.get("plantilla") or "").strip().strip('"\''))
+        if not plantilla_bmg.is_absolute():
+            plantilla_bmg = RAIZ_PROYECTO / plantilla_bmg
+        if plantilla_bmg.is_file():
+            return generar_reporte_bmg(
+                plantilla_bmg, ruta_salida, datos.get("resultados", []), config, reglas)
+
     try:
         from pruebas_externas import cargar as cargar_externas
         datos_externos = cargar_externas(config)

@@ -143,3 +143,7 @@ Validación V5: 6 pruebas JavaScript del editor pasaron y 123 pruebas Python ind
 - Caché de `app.js` y `estilos.css` incrementada a `20260918-correcciones-6`.
 - El ángulo actual vuelve a mostrarse junto a los botones de giro, y el panel exacto ocupa todo el ancho.
 - Validación: 7 pruebas JavaScript correctas; 42 pruebas Python dirigidas correctas; suite completa con 142 correctas y 8 no reproducibles por faltar fixtures empresariales externos (`validacion_resultados.json` y banco externo).
+
+## V7 — Matriz de apertura y reporte BMG 1ST + 2ST
+
+Se mantiene V6 como base de corrección OCR y se añade el reporte BMG solicitado. El dashboard incorpora una matriz clicable 1ST/2ST basada en `opening_time_ms`: verde <=6 ms, amarillo >6 y <=7 ms, rojo >7 ms, gris sin valor fiable. El Excel utiliza el formato `Übersicht Standversuche` + `Versuchsmatrix`, combina ambas etapas en un único archivo y enlaza cada número del resumen con su fila detallada. Ver `LEEME_MATRIZ_APERTURA_V7.md`.

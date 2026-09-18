@@ -62,44 +62,27 @@ const editor=tree=>all(tree).find(n=>typeof n.type==='function'&&n.type.name==='
  assert(all(t).some(n=>n.children.includes('Todas las imágenes están verificadas. Puedes mostrarlas nuevamente.')));
  btn(t,'Mostrar todas las imágenes').props.onClick();t=render();assert.equal(editor(t).props.item.id,'a');
  console.log('OK: filtro, límites, navegación, borradores, bloqueo durante guardado, avance tras verificar, última imagen e historial plegado.');
- detail.imagenes[0].resultado_ocr.lineas_texto[0].marco_region='region-a';
- detail.imagenes[0].resultado_ocr.recortes=[{marco:'region-a',orientacion_grados:0,
-   candidatos_orientacion:[{grados:90,texto:'A.90',confianza:0.9}]}];
- t=render();editor(t).props.onSelectText(detail.imagenes[0],detail.imagenes[0].resultado_ocr.lineas_texto[0]);t=render();
- btn(t,'↷ 90°').props.onClick();t=render();
- let campo=all(t).find(n=>n.type==='textarea'&&n.props.placeholder==='Escribe el texto correcto');
- assert.equal(campo.props.value,'A','La rotación regional no debe pisar el texto del renglón exacto');
- campo.props.onChange({target:{value:'A.90'}});t=render();
- campo=all(t).find(n=>n.type==='textarea'&&n.props.placeholder==='Escribe el texto correcto');
- assert.equal(campo.props.value,'A.90','El bloque exacto conserva su propio borrador');
- let form=all(t).find(n=>n.props.id==='formulario-correccion-activa');
- await form.props.onSubmit({preventDefault(){}});t=render();
- assert.equal(ultimaCorreccion.texto_correcto,'A.90');
- assert.equal(ultimaCorreccion.tipo_unidad,'renglón');
- assert.equal(editor(t).props.item.resultado_ocr.lineas_texto[0].texto,'A.90');
- campo=all(t).find(n=>n.type==='textarea'&&n.props.placeholder==='Escribe el texto correcto');
- campo.props.onChange({target:{value:'A.91'}});t=render();
- const accion=all(t).find(n=>n.type==='select'&&all(n).some(o=>o.type==='option'&&o.props.value==='aceptar'));
- accion.props.onChange({target:{value:'aceptar'}});t=render();
- form=all(t).find(n=>n.props.id==='formulario-correccion-activa');
- await form.props.onSubmit({preventDefault(){}});t=render();
- assert.equal(ultimaCorreccion.accion,'corregir','Aceptar no debe descartar una edición de la casilla');
- assert.equal(ultimaCorreccion.texto_ocr,'A');
- assert.equal(editor(t).props.item.resultado_ocr.lineas_texto[0].texto,'A.91');
- assert.equal(all(t).find(n=>n.type==='textarea'&&n.props.placeholder==='Escribe el texto correcto').props.value,'A.91');
- console.log('OK: giro regional aislado → lectura exacta → guardar → sobrescribir y recargar sin perder selección.');
- // Si la orientación regional es dudosa y aún no fue confirmada, la geometría
- // del renglón es provisional: no debe mostrarse como bloque definitivo ni
- // permitirse aplicar supervisión hasta reprocesar.
- detail.imagenes[0].resultado_ocr.recortes[0].orientacion_dudosa=true;
- detail.imagenes[0].resultado_ocr.recortes[0].orientacion_confirmada=false;
- t=render();editor(t).props.onSelectText(detail.imagenes[0],detail.imagenes[0].resultado_ocr.lineas_texto[0]);t=render();
- const herramientaExacta=all(t).find(n=>typeof n.type==='function'&&n.type.name==='HerramientasRegion'&&n.props.pruebaId==='caso');
- assert(!herramientaExacta,'No debe presentar como definitiva la caja derivada de una orientación regional dudosa');
- campo=all(t).find(n=>n.type==='textarea'&&String(n.props.placeholder).includes('Primero confirma la orientación regional'));
- assert(campo&&campo.props.disabled,'La corrección textual debe bloquearse hasta reprocesar');
- const aplicar=btn(t,'Aplicar supervisión');
- assert(aplicar&&aplicar.props.disabled,'Aplicar supervisión debe quedar deshabilitado con geometría provisional');
- assert(all(t).some(n=>n.type==='button'&&n.children.some(c=>typeof c==='string'&&c.includes('y reprocesar esta imagen'))),'Debe ofrecer un flujo explícito orientación → reproceso');
- console.log('OK: orientación regional dudosa bloquea la corrección textual y obliga a reprocesar primero.');
+  // V5: una región de origen dudosa no bloquea la caja exacta.
+  detail.imagenes[0].resultado_ocr.lineas_texto[0].marco_region='region-a';
+  detail.imagenes[0].resultado_ocr.recortes=[{marco:'region-a',orientacion_grados:0,
+    orientacion_dudosa:true,orientacion_confirmada:false,
+    candidatos_orientacion:[{grados:90,texto:'REGION GRANDE',confianza:0.9}]}];
+  t=render();editor(t).props.onSelectText(detail.imagenes[0],detail.imagenes[0].resultado_ocr.lineas_texto[0]);t=render();
+  let campo=all(t).find(n=>n.type==='textarea'&&n.props.placeholder==='Escribe el texto correcto');
+  assert(campo && !campo.props.disabled,'V5 no debe bloquear la corrección textual por orientación regional dudosa');
+  campo.props.onChange({target:{value:'A.90'}});t=render();
+  let form=all(t).find(n=>n.props.id==='formulario-correccion-activa');
+  await form.props.onSubmit({preventDefault(){}});t=render();
+  assert.equal(ultimaCorreccion.texto_correcto,'A.90');
+  assert.equal(ultimaCorreccion.tipo_unidad,'renglón');
+  assert.equal(editor(t).props.item.resultado_ocr.lineas_texto[0].texto,'A.90');
+  campo=all(t).find(n=>n.type==='textarea'&&n.props.placeholder==='Escribe el texto correcto');
+  campo.props.onChange({target:{value:'A.91'}});t=render();
+  const accion=all(t).find(n=>n.type==='select'&&all(n).some(o=>o.type==='option'&&o.props.value==='aceptar'));
+  accion.props.onChange({target:{value:'aceptar'}});t=render();
+  form=all(t).find(n=>n.props.id==='formulario-correccion-activa');
+  await form.props.onSubmit({preventDefault(){}});t=render();
+  assert.equal(ultimaCorreccion.accion,'corregir','Aceptar no debe descartar una edición manual de la casilla');
+  assert.equal(editor(t).props.item.resultado_ocr.lineas_texto[0].texto,'A.91');
+  console.log('OK: V5 corrige y sobrescribe una caja exacta aunque su región de origen esté marcada como dudosa.');
 })().catch(e=>{console.error(e);process.exitCode=1;});

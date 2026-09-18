@@ -122,3 +122,12 @@ Para una instalación que ya usa la versión consolidada anterior basta con sust
 La V3 hacía una suposición demasiado fuerte: trataba la `bbox` de un renglón nacido de una región con orientación dudosa como si ya fuera definitiva. En V4, si el recorte regional sigue `orientacion_dudosa` y no `orientacion_confirmada`, primero se obliga a fijar el giro y reprocesar. La corrección textual queda temporalmente bloqueada tanto en frontend como en backend. Después del reproceso vuelve a estar disponible la sobrescritura normal.
 
 Consulta `LEEME_PATCH_ORIENTACION_SEGURA_V4.md` para el flujo exacto y el caso de las capturas de `IMG_5330` / `IMG_5329`.
+
+
+## V5 — flujo simple, variantes automáticas y giro como borrador
+
+La V5 elimina la barrera obligatoria de orientación de V4. El editor vuelve a un flujo directo: una sola caja exacta, su imagen y las variantes OCR debajo. El botón “Comparar lecturas de esta zona” desaparece; las variantes se calculan automáticamente al abrir la corrección. Al girar o elegir una variante, su lectura se copia a **Texto correcto** sólo como borrador y no se guarda hasta pulsar **Aplicar supervisión**. También se elimina el panel regional duplicado dentro del formulario para evitar que parezca que una lectura grande va a sobrescribir un renglón individual.
+
+La protección contra sobrescrituras equivocadas queda en la identidad exacta de la unidad (`bbox` y `tipo_unidad`) y en el historial cronológico de correcciones, no en bloquear la edición del usuario. Consulta `LEEME_PATCH_FLUJO_SIMPLE_V5.md`.
+
+Validación V5: 6 pruebas JavaScript del editor pasaron y 123 pruebas Python independientes de los fixtures empresariales externos pasaron. También se verificó sintaxis con `node --check` y `python -m compileall`.

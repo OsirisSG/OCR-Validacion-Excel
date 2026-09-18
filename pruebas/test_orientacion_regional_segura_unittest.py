@@ -1,36 +1,26 @@
-import ast
 import unittest
 from pathlib import Path
 
 
-class OrientacionRegionalSeguraTest(unittest.TestCase):
+class FlujoOrientacionNoBloqueanteV5Test(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        ruta = Path(__file__).resolve().parents[1] / "dashboard/backend/app.py"
-        cls.source = ruta.read_text(encoding="utf-8")
-        tree = ast.parse(cls.source)
-        fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
-                  and n.name == "_orientacion_regional_pendiente")
-        env = {}
-        exec(compile(ast.Module(body=[fn], type_ignores=[]), "helper", "exec"), env)
-        cls.pendiente = staticmethod(env["_orientacion_regional_pendiente"])
+        raiz = Path(__file__).resolve().parents[1]
+        cls.backend = (raiz / "dashboard/backend/app.py").read_text(encoding="utf-8")
+        cls.frontend = (raiz / "dashboard/frontend/app.js").read_text(encoding="utf-8")
 
-    def test_region_dudosa_no_confirmada_es_provisional(self):
-        ocr = {"recortes": [{"marco": "r1", "orientacion_dudosa": True,
-                              "orientacion_confirmada": False}]}
-        self.assertTrue(self.pendiente(ocr, {"marco_region": "r1"}))
+    def test_backend_no_bloquea_correccion_por_orientacion_dudosa(self):
+        self.assertNotIn("_orientacion_regional_pendiente", self.backend)
+        self.assertNotIn("Confirma primero la orientación regional y reprocesa la imagen", self.backend)
 
-    def test_region_confirmada_habilita_correccion(self):
-        ocr = {"recortes": [{"marco": "r1", "orientacion_dudosa": True,
-                              "orientacion_confirmada": True}]}
-        self.assertFalse(self.pendiente(ocr, {"marco_region": "r1"}))
+    def test_frontend_no_muestra_barrera_confusa(self):
+        self.assertNotIn("Corrección textual bloqueada temporalmente", self.frontend)
+        self.assertNotIn("Guardar orientación regional", self.frontend)
 
-    def test_unidad_sin_region_no_se_bloquea(self):
-        self.assertFalse(self.pendiente({"recortes": []}, {"texto": "232541"}))
-
-    def test_endpoint_aplica_la_barrera(self):
-        self.assertIn("_orientacion_regional_pendiente(ocr, token)", self.source)
-        self.assertIn("Confirma primero la orientación regional y reprocesa la imagen", self.source)
+    def test_variantes_se_preparan_sin_boton_comparar(self):
+        self.assertNotIn("Comparar lecturas de esta zona", self.frontend)
+        self.assertIn('accion: "previsualizar", exacta: true, releer: true', self.frontend)
+        self.assertIn("onTexto(propuesta.texto)", self.frontend)
 
 
 if __name__ == "__main__":

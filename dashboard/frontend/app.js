@@ -1341,7 +1341,7 @@ function EditorUnionZona({ item, pruebaId, valor, onChange, onActualizado }) {
   }
   return html`<section class="editor-union-zona">
     <h3>Completar o unir texto de una zona</h3>
-    ${valor && !propuesta && html`<${HerramientasRegion} key=${JSON.stringify(valor)} item=${item} bbox=${valor} />`}
+    ${valor && !propuesta && html`<${HerramientasRegion} key=${JSON.stringify(valor)} item=${item} bbox=${valor} pruebaId=${pruebaId} />`}
     <p>Dibuja una zona o usa “Unir bloques” y pulsa los recuadros. Arrastra las esquinas azules para ajustar el área.</p>
     <div class="acciones-tabla">
       <button class="boton" type="button" disabled=${ocupado || !valor} onClick=${() => preparar(false)}>Unir textos existentes</button>
@@ -1351,8 +1351,7 @@ function EditorUnionZona({ item, pruebaId, valor, onChange, onActualizado }) {
     </div>
     ${ocupado && html`<p role="status">Procesando la zona…</p>`}
     ${propuesta && html`<div>
-      <${HerramientasRegion} key=${JSON.stringify(propuesta.bbox)} item=${item} bbox=${propuesta.bbox}
-        candidatos=${propuesta.candidatos_orientacion || []} texto=${texto} onTexto=${setTexto} />
+      <${HerramientasRegion} key=${JSON.stringify(propuesta.bbox)} item=${item} bbox=${propuesta.bbox} pruebaId=${pruebaId} candidatos=${propuesta.candidatos_orientacion || []} onTexto=${setTexto} />
       <p>Se reemplazarán ${propuesta.bloques} bloques al confirmar. Región: ${propuesta.bbox.join(", ")}.</p>
       ${JSON.stringify(propuesta.bbox) !== cajaClave && html`<p class="aviso">El área se amplió para incluir completos los bloques que tocaste. Revisa el alcance antes de confirmar.</p>`}
       <label>Texto anterior<pre class="zona-texto-anterior">${propuesta.anterior || "Sin lectura previa"}</pre></label>
@@ -1368,50 +1367,68 @@ function EditorUnionZona({ item, pruebaId, valor, onChange, onActualizado }) {
   </section>`;
 }
 
-function HerramientasRegion({item, bbox, candidatos = [], texto = "", onTexto, pruebaId}) {
+function HerramientasRegion({item, bbox, pruebaId = null, onTexto = null, candidatos = []}) {
   const [giro, setGiro] = useState(0);
-  const [aviso, setAviso] = useState("");
-  const [lecturas, setLecturas] = useState(null);
+  const [lecturas, setLecturas] = useState(() => Array.isArray(candidatos) ? candidatos : []);
   const [ocupado, setOcupado] = useState(false);
-  const automatico = useRef(null);
-  const vigente = useRef(true);
-  useEffect(()=>{vigente.current=true;return()=>{vigente.current=false;};},[]);
-  useAvisoBorrador(false, ocupado);
-  const opciones = lecturas || candidatos;
-  function elegir(grados) {
-    const propuesta = propuestaTextoOrientacion({candidatos_orientacion:opciones},grados);
-    if (propuesta.texto && onTexto) {
-      if (texto && texto !== automatico.current && texto !== propuesta.texto && !window.confirm("¿Sustituir el texto escrito por esta lectura?")) return;
-      onTexto(propuesta.texto);
-      automatico.current=propuesta.texto;
-      setAviso("Lectura copiada. Revisa y guarda para confirmar el cambio.");
-    } else setAviso("Giro de vista: el texto y las coordenadas guardadas no cambian.");
+  const [aviso, setAviso] = useState("");
+  const firmaCandidatos = JSON.stringify(Array.isArray(candidatos) ? candidatos : []);
+  const clave = `${pruebaId || ""}|${item?.id || ""}|${JSON.stringify(bbox || [])}|${firmaCandidatos}`;
+  useEffect(() => {
+    let vivo = true;
+    setGiro(0);
+    setAviso("");
+    const recibidas = Array.isArray(candidatos) ? candidatos : [];
+    setLecturas(recibidas);
+    if (recibidas.length || !pruebaId || !item?.id || !bbox?.length) {
+      setOcupado(false);
+      return () => { vivo = false; };
+    }
+    setOcupado(true);
+    enviarJSON("/api/aprendizaje/zonas", {
+      prueba_id: pruebaId, imagen_id: item.id, bbox,
+      accion: "previsualizar", exacta: true, releer: true,
+    }).then((respuesta) => {
+      if (!vivo) return;
+      setLecturas(Array.isArray(respuesta.candidatos_orientacion)
+        ? respuesta.candidatos_orientacion : []);
+    }).catch(() => {
+      if (!vivo) return;
+      setLecturas([]);
+      setAviso("No se pudieron preparar las variantes OCR de esta zona. Puedes girar la imagen y escribir la corrección manualmente.");
+    }).finally(() => { if (vivo) setOcupado(false); });
+    return () => { vivo = false; };
+  }, [clave]);
+
+  const opciones = Array.isArray(lecturas) ? lecturas : [];
+  function girar(grados) {
+    const propuesta = propuestaTextoOrientacion({candidatos_orientacion: opciones}, grados);
     setGiro(propuesta.angulo);
+    if (propuesta.texto && typeof onTexto === "function") {
+      onTexto(propuesta.texto);
+      setAviso(`Propuesta de ${propuesta.angulo}° copiada a Texto correcto como borrador. Revísala y pulsa Aplicar supervisión para guardarla.`);
+    } else if (opciones.length) {
+      setAviso(`No hay una lectura utilizable para ${propuesta.angulo}°. El Texto correcto actual se conserva.`);
+    } else {
+      setAviso("Giro visual aplicado. El Texto correcto actual se conserva.");
+    }
   }
-  async function comparar() {
-    if (ocupado) return;
-    setOcupado(true);setAviso("Comparando orientaciones de esta zona…");
-    try {
-      const r=await enviarJSON("/api/aprendizaje/zonas",{prueba_id:pruebaId,imagen_id:item.id,bbox,exacta:true,releer:true});
-      if (!vigente.current) return;
-      setLecturas(r.candidatos_orientacion || []);
-      setAviso("Elige una tarjeta o gira para copiar su lectura a la casilla. Después confirma el texto.");
-    } catch(e) {if(vigente.current)setAviso(e.message);}
-    finally {if(vigente.current)setOcupado(false);}
-  }
-  return html`<section class="herramientas-region" aria-label="Imagen y herramientas de la selección">
+  return html`<section class="herramientas-region" aria-label="Imagen y variantes de la selección">
     <div class="cabecera-recorte"><div><span class="sobrelinea">SELECCIÓN ACTIVA</span>
       <h3>Revisa la imagen y su texto</h3></div><span class="insignia-recorte">${giro}°</span></div>
     <${VistaRecorteZona} item=${item} bbox=${bbox} grados=${giro} />
-    <div class="acciones-tabla"><button type="button" class="boton" onClick=${()=>elegir(giro-90)}>↶ 90°</button>
-      <button type="button" class="boton" onClick=${()=>elegir(giro+90)}>↷ 90°</button>
-      <button type="button" class="boton" onClick=${()=>elegir(0)}>Restablecer giro</button></div>
-    ${pruebaId && html`<button type="button" class="boton" disabled=${ocupado} onClick=${comparar}>
-      ${ocupado ? "Comparando…" : "Comparar lecturas de esta zona"}</button>`}
-    <div class="lista-candidatos-orientacion">${opciones.map(c=>html`<button type="button"
-      class="boton candidato-orientacion" aria-pressed=${giro===Number(c.grados)} onClick=${()=>elegir(c.grados)}>
-      <strong>${c.grados}° · ${(c.confianza*100).toFixed(1)}%</strong><span>${c.texto || "Sin lectura"}</span></button>`)}</div>
-    <small role="status">${aviso || "Amplía o gira el recorte para leerlo cómodamente. El guardado se confirma en el formulario."}</small>
+    <div class="acciones-tabla"><button type="button" class="boton" onClick=${()=>girar(giro-90)}>↶ 90°</button>
+      <button type="button" class="boton" onClick=${()=>girar(giro+90)}>↷ 90°</button>
+      <button type="button" class="boton" onClick=${()=>girar(0)}>Restablecer giro</button></div>
+    ${ocupado && html`<small role="status">Preparando automáticamente las variantes 0° / 90° / 180° / 270°…</small>`}
+    ${!ocupado && opciones.length > 0 && html`<div class="lista-candidatos-orientacion">
+      ${opciones.map((c) => html`<button type="button" class="boton candidato-orientacion"
+        aria-pressed=${giro === Number(c.grados)} onClick=${()=>girar(c.grados)}
+        title="Usar esta lectura como borrador; no se guarda hasta Aplicar supervisión">
+        <strong>${c.grados}° · ${(Number(c.confianza || 0)*100).toFixed(1)}%</strong>
+        <span>${c.texto || "Sin lectura"}</span></button>`)}
+    </div>`}
+    <small role="status">${aviso || "Gira la imagen o elige una variante. Si existe una lectura para ese ángulo, se copiará a Texto correcto únicamente como borrador; nada se guarda hasta pulsar Aplicar supervisión."}</small>
   </section>`;
 }
 
@@ -1718,8 +1735,7 @@ function SelectorRegion({ item, valor, onChange, onSelectText, giroVista = 0, pa
       pruebaId=${pruebaId} valor=${valor} onChange=${onChange} onActualizado=${onZonaActualizada} />`}
     ${panelTexto && !origenBloque && !correccionAbierta && panelActivo === "texto" && (modo === "seleccionar" || (modo === "mover" && valor)) && html`<aside class="editor-region-form" aria-label="Texto omitido">
       <button type="button" class="boton" onClick=${() => {if (!textoRegion || window.confirm("¿Cerrar la selección? El texto escrito se conservará hasta cambiar de imagen.")) {onChange(null);setModo("mover");}}}>Cerrar texto omitido</button>
-      ${valor && html`<${HerramientasRegion} key=${`${item.id}-${valor.join(",")}`} item=${item} bbox=${valor} pruebaId=${pruebaId}
-        texto=${textoRegion} onTexto=${onTextoRegion} />`}
+      ${valor && html`<${HerramientasRegion} key=${`${item.id}-${valor.join(",")}`} item=${item} bbox=${valor} pruebaId=${pruebaId} onTexto=${onTextoRegion} />`}
       ${panelTexto}</aside>`}
     ${correccionAbierta && !origenBloque && html`<section class="editor-region-form" aria-label="Corregir texto reconocido">${panelCorreccion}</section>`}
     </div>
@@ -1942,10 +1958,6 @@ function VistaDetalle({ nombre }) {
   const [guardandoCorreccion, setGuardandoCorreccion] = useState(false);
   const [resultadoCorreccion, setResultadoCorreccion] = useState(null);
   const [mostrarCorreccion, setMostrarCorreccion] = useState(false);
-  const [giroRecorte, setGiroRecorte] = useState(null);
-  const textoOrientacionRef = useRef(null);
-  const [mensajeOrientacion, setMensajeOrientacion] = useState("");
-  const [guardandoOrientacion, setGuardandoOrientacion] = useState(false);
   const [region, setRegion] = useState(null);
   const [textoRegion, setTextoRegion] = useState("");
   const [guardandoRegion, setGuardandoRegion] = useState(false);
@@ -2000,14 +2012,6 @@ function VistaDetalle({ nombre }) {
   const unidadesCorregibles = unidadesOcr(ocrSeleccionado);
   const unidadSeleccionada = unidadesCorregibles.find((unidad) => unidad.unidad_id === unidadId)
     || unidadesCorregibles[0];
-  const recorteSeleccionado = (ocrSeleccionado.recortes || []).find(
-    (r) => r.marco && r.marco === unidadSeleccionada?.marco_region);
-  const anguloRecorte = giroRecorte ?? recorteSeleccionado?.orientacion_grados ?? 0;
-  // Si el renglón nació de una región cuya orientación todavía es dudosa, sus
-  // cajas/textos son provisionales. Primero se fija el giro regional y se
-  // reprocesa; sólo después se habilita la supervisión textual del renglón.
-  const orientacionRegionalPendiente = Boolean(recorteSeleccionado?.orientacion_dudosa
-    && !recorteSeleccionado?.orientacion_confirmada);
   const revisionCompletada = detalle.revision?.estado === "completada";
   const reglasRelacionadas = (reglas?.reglas || []).filter((regla) =>
     Object.entries(regla.alcance || {}).every(([clave, valor]) =>
@@ -2016,7 +2020,7 @@ function VistaDetalle({ nombre }) {
   function permitirCambioImagen() {
     const estado = {pendiente:false, ocupado:false};
     window.dispatchEvent(new CustomEvent("ocr-consultar-borradores", {detail:estado}));
-    if (guardandoCorreccion || guardandoRegion || guardandoOrientacion || guardandoImagen || estado.ocupado) {
+    if (guardandoCorreccion || guardandoRegion || guardandoImagen || estado.ocupado) {
       setAvisoNavegacion("Espera a que termine la operación antes de cambiar de imagen."); return false;
     }
     const borrador = textoCorrecto !== textoVisible(unidadSeleccionada) || Boolean(textoRegion.trim()) || Boolean(region) || estado.pendiente;
@@ -2026,7 +2030,6 @@ function VistaDetalle({ nombre }) {
   function cambiarImagen(nuevoId, centrarVisor = false, confirmado = false, lista = imagenesDetalle) {
     if (!confirmado && nuevoId === imagenSeleccionada?.id) return true;
     if (!confirmado && !permitirCambioImagen()) return false;
-    setGiroRecorte(null); setMensajeOrientacion("");
     setImagenId(nuevoId);
     const imagen = lista.find((item) => item.id === nuevoId);
     const ocr = imagen?.resultado_ocr || {};
@@ -2072,7 +2075,6 @@ function VistaDetalle({ nombre }) {
   </nav>`;
   function seleccionarUnidad(imagen, unidad) {
     if (imagen?.id !== imagenSeleccionada?.id && !permitirCambioImagen()) return;
-    setGiroRecorte(null); setMensajeOrientacion("");
     const candidatas = unidadesOcr(imagen?.resultado_ocr || {});
     const exacta = candidatas.find((item) => firmaUnidad(item) === firmaUnidad(unidad)) || candidatas[0];
     setImagenId(imagen?.id || "");
@@ -2122,43 +2124,6 @@ function VistaDetalle({ nombre }) {
     } finally {
       setGuardandoCorreccion(false);
     }
-  }
-  function elegirGiroRecorte(grados, copiarTexto = true) {
-    const propuesta = propuestaTextoOrientacion(recorteSeleccionado, grados);
-    const clave = `${imagenSeleccionada?.id}|${recorteSeleccionado?.marco}|${unidadSeleccionada?.unidad_id}`;
-    if (copiarTexto && propuesta.texto && propuesta.texto.trim()) {
-      const previo = textoOrientacionRef.current;
-      const textoBase = previo?.clave === clave ? previo.texto : textoVisible(unidadSeleccionada);
-      if (textoCorrecto && textoCorrecto !== textoBase && textoCorrecto !== propuesta.texto &&
-          !window.confirm("Escribiste una corrección. ¿Reemplazarla por el texto de esta orientación?")) return;
-      setTextoCorrecto(propuesta.texto);
-      textoOrientacionRef.current = { clave, texto: propuesta.texto };
-      setMensajeOrientacion("Lectura regional copiada como borrador. Úsala sólo si corresponde exactamente al bloque seleccionado.");
-    } else if (copiarTexto) {
-      setMensajeOrientacion("Esta orientación regional no tiene una lectura disponible. Se conserva tu Texto correcto.");
-    } else {
-      setMensajeOrientacion("Vista regional girada. El texto del bloque exacto no se modifica.");
-    }
-    setGiroRecorte(propuesta.angulo);
-  }
-  async function guardarGiroRecorte(automatico = false) {
-    if (!recorteSeleccionado || guardandoOrientacion) return false;
-    setGuardandoOrientacion(true);
-    try {
-      const r = await enviarJSON("/api/aprendizaje/orientacion-region", {
-        prueba_id: detalle.id, imagen_id: imagenSeleccionada.id,
-        marco: recorteSeleccionado.marco, grados: automatico ? null : anguloRecorte,
-      });
-      setMensajeOrientacion(r.mensaje);
-      return true;
-    } catch (e) { setMensajeOrientacion(e.message); return false; }
-    finally { setGuardandoOrientacion(false); }
-  }
-  async function guardarOrientacionYReprocesar() {
-    const guardada = await guardarGiroRecorte(false);
-    if (!guardada) return;
-    setMensajeOrientacion(`Orientación ${anguloRecorte}° guardada. Reprocesando esta imagen para reconstruir sus renglones…`);
-    await reprocesar(false, true);
   }
   async function descartarTexto(unidad, restaurar = false) {
     if (!unidad?.bbox || guardandoCorreccion) return;
@@ -2539,44 +2504,11 @@ function VistaDetalle({ nombre }) {
             onClick=${() => descartarTexto(d, true)}>Deshacer descarte</button></div>`)}
       ${mostrarCorreccion && unidadesCorregibles.length ? html`
         <form id="formulario-correccion-activa" class="formulario-correccion" onSubmit=${confirmarCorreccion}>
-          ${!orientacionRegionalPendiente && unidadSeleccionada?.bbox && html`<div class="seleccion-exacta-correccion">
+          ${unidadSeleccionada?.bbox && html`<div class="seleccion-exacta-correccion">
             <p class="sobrelinea">BLOQUE EXACTO QUE SE GUARDARÁ</p>
             <${HerramientasRegion}
               key=${`${imagenSeleccionada.id}-${unidadSeleccionada.tipo_unidad}-${unidadSeleccionada.bbox.join(",")}`} item=${imagenSeleccionada}
-              bbox=${unidadSeleccionada.bbox} texto=${textoCorrecto} onTexto=${setTextoCorrecto} pruebaId=${detalle.id} />
-          </div>`}
-          ${recorteSeleccionado && html`<div class="orientacion-regional-editor">
-            <strong>${orientacionRegionalPendiente ? "PASO 1 · Confirma la orientación regional antes de corregir el texto" : "Orientación del recorte regional (avanzado)"}</strong>
-            <p class="subtitulo-seccion">${orientacionRegionalPendiente
-              ? "Este renglón fue creado desde una orientación regional todavía dudosa. Su texto y su caja pueden cambiar: primero elige el giro correcto y reprocesa la imagen. No se guardará supervisión textual sobre esta geometría provisional."
-              : "Este panel corresponde al recorte grande que originó uno o más renglones. La corrección textual usa la caja exacta mostrada arriba."}</p>
-            <img class="preview-region-orientacion" alt="Recorte seleccionado en la orientación elegida"
-              src=${`/api/imagen/region-orientacion?prueba_id=${encodeURIComponent(detalle.id)}&imagen_id=${encodeURIComponent(imagenSeleccionada.id)}&marco=${recorteSeleccionado.marco}&grados=${anguloRecorte}`} />
-            <div class="acciones-revision">
-              <button type="button" class="boton" onClick=${() => elegirGiroRecorte((anguloRecorte+270)%360, false)}>↶ 90°</button>
-              <strong>${anguloRecorte}°</strong>
-              <button type="button" class="boton" onClick=${() => elegirGiroRecorte((anguloRecorte+90)%360, false)}>↷ 90°</button>
-              ${orientacionRegionalPendiente ? html`<button type="button" class="boton boton-primario" disabled=${guardandoOrientacion}
-                onClick=${guardarOrientacionYReprocesar}>Usar ${anguloRecorte}° y reprocesar esta imagen</button>`
-                : html`<button type="button" class="boton" disabled=${guardandoOrientacion} onClick=${() => guardarGiroRecorte()}>Guardar orientación regional</button>`}
-              <button type="button" class="boton" disabled=${guardandoOrientacion} onClick=${() => guardarGiroRecorte(true)}>Volver a automático</button>
-            </div>
-            <div class="lista-candidatos-orientacion">
-              ${(recorteSeleccionado.candidatos_orientacion || []).map((c) => html`<button type="button"
-                class="boton candidato-orientacion" aria-pressed=${anguloRecorte === c.grados}
-                onClick=${() => elegirGiroRecorte(c.grados, false)}>
-                <strong>${c.grados}° · ${(c.confianza*100).toFixed(1)}%</strong><span>${c.texto || "Sin lectura"}</span>
-              </button>`)}
-            </div>
-            <small>${orientacionRegionalPendiente
-              ? "Las tarjetas son lecturas del recorte regional completo. Elige la orientación por lo que ves en la imagen; después usa el botón azul para guardarla y reprocesar. Cuando termine el reproceso volverás a corregir renglones ya reconstruidos."
-              : "Estas alternativas corresponden al recorte regional completo y sirven para revisar su orientación; no sustituyen automáticamente el Texto correcto del renglón."}</small>
-            ${mensajeOrientacion && html`<p role="status">${mensajeOrientacion}</p>`}
-            ${!orientacionRegionalPendiente && html`<button type="button" class="boton" disabled=${guardandoOrientacion} onClick=${() => reprocesar(false,true)}>Reprocesar imagen visible</button>`}
-          </div>`}
-          ${orientacionRegionalPendiente && html`<div class="aviso aviso-error" role="alert">
-            <strong>Corrección textual bloqueada temporalmente.</strong>
-            <span>El renglón seleccionado pertenece a una orientación regional no confirmada. Corrige primero el giro y reprocesa; así evitamos guardar un texto correcto sobre la caja equivocada.</span>
+              bbox=${unidadSeleccionada.bbox} pruebaId=${detalle.id} onTexto=${setTextoCorrecto} />
           </div>`}
           <label>Imagen
             <select class="campo" value=${imagenSeleccionada?.id || ""}
@@ -2607,11 +2539,10 @@ function VistaDetalle({ nombre }) {
           <label>Texto correcto (con espacios y saltos)
             <textarea class="campo mono campo-texto" value=${textoCorrecto} required maxLength=${4096}
               rows=${Math.min(8, Math.max(2, textoCorrecto.split("\n").length + 1))}
-              disabled=${orientacionRegionalPendiente}
-              onChange=${(e) => setTextoCorrecto(e.target.value)} placeholder=${orientacionRegionalPendiente ? "Primero confirma la orientación regional y reprocesa" : "Escribe el texto correcto"} />
+              onChange=${(e) => setTextoCorrecto(e.target.value)} placeholder="Escribe el texto correcto" />
           </label>
           <label>Acción
-            <select class="campo" value=${accionSupervision} disabled=${orientacionRegionalPendiente}
+            <select class="campo" value=${accionSupervision}
               onChange=${(e) => setAccionSupervision(e.target.value)}>
               <option value="confirmar_entrenar">Confirmar para el próximo lote</option>
               <option value="corregir">Corregir sin lote visual</option>
@@ -2621,7 +2552,7 @@ function VistaDetalle({ nombre }) {
               <option value="guardar_sin_entrenar">Guardar sin entrenar</option>
             </select>
           </label>
-          <button class="boton boton-primario" disabled=${guardandoCorreccion || orientacionRegionalPendiente || !textoCorrecto.trim()}>
+          <button class="boton boton-primario" disabled=${guardandoCorreccion || !textoCorrecto.trim()}>
             ${guardandoCorreccion ? "Guardando…" : "Aplicar supervisión"}
           </button>
         </form>`

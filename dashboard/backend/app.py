@@ -726,21 +726,6 @@ def _buscar_unidad_ocr(unidades: list[dict], texto: str,
     return candidatas[0] if len(candidatas) == 1 else None
 
 
-def _orientacion_regional_pendiente(ocr: dict, unidad: dict) -> bool:
-    """Indica si una unidad proviene de una región cuya orientación aún es provisional.
-
-    Corregir texto antes de fijar ese giro puede asociar una verdad humana a una
-    caja que cambiará al reprocesar. En ese estado sólo se permite resolver la
-    orientación (o descartar/ilegible), no confirmar contenido textual.
-    """
-    marco = unidad.get("marco_region")
-    if not marco:
-        return False
-    region = next((r for r in (ocr.get("recortes") or []) if r.get("marco") == marco), None)
-    return bool(region and region.get("orientacion_dudosa")
-                and not region.get("orientacion_confirmada"))
-
-
 def _aplicar_correcciones_publicas(ocr: dict, correcciones: list[dict]) -> dict:
     """Refleja en la respuesta el texto humano sin alterar el OCR bruto guardado."""
     from utilidades.correcciones_ocr import aplicar_correcciones
@@ -1276,12 +1261,6 @@ def corregir_lectura(solicitud: SolicitudCorreccion):
     if token is None:
         raise HTTPException(
             400, "La lectura OCR no coincide de forma única; vuelve a seleccionarla en la imagen.")
-    if (_orientacion_regional_pendiente(ocr, token)
-            and solicitud.accion not in {"ilegible", "no_es_campo"}):
-        raise HTTPException(409,
-            "Este renglón proviene de una región con orientación dudosa. "
-            "Confirma primero la orientación regional y reprocesa la imagen; "
-            "después vuelve a aplicar la corrección textual.")
     try:
         correcto = (str(token.get("texto") or solicitud.texto_ocr) if solicitud.accion == "aceptar"
                     else solicitud.texto_correcto)

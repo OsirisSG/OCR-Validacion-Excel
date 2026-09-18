@@ -718,3 +718,51 @@ td.numero { font-variant-numeric: tabular-nums; }
 .zona-dimension-fila input[type=number] { width: 100%; box-sizing: border-box; }
 .editor-region-layout > .editor-union-zona, .editor-region-layout > .editor-region-form { min-width: 0; width: 100%; box-sizing: border-box; }
 .historial-aprendizaje > summary { cursor: pointer; font-weight: 600; padding: 12px 0; }
+
+/* V6 · corrección visual simple: una sola selección, cuatro variantes siempre visibles. */
+.seleccion-exacta-correccion {
+  grid-column: 1 / -1;
+  width: 100%;
+  min-width: 0;
+}
+.seleccion-exacta-correccion .herramientas-region-correccion {
+  width: 100%;
+  box-sizing: border-box;
+}
+.seleccion-exacta-correccion .vista-recorte-zona {
+  width: min(100%, 900px);
+  margin-left: auto;
+  margin-right: auto;
+}
+.variantes-orientacion-cabecera {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px 16px;
+  margin: 14px 0 8px;
+}
+.variantes-siempre-visibles {
+  grid-template-columns: repeat(4, minmax(120px, 1fr));
+  margin-bottom: 10px;
+}
+.variantes-siempre-visibles .candidato-orientacion {
+  min-height: 96px;
+  align-content: start;
+}
+.variantes-siempre-visibles .candidato-orientacion:disabled {
+  opacity: .72;
+  cursor: wait;
+}
+@media (max-width: 900px) {
+  .variantes-siempre-visibles { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
+}
+@media (max-width: 520px) {
+  .variantes-siempre-visibles { grid-template-columns: minmax(0, 1fr); }
+}
+.controles-giro-recorte .angulo-giro-actual {
+  min-width: 46px;
+  text-align: center;
+  font-size: 1rem;
+  color: var(--texto-1);
+}

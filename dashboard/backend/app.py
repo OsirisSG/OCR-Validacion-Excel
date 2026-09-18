@@ -2489,6 +2489,95 @@ class SolicitudZona(BaseModel):
     regiones: list[RegionAjustada] = Field(default_factory=list, max_length=2)
 
 
+class SolicitudLecturasOrientacion(BaseModel):
+    prueba_id: str
+    imagen_id: str
+    bbox: list[int] = Field(min_length=4, max_length=4)
+
+
+def _leer_variantes_caja_exacta(fila, item, bbox):
+    """Lee una caja exacta en 0/90/180/270 sin alterar ni bloquear la revisión.
+
+    Esta ruta es deliberadamente de solo lectura: no expande la caja, no consulta
+    anotaciones de edición y no exige confirmar la orientación regional. Así, el
+    editor puede mostrar siempre las cuatro propuestas del bloque que el usuario
+    seleccionó, incluso cuando esa caja proviene de una región OCR dudosa.
+    """
+    from utilidades.edicion_zonas import validar_caja
+    import cv2
+    from ocr_engine import cargar_imagen, obtener_motor, _leer_recorte_orientado
+
+    datos = _cargar_datos()
+    gestor = GestorAprendizaje(CONFIG)
+    raiz = _resolver_raiz_datos(datos)
+    if raiz is None:
+        raise HTTPException(503, "La raíz de imágenes no está disponible.")
+    ruta = _resolver_imagen(str(item["ruta"]), datos, raiz)
+    ocr = _aplicar_correcciones_publicas(item.get("resultado_ocr") or {},
+                                         gestor.listar_correcciones_texto([ruta]))
+    ocr = gestor.filtrar_no_texto(ocr, ruta)
+    validar_caja(bbox, ocr.get("dimensiones") or [])
+
+    foto = cargar_imagen(str(ruta))
+    manual = float(ocr.get("rotacion_manual_aplicada_grados") or 0)
+    prioritaria = bool(ocr.get("orientacion_manual_prioritaria"))
+    giro = manual if prioritaria else manual + _orientacion_base_publica(ocr)
+    foto = rotar_imagen_libre(foto, giro)
+    ajuste = 0 if prioritaria else float(ocr.get("deskew_texto_aplicado_grados")
+                                        or ocr.get("deskew_aplicado_grados") or 0)
+    alto, ancho = foto.shape[:2]
+    if abs(ajuste) >= .05:
+        matriz = cv2.getRotationMatrix2D((ancho / 2, alto / 2), ajuste, 1)
+        foto = cv2.warpAffine(foto, matriz, (ancho, alto), flags=cv2.INTER_CUBIC,
+                              borderMode=cv2.BORDER_REPLICATE)
+    if [ancho, alto] != list(ocr.get("dimensiones") or []):
+        raise HTTPException(409, "El marco de la imagen cambió; reprocesa esta imagen antes de releer el bloque.")
+
+    x, y, w, h = bbox
+    recorte = foto[y:y + h, x:x + w]
+    if recorte.size == 0:
+        raise HTTPException(400, "La caja seleccionada no contiene píxeles.")
+    escala = min(3.0, max(1.0, 160 / min(w, h)), 2400 / max(w, h))
+    if abs(escala - 1) > .01:
+        recorte = cv2.resize(recorte, None, fx=escala, fy=escala, interpolation=cv2.INTER_CUBIC)
+    motor, _ = obtener_motor(CONFIG)
+    _, orientacion = _leer_recorte_orientado(recorte, motor)
+    candidatos = list(orientacion.get("candidatos_orientacion") or [])
+    por_angulo = {int(c.get("grados", -1)): c for c in candidatos}
+    # Conserva el orden de calidad que ya entrega el motor (como en el panel
+    # clásico) y agrega al final cualquier ángulo ausente como lectura vacía.
+    completos = []
+    presentes = set()
+    for c in candidatos:
+        grados = int(c.get("grados", -1))
+        if grados not in (0, 90, 180, 270) or grados in presentes:
+            continue
+        presentes.add(grados)
+        completos.append({"grados": grados,
+                          "confianza": float(c.get("confianza") or 0),
+                          "texto": str(c.get("texto") or "")})
+    for grados in (0, 90, 180, 270):
+        if grados not in presentes:
+            completos.append({"grados": grados, "confianza": 0.0, "texto": ""})
+    return {"bbox": list(bbox), "candidatos_orientacion": completos}
+
+
+@app.post("/api/aprendizaje/lecturas-orientacion")
+def lecturas_orientacion(solicitud: SolicitudLecturasOrientacion):
+    datos = _cargar_datos()
+    fila = next((f for f in (datos or {}).get("resultados", [])
+                 if _id_fila(f) == solicitud.prueba_id), None)
+    if fila is None:
+        raise HTTPException(404, "Carpeta no encontrada.")
+    item = next((i for i in fila.get("imagenes", []) if i.get("id") == solicitud.imagen_id), None)
+    if item is None:
+        raise HTTPException(404, "Imagen no encontrada en esta carpeta.")
+    try:
+        return _leer_variantes_caja_exacta(fila, item, solicitud.bbox)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 _zona_lock = threading.Lock()
 
 

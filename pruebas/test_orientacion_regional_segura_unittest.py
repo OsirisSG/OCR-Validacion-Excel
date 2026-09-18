@@ -2,7 +2,7 @@ import unittest
 from pathlib import Path
 
 
-class FlujoOrientacionNoBloqueanteV5Test(unittest.TestCase):
+class FlujoOrientacionNoBloqueanteV6Test(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         raiz = Path(__file__).resolve().parents[1]
@@ -19,7 +19,8 @@ class FlujoOrientacionNoBloqueanteV5Test(unittest.TestCase):
 
     def test_variantes_se_preparan_sin_boton_comparar(self):
         self.assertNotIn("Comparar lecturas de esta zona", self.frontend)
-        self.assertIn('accion: "previsualizar", exacta: true, releer: true', self.frontend)
+        self.assertIn('/api/aprendizaje/lecturas-orientacion', self.frontend)
+        self.assertIn("variantes-siempre-visibles", self.frontend)
         self.assertIn("onTexto(propuesta.texto)", self.frontend)
 
 

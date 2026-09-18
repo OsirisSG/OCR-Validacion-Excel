@@ -131,3 +131,15 @@ La V5 elimina la barrera obligatoria de orientación de V4. El editor vuelve a u
 La protección contra sobrescrituras equivocadas queda en la identidad exacta de la unidad (`bbox` y `tipo_unidad`) y en el historial cronológico de correcciones, no en bloquear la edición del usuario. Consulta `LEEME_PATCH_FLUJO_SIMPLE_V5.md`.
 
 Validación V5: 6 pruebas JavaScript del editor pasaron y 123 pruebas Python independientes de los fixtures empresariales externos pasaron. También se verificó sintaxis con `node --check` y `python -m compileall`.
+
+## V6 — 18 de septiembre de 2026
+
+- Restauradas las cuatro propuestas OCR 0°/90°/180°/270° siempre visibles en el bloque exacto.
+- El giro o la selección de una tarjeta copia su lectura a `Texto correcto` únicamente como borrador.
+- Eliminada la dependencia de la API de edición de zonas para comparar orientaciones.
+- Nueva ruta de solo lectura `/api/aprendizaje/lecturas-orientacion`.
+- Se conservan eliminados “Comparar lecturas de esta zona” y el bloqueo textual de V4.
+- El bloque exacto ocupa todo el ancho para mostrar las variantes desplegadas.
+- Caché de `app.js` y `estilos.css` incrementada a `20260918-correcciones-6`.
+- El ángulo actual vuelve a mostrarse junto a los botones de giro, y el panel exacto ocupa todo el ancho.
+- Validación: 7 pruebas JavaScript correctas; 42 pruebas Python dirigidas correctas; suite completa con 142 correctas y 8 no reproducibles por faltar fixtures empresariales externos (`validacion_resultados.json` y banco externo).

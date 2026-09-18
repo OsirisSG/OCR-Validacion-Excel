@@ -1371,12 +1371,14 @@ function HerramientasRegion({item, bbox, pruebaId = null, onTexto = null, candid
   const [giro, setGiro] = useState(0);
   const [lecturas, setLecturas] = useState(() => Array.isArray(candidatos) ? candidatos : []);
   const [ocupado, setOcupado] = useState(false);
+  const [falloVariantes, setFalloVariantes] = useState(false);
   const [aviso, setAviso] = useState("");
   const firmaCandidatos = JSON.stringify(Array.isArray(candidatos) ? candidatos : []);
   const clave = `${pruebaId || ""}|${item?.id || ""}|${JSON.stringify(bbox || [])}|${firmaCandidatos}`;
   useEffect(() => {
     let vivo = true;
     setGiro(0);
+    setFalloVariantes(false);
     setAviso("");
     const recibidas = Array.isArray(candidatos) ? candidatos : [];
     setLecturas(recibidas);
@@ -1385,50 +1387,68 @@ function HerramientasRegion({item, bbox, pruebaId = null, onTexto = null, candid
       return () => { vivo = false; };
     }
     setOcupado(true);
-    enviarJSON("/api/aprendizaje/zonas", {
+    setFalloVariantes(false);
+    enviarJSON("/api/aprendizaje/lecturas-orientacion", {
       prueba_id: pruebaId, imagen_id: item.id, bbox,
-      accion: "previsualizar", exacta: true, releer: true,
     }).then((respuesta) => {
       if (!vivo) return;
       setLecturas(Array.isArray(respuesta.candidatos_orientacion)
         ? respuesta.candidatos_orientacion : []);
-    }).catch(() => {
+      setAviso("Variantes listas. Gira la imagen o toca una tarjeta para copiar esa lectura a Texto correcto como borrador.");
+    }).catch((error) => {
       if (!vivo) return;
       setLecturas([]);
-      setAviso("No se pudieron preparar las variantes OCR de esta zona. Puedes girar la imagen y escribir la corrección manualmente.");
+      setFalloVariantes(true);
+      setAviso(`No se pudieron cargar las variantes OCR automáticamente: ${error.message}. Puedes seguir escribiendo la corrección manualmente.`);
     }).finally(() => { if (vivo) setOcupado(false); });
     return () => { vivo = false; };
   }, [clave]);
 
   const opciones = Array.isArray(lecturas) ? lecturas : [];
+  const mapa = new Map(opciones.map(c => [((Number(c.grados) % 360) + 360) % 360, c]));
+  const orden = opciones.length
+    ? opciones.map(c => ((Number(c.grados) % 360) + 360) % 360)
+    : [0, 90, 180, 270];
+  [0, 90, 180, 270].forEach(a => { if (!orden.includes(a)) orden.push(a); });
+  const tarjetas = orden.slice(0, 4).map(grados => mapa.get(grados) || ({grados, confianza: null, texto: ""}));
+
   function girar(grados) {
     const propuesta = propuestaTextoOrientacion({candidatos_orientacion: opciones}, grados);
     setGiro(propuesta.angulo);
     if (propuesta.texto && typeof onTexto === "function") {
       onTexto(propuesta.texto);
-      setAviso(`Propuesta de ${propuesta.angulo}° copiada a Texto correcto como borrador. Revísala y pulsa Aplicar supervisión para guardarla.`);
+      setAviso(`Lectura de ${propuesta.angulo}° copiada automáticamente a Texto correcto como borrador. Solo se guarda al pulsar Aplicar supervisión.`);
+    } else if (ocupado) {
+      setAviso(`Vista girada a ${propuesta.angulo}°. Las variantes OCR aún se están preparando; Texto correcto no se modificó.`);
     } else if (opciones.length) {
-      setAviso(`No hay una lectura utilizable para ${propuesta.angulo}°. El Texto correcto actual se conserva.`);
+      setAviso(`No hay una lectura utilizable para ${propuesta.angulo}°. Texto correcto se conserva.`);
     } else {
-      setAviso("Giro visual aplicado. El Texto correcto actual se conserva.");
+      setAviso(`Vista girada a ${propuesta.angulo}°. Escribe Texto correcto manualmente; no se ha guardado nada.`);
     }
   }
-  return html`<section class="herramientas-region" aria-label="Imagen y variantes de la selección">
+  return html`<section class="herramientas-region herramientas-region-correccion" aria-label="Imagen y variantes de la selección">
     <div class="cabecera-recorte"><div><span class="sobrelinea">SELECCIÓN ACTIVA</span>
-      <h3>Revisa la imagen y su texto</h3></div><span class="insignia-recorte">${giro}°</span></div>
+      <h3>Revisa la imagen y elige su orientación</h3></div></div>
     <${VistaRecorteZona} item=${item} bbox=${bbox} grados=${giro} />
-    <div class="acciones-tabla"><button type="button" class="boton" onClick=${()=>girar(giro-90)}>↶ 90°</button>
+    <div class="acciones-tabla controles-giro-recorte"><button type="button" class="boton" onClick=${()=>girar(giro-90)}>↶ 90°</button>
+      <strong class="angulo-giro-actual">${giro}°</strong>
       <button type="button" class="boton" onClick=${()=>girar(giro+90)}>↷ 90°</button>
       <button type="button" class="boton" onClick=${()=>girar(0)}>Restablecer giro</button></div>
-    ${ocupado && html`<small role="status">Preparando automáticamente las variantes 0° / 90° / 180° / 270°…</small>`}
-    ${!ocupado && opciones.length > 0 && html`<div class="lista-candidatos-orientacion">
-      ${opciones.map((c) => html`<button type="button" class="boton candidato-orientacion"
-        aria-pressed=${giro === Number(c.grados)} onClick=${()=>girar(c.grados)}
-        title="Usar esta lectura como borrador; no se guarda hasta Aplicar supervisión">
-        <strong>${c.grados}° · ${(Number(c.confianza || 0)*100).toFixed(1)}%</strong>
-        <span>${c.texto || "Sin lectura"}</span></button>`)}
-    </div>`}
-    <small role="status">${aviso || "Gira la imagen o elige una variante. Si existe una lectura para ese ángulo, se copiará a Texto correcto únicamente como borrador; nada se guarda hasta pulsar Aplicar supervisión."}</small>
+    <div class="variantes-orientacion-cabecera">
+      <strong>Lecturas por orientación</strong>
+      ${ocupado && html`<small role="status">Calculando 0° / 90° / 180° / 270°…</small>`}
+    </div>
+    <div class="lista-candidatos-orientacion variantes-siempre-visibles">
+      ${tarjetas.map((c) => {
+        const disponible = c.confianza !== null && c.confianza !== undefined;
+        return html`<button type="button" class="boton candidato-orientacion"
+          disabled=${!disponible} aria-pressed=${giro === Number(c.grados)} onClick=${()=>girar(c.grados)}
+          title=${disponible ? "Copiar esta lectura a Texto correcto como borrador" : (falloVariantes ? "Lectura no disponible" : "Preparando esta orientación")}>
+          <strong>${c.grados}° · ${disponible ? `${(Number(c.confianza || 0)*100).toFixed(1)}%` : "…"}</strong>
+          <span>${disponible ? (c.texto || "Sin lectura") : (falloVariantes ? "No disponible" : "Calculando…")}</span></button>`;
+      })}
+    </div>
+    <small role="status">${aviso || "Las cuatro variantes permanecen visibles. Al girar o elegir una tarjeta, su lectura se copia a Texto correcto como borrador; nada se guarda hasta pulsar Aplicar supervisión."}</small>
   </section>`;
 }
 

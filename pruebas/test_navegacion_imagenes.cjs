@@ -84,5 +84,5 @@ const editor=tree=>all(tree).find(n=>typeof n.type==='function'&&n.type.name==='
   await form.props.onSubmit({preventDefault(){}});t=render();
   assert.equal(ultimaCorreccion.accion,'corregir','Aceptar no debe descartar una edición manual de la casilla');
   assert.equal(editor(t).props.item.resultado_ocr.lineas_texto[0].texto,'A.91');
-  console.log('OK: V5 corrige y sobrescribe una caja exacta aunque su región de origen esté marcada como dudosa.');
+  console.log('OK: V6 corrige y sobrescribe una caja exacta aunque su región de origen esté marcada como dudosa.');
 })().catch(e=>{console.error(e);process.exitCode=1;});

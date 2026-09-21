@@ -158,7 +158,8 @@ def generar_excel(ruta_validacion: str | Path | None = None,
                   config: dict | None = None,
                   reglas: dict | None = None,
                   ruta_plantilla: str | Path | None = None,
-                  datos_validacion: dict | None = None) -> Path:
+                  datos_validacion: dict | None = None,
+                  idioma: str = "es") -> Path:
     """Genera resultado_maestro.xlsx. Retorna la ruta del archivo creado."""
     config = config or cargar_config()
     reglas = reglas or cargar_reglas()
@@ -199,7 +200,7 @@ def generar_excel(ruta_validacion: str | Path | None = None,
             plantilla_bmg = RAIZ_PROYECTO / plantilla_bmg
         if plantilla_bmg.is_file():
             return generar_reporte_bmg(
-                plantilla_bmg, ruta_salida, datos.get("resultados", []), config, reglas)
+                plantilla_bmg, ruta_salida, datos.get("resultados", []), config, reglas, idioma=idioma)
 
     try:
         from pruebas_externas import cargar as cargar_externas

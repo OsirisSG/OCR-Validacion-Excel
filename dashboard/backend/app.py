@@ -63,7 +63,7 @@ RUTA_ESTRUCTURA = RAIZ_PROYECTO / CONFIG.get("fase0", {}).get(
 RUTA_CHECKPOINT_PIPELINE = RAIZ_PROYECTO / ".cache_ocr" / "estado_pipeline.json"
 DIR_FRONTEND = RAIZ_PROYECTO / "dashboard" / "frontend"
 
-app = FastAPI(title="Dashboard de validación de pruebas (OCR)", version="1.0")
+app = FastAPI(title="OCR Versuchsmatrix", version="8.0")
 
 
 @app.middleware("http")
@@ -87,6 +87,7 @@ class SolicitudPipeline(BaseModel):
     plantilla_id: str | None = Field(default=None, max_length=128)
     modo_ejecucion: str = Field(default="completo", pattern="^(completo|inventario|reanudar)$")
     ruta_inventario: str | None = Field(default=None, max_length=4096)
+    idiomas_exportacion: list[str] = Field(default_factory=lambda: ["es"], min_length=1, max_length=3)
     # Uso interno al recuperar un checkpoint. No aparece como control visual.
     casos_omitidos: list[str] = Field(default_factory=list, max_length=100000)
 
@@ -108,6 +109,16 @@ class SolicitudReproceso(BaseModel):
 class SolicitudCampoManual(BaseModel):
     valor: str = Field(min_length=1, max_length=8192)
     usuario: str = Field(default="dashboard", min_length=1, max_length=128)
+    componente: str | None = Field(default=None, pattern="^(bolsa_aire|tablero|otro|por_identificar)$")
+
+
+class SolicitudExportacion(BaseModel):
+    idiomas: list[str] = Field(default_factory=lambda: ["es"], min_length=1, max_length=3)
+
+
+class SolicitudConsolidacion(BaseModel):
+    archivos: list[str] = Field(min_length=1, max_length=20)
+    regenerar_excel: bool = True
 
 
 class SolicitudCorreccion(BaseModel):
@@ -118,6 +129,8 @@ class SolicitudCorreccion(BaseModel):
     texto_correcto: str = Field(default="", max_length=4096)
     bbox: list[int] | None = Field(default=None, min_length=4, max_length=4)
     tipo_unidad: str | None = Field(default=None, max_length=32)
+    componente: str | None = Field(default=None, pattern="^(bolsa_aire|tablero|otro|por_identificar)$")
+    campo_destino: str | None = Field(default=None, max_length=128)
     accion: str = Field(default="confirmar_entrenar", pattern=(
         "^(aceptar|corregir|ilegible|no_es_campo|guardar_sin_entrenar|confirmar_entrenar)$"))
     usuario: str = Field(default="dashboard", min_length=1, max_length=128)
@@ -336,6 +349,8 @@ _pipeline_estado: dict = {
     "ultimo_id_nombre": None, "reanudable": False, "solicitud": None,
     "archivo_excel_parcial": None, "excel_parcial_actualizado_en": None,
     "advertencia_excel_parcial": None, "excel_parcial_pendiente": False,
+    "archivos_excel_parcial": {}, "archivos_excel": {},
+    "idiomas_exportacion": ["es"],
     "advertencias_cache": [],
 }
 
@@ -750,10 +765,48 @@ def _generar_excel_serializado(*args, **kwargs):
         return generar_excel(*args, **kwargs)
 
 
+def _normalizar_idiomas_exportacion(valores) -> list[str]:
+    permitidos = {"es", "en", "de"}
+    salida = []
+    for valor in (valores or ["es"]):
+        codigo = str(valor).lower().strip()
+        if codigo not in permitidos:
+            raise ValueError(f"Idioma de exportación no soportado: {valor}")
+        if codigo not in salida:
+            salida.append(codigo)
+    return salida or ["es"]
+
+
+def _generar_excel_asociado():
+    """Regenera los Excel asociados a la instantánea actual sin repetir OCR."""
+    datos = deepcopy(_cargar_datos() or {})
+    if not datos.get("resultados"):
+        raise FileNotFoundError("No hay resultados procesados para actualizar el Excel.")
+    idiomas = _normalizar_idiomas_exportacion(datos.get("idiomas_exportacion") or ["es"])
+    etiquetas = {"es": "ES", "en": "EN", "de": "DE"}
+    declarados = dict(datos.get("archivos_excel") or {})
+    base = Path(datos.get("nombre_excel_base") or datos.get("archivo_excel") or (RAIZ_PROYECTO / CONFIG.get(
+        "fase3", {}).get("archivo_salida", "resultado_maestro.xlsx")))
+    if not base.is_absolute():
+        base = RAIZ_PROYECTO / base
+    generados = {}
+    for idioma in idiomas:
+        destino = Path(declarados.get(idioma) or base)
+        if not destino.is_absolute():
+            destino = RAIZ_PROYECTO / destino
+        if not declarados.get(idioma) and (len(idiomas) > 1 or idioma != "es"):
+            destino = base.with_name(f"{base.stem}_{etiquetas[idioma]}{base.suffix}")
+        generado = _generar_excel_serializado(
+            RUTA_VALIDACION, destino, CONFIG, REGLAS,
+            ruta_plantilla=datos.get("ruta_plantilla"), datos_validacion=datos, idioma=idioma)
+        generados[idioma] = str(generado)
+    return generados.get(idiomas[0]) or next(iter(generados.values()))
+
+
 from utilidades.cola_excel import ColaExcel
 
 _cola_excel = ColaExcel(RAIZ_PROYECTO / ".cache_ocr" / "cola_excel.sqlite3",
-                       _generar_excel_serializado)
+                       _generar_excel_asociado)
 
 
 @asynccontextmanager
@@ -875,22 +928,28 @@ def _exportar_excel_parcial_pipeline() -> str | None:
         nombre = str(estado.get("nombre_excel") or CONFIG.get("fase3", {}).get(
             "archivo_salida", "resultado_maestro.xlsx"))
         base = Path(nombre).stem or "resultado_maestro"
-        ruta_excel = RAIZ_PROYECTO / f"{base}_parcial.xlsx"
+        idiomas = _normalizar_idiomas_exportacion(estado.get("idiomas_exportacion") or ["es"])
+        etiquetas = {"es": "ES", "en": "EN", "de": "DE"}
+        datos_parciales["idiomas_exportacion"] = idiomas
         generar_excel = _generar_excel_serializado
         ruta_plantilla = estado.get("ruta_plantilla")
-        generado = (generar_excel(
-            ruta_json, ruta_excel, CONFIG, ruta_plantilla=ruta_plantilla,
-            datos_validacion=datos_parciales)
-            if ruta_plantilla else generar_excel(
-                ruta_json, ruta_excel, CONFIG, datos_validacion=datos_parciales))
+        generados = {}
+        for idioma in idiomas:
+            sufijo = "" if len(idiomas) == 1 and idioma == "es" else f"_{etiquetas[idioma]}"
+            ruta_excel = RAIZ_PROYECTO / f"{base}_parcial{sufijo}.xlsx"
+            generado = generar_excel(
+                ruta_json, ruta_excel, CONFIG, REGLAS, ruta_plantilla=ruta_plantilla,
+                datos_validacion=datos_parciales, idioma=idioma)
+            generados[idioma] = str(generado)
+        principal = generados.get(idiomas[0]) or next(iter(generados.values()))
         with _pipeline_lock:
             _pipeline_estado.update(
-                archivo_excel_parcial=str(generado),
+                archivo_excel_parcial=principal, archivos_excel_parcial=generados,
                 excel_parcial_actualizado_en=datetime.now().isoformat(timespec="seconds"),
                 advertencia_excel_parcial=None, excel_parcial_pendiente=False,
                 actualizado_en=datetime.now().isoformat(timespec="milliseconds"))
         _persistir_checkpoint_pipeline()
-        return str(generado)
+        return principal
     except Exception as exc:
         _registrar_advertencia_excel_parcial(
             f"El avance OCR quedó guardado, pero el Excel parcial no pudo actualizarse: "
@@ -930,7 +989,8 @@ def _ejecutar_pipeline_fondo(ruta: Path, nombre_excel: str | None = None,
                              casos_omitidos: set[str] | None = None,
                              modo_ejecucion: str = "completo",
                              ruta_inventario: str | None = None,
-                             zoom_forzado: float | None = None) -> None:
+                             zoom_forzado: float | None = None,
+                             idiomas_exportacion: list[str] | None = None) -> None:
     inicio = time.monotonic()
 
     def progreso(fase: str, mensaje: str, detalle: dict | None = None) -> None:
@@ -978,11 +1038,14 @@ def _ejecutar_pipeline_fondo(ruta: Path, nombre_excel: str | None = None,
             casos_omitidos=casos_omitidos,
             modo_recorte=modo_recorte, roi_manual=roi_manual,
             modo_ejecucion=modo_ejecucion, ruta_inventario=ruta_inventario,
-            zoom_forzado=zoom_forzado)
+            zoom_forzado=zoom_forzado, idiomas_exportacion=idiomas_exportacion)
         _cache.update({"mtime": None, "datos": None})
+        fase3 = (resumen.get("fases") or {}).get("fase3") or {}
         _actualizar_pipeline(
             estado="completado", fase="completado", mensaje="Procesamiento terminado",
             finalizado_en=datetime.now().isoformat(timespec="seconds"), resumen=resumen,
+            archivos_excel=fase3.get("archivos") or {},
+            idiomas_exportacion=fase3.get("idiomas") or idiomas_exportacion or ["es"],
             porcentaje=100, restantes=0, eta_segundos=0,
             transcurrido_segundos=round(time.monotonic() - inicio, 1), reanudable=False,
         )
@@ -1215,8 +1278,11 @@ def estado():
 @app.get("/api/config")
 def config_dashboard():
     return {
+        "nombre_herramienta": "OCR Versuchsmatrix",
         "colores": CONFIG.get("colores", {}),
         "reglas": REGLAS.get("criterios", {}),
+        "idiomas_interfaz": ["es", "en", "de"],
+        "idiomas_exportacion": ["es", "en", "de"],
     }
 
 
@@ -1360,6 +1426,11 @@ def corregir_lectura(solicitud: SolicitudCorreccion):
         metadatos_supervision = {k: fila.get(k) for k in
             ("tipo_st", "module_version", "temperature_condition", "inflator_type")}
         metadatos_supervision.update({
+            "project_id": fila.get("project_id"),
+            "case_key": fila.get("case_key"),
+            "componente": getattr(solicitud, "componente", None) or "por_identificar",
+            "campo_propuesto": getattr(solicitud, "campo_destino", None),
+            "bbox_original": token.get("bbox"),
             "giro_foto": float(ocr.get("orientacion_texto_grados") or 0),
             "poligono_lectura": token.get("poligono_lectura"),
             "orientacion_region_grados": token.get("orientacion_region_grados"),
@@ -1399,6 +1470,40 @@ def corregir_lectura(solicitud: SolicitudCorreccion):
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     gestor.actualizar_revision("carpeta", solicitud.prueba_id, estado="parcial")
+    # La selección de componente/campo del editor es una confirmación explícita
+    # distinta del entrenamiento OCR. Se guarda en el JSON consolidado para que
+    # sobreviva al reinicio y llegue a Excel; no se propaga a otros casos.
+    # getattr mantiene compatibilidad con clientes/pruebas antiguos que aún no
+    # envían estos campos opcionales.
+    componente_supervision = getattr(solicitud, "componente", None)
+    campo_destino = getattr(solicitud, "campo_destino", None)
+    if solicitud.accion not in {"ilegible", "no_es_campo"} and (
+            componente_supervision or campo_destino):
+        evidencia = {
+            "imagen_id": solicitud.imagen_id, "imagen": item.get("ruta"),
+            "bbox_original": token.get("bbox"),
+            "texto_ocr_original": token.get("texto_original") or solicitud.texto_ocr,
+            "texto_corregido": correcto,
+            "orientacion_grados": token.get("orientacion_region_grados")
+                if token.get("orientacion_region_grados") is not None
+                else ocr.get("orientacion_texto_grados"),
+        }
+        fila.setdefault("confirmaciones_extraccion", []).append({
+            **evidencia, "componente": componente_supervision or "por_identificar",
+            "campo": campo_destino, "usuario": solicitud.usuario,
+            "fecha": datetime.now().isoformat(timespec="seconds")})
+        if campo_destino and fila.get("perfil") == "empresarial":
+            try:
+                dato = _aplicar_campo_manual_en_fila(
+                    fila, campo_destino, correcto, solicitud.usuario,
+                    componente_supervision, evidencia)
+                resultado["campo_confirmado"] = {"campo": campo_destino, "dato": dato}
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+        guardado = _guardar_json_atomico(RUTA_VALIDACION, datos)
+        if guardado is False:
+            raise HTTPException(500, "La corrección OCR se guardó, pero no se pudo persistir su clasificación de campo.")
+        _cache.update({"mtime": None, "datos": None})
     _regenerar_excel(resultado)
     resultado["estado"] = gestor.estado()
     return resultado
@@ -1976,6 +2081,11 @@ def iniciar_pipeline(solicitud: SolicitudPipeline):
         if not nombre_excel.lower().endswith(".xlsx"):
             nombre_excel = (Path(nombre_excel).with_suffix(".xlsx").name
                             if Path(nombre_excel).suffix else nombre_excel + ".xlsx")
+    try:
+        idiomas_exportacion = _normalizar_idiomas_exportacion(solicitud.idiomas_exportacion)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
     ruta_plantilla = (solicitud.ruta_plantilla or "").strip().strip('"\'') or None
     if ruta_plantilla:
         plantilla = Path(ruta_plantilla).expanduser()
@@ -2012,6 +2122,7 @@ def iniciar_pipeline(solicitud: SolicitudPipeline):
             "sobrescribir_excel": solicitud.sobrescribir_excel,
             "tipo_st": solicitud.tipo_st, "plantilla_id": solicitud.plantilla_id,
             "modo_ejecucion": solicitud.modo_ejecucion,
+            "idiomas_exportacion": idiomas_exportacion,
             "casos_omitidos": list(solicitud.casos_omitidos),
         }
         _pipeline_estado.update({
@@ -2025,6 +2136,8 @@ def iniciar_pipeline(solicitud: SolicitudPipeline):
             "imagenes_total": 0, "imagenes_restantes": 0,
             "imagen_actual": None,
             "recursos": capacidad.get("recursos"), "nombre_excel": nombre_excel,
+            "idiomas_exportacion": idiomas_exportacion, "archivos_excel": {},
+            "archivos_excel_parcial": {},
             "tipo_st": solicitud.tipo_st, "ruta_plantilla": ruta_plantilla,
             "plantilla_id": solicitud.plantilla_id,
             "modo_ejecucion": solicitud.modo_ejecucion,
@@ -2046,6 +2159,7 @@ def iniciar_pipeline(solicitud: SolicitudPipeline):
         "casos_omitidos": set(solicitud.casos_omitidos),
         "modo_ejecucion": solicitud.modo_ejecucion,
         "ruta_inventario": ruta_inventario,
+        "idiomas_exportacion": idiomas_exportacion,
     }, daemon=True)
     _pipeline_hilo.start()
     return {"aceptado": True, "ruta": str(ruta), "estado": "procesando"}
@@ -2238,9 +2352,11 @@ def descargar_excel():
 
 
 @app.get("/api/pipeline/excel-parcial")
-def descargar_excel_parcial():
+def descargar_excel_parcial(idioma: str = ""):
     with _pipeline_lock:
-        declarada = _pipeline_estado.get("archivo_excel_parcial")
+        codigo = str(idioma or "").lower().strip()
+        declarada = ((_pipeline_estado.get("archivos_excel_parcial") or {}).get(codigo)
+                     if codigo else _pipeline_estado.get("archivo_excel_parcial"))
     if not declarada:
         raise HTTPException(404, "Todavía no se ha generado un Excel parcial.")
     archivo = Path(declarada).resolve()
@@ -2256,6 +2372,72 @@ def casos(q: str = "", estado: str = "", limit: int = Query(500, ge=1, le=1000),
     respuesta = pruebas(q=q, estado=estado, limit=1000, offset=0)
     items = [item for item in respuesta["items"] if item.get("origen") == "carpeta"]
     return {"total": len(items), "items": items[offset:offset + limit]}
+
+
+@app.post("/api/resultados/exportar")
+def exportar_resultados(solicitud: SolicitudExportacion):
+    """Exporta ES/EN/DE desde una misma instantánea, sin repetir OCR."""
+    permitidos={"es":"ES","en":"EN","de":"DE"}; idiomas=[]
+    for idioma in solicitud.idiomas:
+        idioma=str(idioma).lower().strip()
+        if idioma not in permitidos: raise HTTPException(400,f"Idioma no soportado: {idioma}")
+        if idioma not in idiomas: idiomas.append(idioma)
+    datos=deepcopy(_cargar_datos() or {})
+    if not datos.get("resultados"): raise HTTPException(404,"No hay resultados procesados para exportar.")
+    base=Path(datos.get("nombre_excel_base") or datos.get("archivo_excel") or (RAIZ_PROYECTO / CONFIG.get("fase3",{}).get("archivo_salida","resultado_maestro.xlsx")))
+    if not base.is_absolute(): base=RAIZ_PROYECTO/base
+    generados=[]
+    for idioma in idiomas:
+        destino=base.with_name(f"{base.stem}_{permitidos[idioma]}.xlsx")
+        try:
+            generado=_generar_excel_serializado(RUTA_VALIDACION,destino,CONFIG,REGLAS,ruta_plantilla=datos.get("ruta_plantilla"),datos_validacion=datos,idioma=idioma)
+        except PermissionError as exc: raise HTTPException(423,str(exc)) from exc
+        generados.append({"idioma":idioma,"nombre":Path(generado).name,"url":f"/api/resultados/exportado?archivo={quote(Path(generado).name)}"})
+    return {"generados":generados,"instantanea":datos.get("generado_en"),"reutilizo_ocr":True}
+
+
+@app.get("/api/resultados/exportado")
+def descargar_exportado(archivo: str):
+    nombre=Path(unquote(archivo)).name; datos=_cargar_datos() or {}
+    base=Path(datos.get("nombre_excel_base") or datos.get("archivo_excel") or (RAIZ_PROYECTO / CONFIG.get("fase3",{}).get("archivo_salida","resultado_maestro.xlsx")))
+    if not base.is_absolute(): base=RAIZ_PROYECTO/base
+    candidato=(base.parent/nombre).resolve()
+    if candidato.parent != base.parent.resolve() or not candidato.is_file() or candidato.suffix.lower()!=".xlsx": raise HTTPException(404,"El Excel exportado no está disponible.")
+    return FileResponse(candidato,filename=candidato.name,media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+@app.post("/api/resultados/consolidar")
+def consolidar_resultados(solicitud: SolicitudConsolidacion):
+    """Une ejecuciones separadas 1ST/2ST de forma idempotente sin repetir OCR."""
+    from utilidades.consolidacion import consolidar_documentos
+    documentos=[]; usados=[]
+    for declarada in solicitud.archivos:
+        ruta=Path(str(declarada)).expanduser(); ruta=(ruta if ruta.is_absolute() else RAIZ_PROYECTO/ruta).resolve()
+        if not ruta.is_file() or ruta.suffix.lower()!=".json": raise HTTPException(400,f"JSON inválido: {declarada}")
+        try: doc=json.loads(ruta.read_text(encoding="utf-8"))
+        except (OSError,json.JSONDecodeError) as exc: raise HTTPException(400,f"No se pudo leer {ruta.name}: {exc}") from exc
+        if not isinstance(doc,dict) or not isinstance(doc.get("resultados"),list): raise HTTPException(400,f"{ruta.name} no es una ejecución OCR consolidable.")
+        documentos.append(doc); usados.append(str(ruta))
+    actual=_cargar_datos()
+    if actual: documentos.insert(0,deepcopy(actual))
+    consolidado=consolidar_documentos(documentos); consolidado["fuentes_consolidadas"]=usados
+    # Conserva preferencias de exportación del proyecto actual y, si no existen,
+    # usa la unión de idiomas declarados por las ejecuciones consolidadas.
+    idiomas=[]
+    for doc in documentos:
+        for codigo in doc.get("idiomas_exportacion") or []:
+            codigo=str(codigo).lower()
+            if codigo in {"es","en","de"} and codigo not in idiomas: idiomas.append(codigo)
+    consolidado["idiomas_exportacion"] = idiomas or ["es"]
+    if actual:
+        for clave in ("archivo_excel","archivos_excel","nombre_excel_base","ruta_plantilla"):
+            if actual.get(clave) is not None: consolidado[clave]=deepcopy(actual.get(clave))
+    _guardar_json_atomico(RUTA_VALIDACION,consolidado); _cache.update({"mtime":None,"datos":None})
+    excel=None
+    if solicitud.regenerar_excel:
+        try: excel=str(_generar_excel_asociado())
+        except PermissionError as exc: raise HTTPException(423,f"Consolidación guardada; Excel bloqueado: {exc}") from exc
+    return {"casos":len(consolidado.get("resultados",[])),"tipos_st":consolidado.get("tipos_st",[]),"archivo_excel":excel,"idiomas_exportacion":consolidado.get("idiomas_exportacion"),"reutilizo_ocr":True,"idempotente":True}
 
 
 @app.get("/api/casos/{clave}/progreso")
@@ -2281,6 +2463,62 @@ def historial_caso(clave: str):
             "acciones": fila.get("historial_acciones", [])}
 
 
+def _aplicar_campo_manual_en_fila(fila: dict, campo: str, valor: str, usuario: str,
+                                  componente: str | None = None,
+                                  evidencia: dict | None = None) -> dict:
+    """Aplica una confirmación de campo sin depender de la vista que la originó."""
+    if campo not in (fila.get("campos") or {}) and campo not in CLAVES_PLANTILLA:
+        raise ValueError("La clave no pertenece al contrato Excel activo.")
+    valor = str(valor or "").strip()
+    if not valor:
+        raise ValueError("El valor confirmado no puede quedar vacío.")
+    if campo == "opening_time_ms":
+        try:
+            numero = float(valor.replace(",", "."))
+        except ValueError as exc:
+            raise ValueError("El tiempo de apertura debe ser un número en ms.") from exc
+        if numero < 0 or numero > 1000:
+            raise ValueError("El tiempo de apertura está fuera del rango válido 0–1000 ms.")
+        valor = f"{numero:g}"
+    ahora_iso = datetime.now().isoformat(timespec="seconds")
+    componente = componente or "por_identificar"
+    correccion = {"valor": valor, "corregido_en": ahora_iso,
+                  "corregido_por": usuario, "componente": componente}
+    fila.setdefault("correcciones_manual_campos", {})[campo] = correccion
+    original_ruta = fila.get(campo) if campo in {
+        "test_number", "module_version", "inflator_type", "temperature_condition"} else None
+    conflicto_ruta = original_ruta not in {None, "", valor}
+    dato = {"valor": valor, "valor_original": valor,
+            "estado": "pendiente_revision" if conflicto_ruta else "confirmado_manual",
+            "fuente": "correccion_manual_confirmada", "confianza": 1.0,
+            "inferido": False, "requiere_revision": conflicto_ruta,
+            "valor_seguro_ruta": original_ruta if conflicto_ruta else None,
+            "componente": componente, **correccion}
+    fila.setdefault("campos", {})[campo] = dato
+    consolidado = fila.setdefault("consolidado", {})
+    consolidado.setdefault("campos", {})[campo] = dato
+    fila["campos_faltantes"] = [c for c in fila.get("campos_faltantes", []) if c != campo]
+    fila["conflictos"] = list(dict.fromkeys([
+        *[c for c in fila.get("conflictos", []) if c != campo],
+        *([campo] if conflicto_ruta else []),
+    ]))
+    fila["requiere_revision"] = bool(fila["conflictos"] or fila["campos_faltantes"])
+    consolidado.update({"campos_faltantes": fila["campos_faltantes"],
+                        "conflictos": fila["conflictos"],
+                        "requiere_revision": fila["requiere_revision"]})
+    fila.setdefault("comparacion", {})["resultado"] = (
+        "discrepancia" if fila["conflictos"] else
+        "coincidencia_parcial" if fila["campos_faltantes"] else "coincidencia_total")
+    fila["comparacion"]["faltantes"] = []
+    accion = {"tipo": "correccion_campo", "campo": campo, "valor": valor,
+              "usuario": usuario, "fecha": ahora_iso,
+              "componente": componente, "conflicto_con_ruta": conflicto_ruta}
+    if evidencia:
+        accion["evidencia"] = evidencia
+    fila.setdefault("historial_acciones", []).append(accion)
+    return dato
+
+
 @app.post("/api/casos/{clave}/campos/{campo}")
 def corregir_campo_caso(clave: str, campo: str, solicitud: SolicitudCampoManual):
     """Confirma una clave del contrato activo sin alterar archivos originales."""
@@ -2295,9 +2533,18 @@ def corregir_campo_caso(clave: str, campo: str, solicitud: SolicitudCampoManual)
     if gestor.estado_revision("carpeta", clave, inicial)["estado"] == "completada":
         raise HTTPException(409, "La revisión está completada. Reábrela antes de editar.")
     valor = solicitud.valor.strip()
+    if campo == "opening_time_ms":
+        try:
+            numero = float(valor.replace(",", "."))
+        except ValueError as exc:
+            raise HTTPException(400, "El tiempo de apertura debe ser un número en ms.") from exc
+        if numero < 0 or numero > 1000:
+            raise HTTPException(400, "El tiempo de apertura está fuera del rango válido 0–1000 ms.")
+        valor = f"{numero:g}"
     ahora_iso = datetime.now().isoformat(timespec="seconds")
     correccion = {"valor": valor, "corregido_en": ahora_iso,
-                  "corregido_por": solicitud.usuario}
+                  "corregido_por": solicitud.usuario,
+                  "componente": getattr(solicitud, "componente", None) or "por_identificar"}
     fila.setdefault("correcciones_manual_campos", {})[campo] = correccion
     original_ruta = fila.get(campo) if campo in {
         "test_number", "module_version", "inflator_type", "temperature_condition"} else None
@@ -2307,6 +2554,7 @@ def corregir_campo_caso(clave: str, campo: str, solicitud: SolicitudCampoManual)
             "fuente": "correccion_manual_confirmada", "confianza": 1.0,
             "inferido": False, "requiere_revision": conflicto_ruta,
             "valor_seguro_ruta": original_ruta if conflicto_ruta else None,
+            "componente": getattr(solicitud, "componente", None) or "por_identificar",
             **correccion}
     fila.setdefault("campos", {})[campo] = dato
     fila.setdefault("consolidado", {}).setdefault("campos", {})[campo] = dato
@@ -2335,13 +2583,7 @@ def corregir_campo_caso(clave: str, campo: str, solicitud: SolicitudCampoManual)
     _cache.update({"mtime": None, "datos": None})
     gestor.actualizar_revision("carpeta", clave, estado="parcial")
     respuesta = {"campo": campo, "dato": dato, "conflictos": fila["conflictos"]}
-    try:
-        generar_excel = _generar_excel_serializado
-        respuesta["archivo_excel"] = str(generar_excel(
-            RUTA_VALIDACION, datos.get("archivo_excel"), CONFIG,
-            ruta_plantilla=datos.get("ruta_plantilla")))
-    except Exception as exc:
-        respuesta["advertencia_excel"] = str(exc)
+    _regenerar_excel(respuesta)
     return respuesta
 
 
@@ -2411,6 +2653,8 @@ def reprocesar_caso(clave: str, solicitud: SolicitudReproceso):
         "imagenes_filtradas": imagenes or None, "solo_errores": solicitud.solo_errores,
         "modo_recorte": solicitud.modo_recorte, "roi_manual": solicitud.roi_manual,
         "modo_ejecucion": "completo", "zoom_forzado": solicitud.zoom_forzado,
+        "idiomas_exportacion": list((datos.get("idiomas_exportacion") or
+                                      _pipeline_estado.get("idiomas_exportacion") or ["es"])),
     }, daemon=True)
     hilo.start()
     return {"aceptado": True, "case_key": fila["case_key"],

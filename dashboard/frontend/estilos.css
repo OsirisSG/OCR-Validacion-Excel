@@ -789,3 +789,15 @@ button.matriz-celda:hover, button.matriz-celda:focus-visible { filter: brightnes
 .matriz-columna-meta span { color: var(--texto-secundario); }
 .tabla-pruebas tbody tr.fila-foco-matriz { outline: 3px solid #60a5fa; outline-offset: -3px; background: rgba(96,165,250,.14); }
 @media (max-width: 850px) { .matriz-apertura-tarjeta { padding-bottom: 16px; } .matriz-etapa { min-width: 700px; } }
+/* V8 · OCR Versuchsmatrix */
+html,body{max-width:100%;overflow-x:hidden}.contenedor{max-width:1440px}.cabecera{backdrop-filter:blur(14px)}.cabecera-inner{max-width:1440px;gap:12px;min-height:64px}.logo{display:flex;align-items:center;gap:10px}.logo strong{display:block;font-size:15px}.logo small{display:block;font-size:11px;font-weight:500;opacity:.66;margin-top:2px}.marca-logo{width:36px;height:36px;border-radius:10px;display:grid;place-items:center;background:var(--azul,#2563eb);color:white}.icono-svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}.tab,.btn-tema{display:inline-flex;align-items:center;gap:7px;min-height:40px;border-radius:10px}.selector-idioma{height:40px;border:1px solid var(--borde);border-radius:10px;background:var(--superficie);color:var(--texto);padding:0 10px}.tarjeta,.aviso{border-radius:14px}.campo,.boton{min-height:40px;border-radius:10px}.exportador-excel{display:grid;grid-template-columns:1fr auto;gap:20px;align-items:end;margin-top:18px}.exportador-controles{display:flex;align-items:end;gap:10px}.exportador-controles label{display:grid;gap:5px}.descargas-exportacion{grid-column:1/-1;display:flex;gap:8px;flex-wrap:wrap}.mascota-programando{display:none!important}@media(max-width:900px){.cabecera-inner{flex-wrap:wrap;padding-block:10px}.navegacion{order:3;width:100%;overflow:auto}.exportador-excel{grid-template-columns:1fr}.exportador-controles{align-items:stretch;flex-direction:column}}@media(max-width:560px){.logo small{display:none}.tab{padding-inline:10px}.contenedor{padding-inline:10px}.rejilla-2,.rejilla-kpi{grid-template-columns:1fr!important}}
+
+/* V8 · controles de idiomas de exportación */
+.selector-idiomas-exportacion{border:1px solid var(--borde);border-radius:12px;padding:12px 14px;margin:4px 0 10px;min-width:0}.selector-idiomas-exportacion legend{padding:0 5px}.opciones-idioma-exportacion{display:flex;gap:10px;flex-wrap:wrap}.opciones-idioma-exportacion label{display:inline-flex;align-items:center;gap:7px;min-height:38px;padding:0 10px;border:1px solid var(--borde);border-radius:10px;background:var(--superficie)}.opciones-idioma-exportacion input{accent-color:var(--azul,#2563eb)}
+@media(max-width:560px){.opciones-idioma-exportacion{display:grid;grid-template-columns:1fr}.opciones-idioma-exportacion label{width:100%}}
+
+/* V8: descargas parciales multiidioma */
+.acciones-excel-parcial { display: inline-flex; flex-wrap: wrap; gap: .45rem; margin-left: .55rem; vertical-align: middle; }
+@media (max-width: 680px) {
+  .acciones-excel-parcial { display: flex; margin: .55rem 0 0; }
+}

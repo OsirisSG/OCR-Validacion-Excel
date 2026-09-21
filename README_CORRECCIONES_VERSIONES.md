@@ -147,3 +147,7 @@ Validación V5: 6 pruebas JavaScript del editor pasaron y 123 pruebas Python ind
 ## V7 — Matriz de apertura y reporte BMG 1ST + 2ST
 
 Se mantiene V6 como base de corrección OCR y se añade el reporte BMG solicitado. El dashboard incorpora una matriz clicable 1ST/2ST basada en `opening_time_ms`: verde <=6 ms, amarillo >6 y <=7 ms, rojo >7 ms, gris sin valor fiable. El Excel utiliza el formato `Übersicht Standversuche` + `Versuchsmatrix`, combina ambas etapas en un único archivo y enlaza cada número del resumen con su fila detallada. Ver `LEEME_MATRIZ_APERTURA_V7.md`.
+
+## V8 · OCR Versuchsmatrix (2026-09-20)
+
+V8 conserva el editor V6 y agrega identidad portable de proyecto/etapa/caso, procedencia ampliada, consolidación idempotente 1ST/2ST, interfaz ES/EN/DE, exportación Excel ES/EN/DE desde una misma instantánea, matriz dinámica sin límite fijo de 50 casos, trazabilidad y escritura Excel atómica. `opening_time_ms` queda listo para captura manual y semáforo, sin inventar captura automática.

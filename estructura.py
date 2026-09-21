@@ -167,7 +167,8 @@ def mapear_estructura(ruta_raiz: str | Path, config: dict | None = None,
         c["es_hoja"] = (sum(c["conteos"].values()) > 0) and not tiene_descendiente_con_archivos
 
     empresarial = descubrir_casos(
-        ruta_raiz, tipo_st_manual=tipo_st, al_descubrir=al_descubrir_caso)
+        ruta_raiz, tipo_st_manual=tipo_st, al_descubrir=al_descubrir_caso,
+        proyecto_configurado=(config.get("empresarial", {}) or {}).get("proyecto_id"))
     return {
         "raiz": str(ruta_raiz),
         "generado_en": datetime.now().isoformat(timespec="seconds"),

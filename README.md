@@ -1,13 +1,16 @@
+# OCR Versuchsmatrix
+
 # Sistema local de OCR y validación de pruebas
 
 Aplicación local para recorrer lotes de fotografías, extraer nomenclaturas con
 OCR, comparar etiquetas contra imágenes de referencia, generar un Excel maestro
 y consultar los resultados desde un dashboard responsivo.
 
-> **Versión corregida 2026-09-16.** Esta copia integra la base completa más el paquete
-> posterior de correcciones de dashboard, sobrescritura y orientación. Consulta
-> `README_CORRECCIONES_VERSIONES.md` y `docs/correcciones_versiones_20260916.md` antes
-> de reemplazar una instalación que ya tenga aprendizaje guardado.
+> **Versión V8 · 2026-09-20.** Esta copia conserva el editor OCR aprobado en V6/V7 y agrega
+> identidad portable proyecto/etapa/caso, consolidación 1ST/2ST, procedencia, interfaz
+> ES/EN/DE y exportación BMG multiidioma desde una misma instantánea. Consulta
+> `LEEME_V8_OCR_VERSUCHSMATRIX.md` y `README_CORRECCIONES_VERSIONES.md` antes de
+> reemplazar una instalación que ya tenga aprendizaje o progreso guardado.
 
 El procesamiento no utiliza APIs de OCR ni servicios en la nube. EasyOCR es el
 motor de producción: se mantiene una sola instancia por ejecución y usa

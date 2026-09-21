@@ -135,15 +135,22 @@ fase3:
   hoja_matriz: "Matriz de cumplimiento"
   hoja_textos: "Textos por imagen"
   hoja_revision: "Bandeja de revisión"
+  idiomas_exportacion_default: [es]
   reporte_bmg:
     activar: true
     plantilla: plantillas/reporte_bmg_1st_2st.xlsx
     combinar_1st_2st: true
     hoja_resumen: "Übersicht Standversuche"
     hoja_lista: "Versuchsmatrix"
+    idiomas_disponibles: [es, en, de]
+    idioma_predeterminado: es
+    exportacion_triple: false
+    hoja_trazabilidad: "Trazabilidad"
 
 # Flujo por ID para proyectos con <ID> <VERSION> <INFLADOR> <TEMPERATURA>.
 empresarial:
+  # Opcional. Si se deja vacío, se usa el nombre de la carpeta raíz como ID portable.
+  proyecto_id: null
   archivo_cache: .cache_ocr/imagenes.sqlite3
   archivo_cache_legacy: .cache_ocr/imagenes_legacy.sqlite3
   archivo_avance_ids: .cache_ocr/avances_ids.json

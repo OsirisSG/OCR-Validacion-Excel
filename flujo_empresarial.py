@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 from utilidades.persistencia import escribir_json_seguro
+from utilidades.identidad import proyecto_id as resolver_proyecto_id, identidad_caso
 
 
 PATRON_CASO = re.compile(
@@ -259,14 +260,15 @@ def parsear_nombre_caso(nombre: str) -> dict | None:
     }
 
 
-def case_key(raiz: str | Path, tipo_st: str | None, ruta_caso: str | Path) -> str:
+def case_key(raiz: str | Path, tipo_st: str | None, ruta_caso: str | Path,
+             test_number: str | None = None, proyecto_configurado: str | None = None) -> str:
     raiz, ruta_caso = Path(raiz).resolve(), Path(ruta_caso).resolve()
     try:
         relativa = ruta_caso.relative_to(raiz).as_posix()
     except ValueError:
-        relativa = ruta_caso.as_posix()
-    proyecto = raiz.name or "proyecto"
-    return f"{proyecto}|{tipo_st or 'SIN_ST'}|{relativa}"
+        relativa = ruta_caso.name
+    proyecto = resolver_proyecto_id(raiz, proyecto_configurado)
+    return identidad_caso(proyecto, tipo_st, test_number, ruta_caso.name, relativa)
 
 
 def _tipo_st_para_caso(caso: Path, raiz: Path, tipos: list[str]) -> str | None:
@@ -310,7 +312,8 @@ def _contar_omitidas(caso: Path) -> int:
 
 
 def descubrir_casos(raiz: str | Path, tipo_st_manual: str | None = None,
-                     al_descubrir: Callable[[dict], None] | None = None) -> dict:
+                     al_descubrir: Callable[[dict], None] | None = None,
+                     proyecto_configurado: str | None = None) -> dict:
     """Descubre casos sin hacer una búsqueda recursiva de imágenes desde la raíz."""
     raiz = Path(raiz).resolve()
     deteccion_st = detectar_tipos_st(raiz, tipo_st_manual)
@@ -342,8 +345,10 @@ def descubrir_casos(raiz: str | Path, tipo_st_manual: str | None = None,
         valida = all(validaciones.values())
         fotos = recorrer_fotos_caso(ruta) if valida else []
         tor = sorted({f["tor"] for f in fotos if f.get("tor")})
+        proyecto = resolver_proyecto_id(raiz, proyecto_configurado)
         caso = {
-            "case_key": case_key(raiz, tipo_st, ruta), "ruta": str(ruta),
+            "project_id": proyecto,
+            "case_key": case_key(raiz, tipo_st, ruta, (metadata or {}).get("test_number"), proyecto_configurado), "ruta": str(ruta),
             "ruta_relativa": ruta.relative_to(raiz).as_posix(), "nombre": ruta.name,
             "tipo_st": tipo_st, "metadata_ruta": metadata or {},
             "estructura_valida": valida, "validaciones": validaciones,
@@ -407,6 +412,64 @@ def normalizar_temperatura(texto: str, contexto: str | None = None) -> str | Non
     return None
 
 
+
+def normalizar_serial(texto: str | None) -> str | None:
+    """Conserva letras, números, espacios, asteriscos y ceros iniciales."""
+    if texto is None:
+        return None
+    limpio = str(texto).strip().upper()
+    if not limpio:
+        return None
+    if not re.fullmatch(r"[A-Z0-9* ]+", limpio):
+        return None
+    return re.sub(r"\s+", " ", limpio)
+
+
+def interpretar_fecha_impresa(texto: str | None) -> dict:
+    """Interpreta sólo formatos inequívocos; conserva ambiguos sin adivinar proveedor."""
+    original = str(texto or "").strip()
+    if not original:
+        return {"original": original, "interpretacion": None, "estado": "vacia"}
+    # Año de cuatro dígitos al inicio: YYYY-MM-DD / YYYY.MM.DD / YYYY/MM/DD.
+    m = re.fullmatch(r"(20\d{2})[./-](\d{1,2})[./-](\d{1,2})", original)
+    if m:
+        y, mo, d = map(int, m.groups())
+        try:
+            fecha = datetime(y, mo, d).date().isoformat()
+            return {"original": original, "interpretacion": fecha, "estado": "interpretada",
+                    "regla": "yyyy-mm-dd"}
+        except ValueError:
+            return {"original": original, "interpretacion": None, "estado": "invalida"}
+    # Año de cuatro dígitos al final sólo es seguro cuando uno de los dos primeros
+    # valores supera 12; así se evita imponer DD/MM o MM/DD globalmente.
+    m = re.fullmatch(r"(\d{1,2})[./-](\d{1,2})[./-](20\d{2})", original)
+    if m:
+        a, b, y = map(int, m.groups())
+        if a > 12 >= b:
+            d, mo = a, b
+        elif b > 12 >= a:
+            mo, d = a, b
+        else:
+            return {"original": original, "interpretacion": None, "estado": "ambigua"}
+        try:
+            fecha = datetime(y, mo, d).date().isoformat()
+            return {"original": original, "interpretacion": fecha, "estado": "interpretada",
+                    "regla": "dia_mes_desambiguado"}
+        except ValueError:
+            return {"original": original, "interpretacion": None, "estado": "invalida"}
+    if re.fullmatch(r"\d{2}[./-]\d{2}[./-]\d{2}", original):
+        return {"original": original, "interpretacion": None, "estado": "ambigua"}
+    return {"original": original, "interpretacion": None, "estado": "no_reconocida"}
+
+
+def _componente_contextual(texto: str) -> str:
+    mayus = str(texto or "").upper()
+    if re.search(r"DASH|INSTRUMENT|I-?TAFEL|TABLERO", mayus):
+        return "tablero"
+    if re.search(r"AIRBAG|AIR\s*BAG|PAB|MODULE|MODUL", mayus):
+        return "bolsa_aire"
+    return "por_identificar"
+
 def extraer_candidatos_texto(texto: str, imagen: dict, contexto: dict) -> list[dict]:
     """Parser conservador: produce candidatos, nunca completa campos sin evidencia."""
     texto = str(texto or "")
@@ -414,14 +477,26 @@ def extraer_candidatos_texto(texto: str, imagen: dict, contexto: dict) -> list[d
     candidatos: list[dict] = []
 
     def agregar(clave: str, original: str, normalizado: str, confianza: float,
-                regla: str, valido: bool = True) -> None:
+                regla: str, valido: bool = True,
+                requiere_confirmacion_manual: bool = False) -> None:
         candidatos.append({
+            "proyecto": contexto.get("project_id") or contexto.get("proyecto"),
+            "etapa": contexto.get("tipo_st") or contexto.get("stage"),
+            "caso": contexto.get("case_key") or contexto.get("test_number"),
+            "componente": _componente_contextual(texto),
             "clave": clave, "valor_original": original.strip(),
             "valor_normalizado": normalizado, "fuente": imagen.get("fuente", "ocr"),
             "imagen": imagen.get("ruta_relativa") or imagen.get("ruta"),
+            "imagen_absoluta": imagen.get("ruta_absoluta") or imagen.get("ruta"),
+            "bbox_original": imagen.get("bbox_original") or imagen.get("bbox"),
+            "orientacion_grados": imagen.get("orientacion_grados") or imagen.get("rotacion") or 0,
+            "transformaciones": list(imagen.get("transformaciones") or []),
             "fase": imagen.get("fase"), "tor": imagen.get("tor"),
             "confianza_ocr": round(float(confianza), 4), "valido_catalogo": valido,
             "valido_regex": valido, "regla_aplicada": regla,
+            "confirmacion_manual": imagen.get("fuente") == "manual",
+            "requiere_confirmacion_manual": requiere_confirmacion_manual,
+            "version_procesamiento": contexto.get("version_procesamiento") or "v8",
         })
 
     confianza = float(imagen.get("confianza_ocr") or 0.0)
@@ -447,13 +522,40 @@ def extraer_candidatos_texto(texto: str, imagen: dict, contexto: dict) -> list[d
     ):
         m = re.search(rf"(?:{etiquetas})[^\d]{{0,20}}(\d+(?:[.,]\d+)?)\s*MS", mayus)
         if m:
+            # opening_time_ms se conserva como candidato trazable, pero V8 no lo
+            # consolida automáticamente hasta validar el extractor con datos reales.
             agregar(clave, m.group(1), m.group(1).replace(",", "."), confianza,
-                    "tiempo_etiquetado")
-    fecha = re.search(
-        r"(?:TEST\s*DATE|DATUM\s*(?:TEST)?|FECHA\s*(?:DE\s*)?PRUEBA)\D{0,16}"
-        r"(\d{4}-\d{2}-\d{2})", mayus)
-    if fecha:
-        agregar("test_date", fecha.group(1), fecha.group(1), confianza, "fecha_prueba_etiquetada")
+                    "tiempo_etiquetado",
+                    requiere_confirmacion_manual=(clave == "opening_time_ms"))
+    # Seriales sólo cuando existe una etiqueta contextual; se preservan asteriscos y ceros.
+    componente = _componente_contextual(mayus)
+    for m in re.finditer(r"(?:SERIAL|S/?N|SN|SERIENNUMMER|SERIE)\s*[:#-]?\s*([A-Z0-9*][A-Z0-9* ]{2,40})", mayus):
+        original = m.group(1).strip()
+        serial = normalizar_serial(original)
+        if serial:
+            clave = ("dashboard_serial_number" if componente == "tablero" else
+                     "module_serial_number" if componente == "bolsa_aire" else "_serial_por_identificar")
+            agregar(clave, original, serial, confianza, "serial_etiquetado", valido=(clave != "_serial_por_identificar"))
+
+    # Fechas impresas: conservar siempre el original; sólo consolidar una interpretación segura.
+    patron_fecha = r"(\d{1,4}[./-]\d{1,2}[./-]\d{1,4})"
+    for fm in re.finditer(patron_fecha, mayus):
+        info = interpretar_fecha_impresa(fm.group(1))
+        if info["estado"] == "interpretada":
+            antes = mayus[max(0, fm.start()-32):fm.start()]
+            if re.search(r"TEST\s*DATE|DATUM\s*(?:TEST)?|FECHA\s*(?:DE\s*)?PRUEBA", antes):
+                clave = "test_date"
+            elif componente == "tablero":
+                clave = "dashboard_date"
+            elif componente == "bolsa_aire":
+                clave = "module_date"
+            else:
+                clave = "_fecha_por_identificar"
+            agregar(clave, info["original"], info["interpretacion"], confianza,
+                    f"fecha_impresa:{info.get('regla','segura')}", valido=not clave.startswith("_"))
+        elif info["estado"] == "ambigua":
+            agregar("_fecha_ambigua", info["original"], info["original"], confianza,
+                    "fecha_ambigua_pendiente", valido=False)
     return candidatos
 
 
@@ -463,9 +565,12 @@ def _evidencia_ruta(caso: dict) -> list[dict]:
         if clave not in {"test_number", "module_version", "inflator_type", "temperature_condition"}:
             continue
         salida.append({
+            "proyecto": caso.get("project_id"), "etapa": caso.get("tipo_st"),
+            "caso": caso.get("case_key"), "componente": "por_identificar",
             "clave": clave, "valor_original": (caso["metadata_ruta"].get(
                 "module_version_original") if clave == "module_version" else valor),
             "valor_normalizado": valor, "fuente": "ruta_carpeta", "imagen": None,
+            "bbox_original": None, "orientacion_grados": 0, "transformaciones": [],
             "fase": None, "tor": None, "confianza_ocr": 1.0,
             "valido_catalogo": True, "valido_regex": True,
             "regla_aplicada": ("alias_module_version" if clave == "module_version" and
@@ -484,7 +589,10 @@ def consolidar_caso(caso: dict, evidencias: Iterable[dict],
     todos = [*_evidencia_ruta(caso), *list(evidencias)]
     por_clave: dict[str, list[dict]] = defaultdict(list)
     for evidencia in todos:
-        if evidencia.get("clave") in claves_contrato and evidencia.get("valor_normalizado") not in {None, ""}:
+        if (evidencia.get("clave") in claves_contrato and
+                evidencia.get("valor_normalizado") not in {None, ""} and
+                not (evidencia.get("requiere_confirmacion_manual") and
+                     not evidencia.get("confirmacion_manual"))):
             por_clave[evidencia["clave"]].append(evidencia)
     campos: dict[str, dict] = {}
     conflictos: list[str] = []
@@ -559,7 +667,8 @@ def consolidar_caso(caso: dict, evidencias: Iterable[dict],
 
     faltantes = [k for k, v in campos.items() if str(v.get("estado", "")).startswith("faltante")]
     requiere_revision = bool(conflictos or any(campos[k].get("requiere_revision") for k in campos))
-    return {"case_key": caso["case_key"], "test_number": caso.get("metadata_ruta", {}).get("test_number"),
+    return {"project_id": caso.get("project_id"), "case_key": caso["case_key"],
+            "test_number": caso.get("metadata_ruta", {}).get("test_number"),
             "tipo_st": caso.get("tipo_st"), "campos": campos, "candidatos": todos,
             "campos_faltantes": faltantes, "conflictos": conflictos,
             "requiere_revision": requiere_revision}

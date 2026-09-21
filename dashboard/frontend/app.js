@@ -9,6 +9,8 @@
 
 const { useState, useEffect, useMemo, useRef, useCallback } = React;
 const html = htm.bind(React.createElement);
+function Icono({tipo="documento"}) { const paths={documento:"M5 3h9l5 5v13H5z M14 3v6h6 M8 13h8 M8 17h6",grid:"M4 4h6v6H4z M14 4h6v6h-6z M4 14h6v6H4z M14 14h6v6h-6z",lista:"M7 6h13 M7 12h13 M7 18h13 M4 6h.01 M4 12h.01 M4 18h.01",carpeta:"M3 6h7l2 2h9v11H3z",luna:"M18 16a7 7 0 0 1-10-10 8 8 0 1 0 10 10",sol:"M12 4v2 M12 18v2 M4 12h2 M18 12h2 M6.3 6.3l1.4 1.4 M16.3 16.3l1.4 1.4 M17.7 6.3l-1.4 1.4 M7.7 16.3l-1.4 1.4 M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6"};return html`<svg class="icono-svg" viewBox="0 0 24 24" aria-hidden="true"><path d=${paths[tipo]||paths.documento}/></svg>`;}
+
 
 /* ----------------------------- Utilidades ----------------------------- */
 
@@ -91,7 +93,7 @@ const fmtFecha = (v) => {
   if (!v) return "—";
   const fecha = new Date(v);
   if (Number.isNaN(fecha.getTime())) return v;
-  return new Intl.DateTimeFormat("es-MX", {
+  return new Intl.DateTimeFormat(window.OCR_I18N?.locale?.() || "es-MX", {
     dateStyle: "medium", timeStyle: "short"
   }).format(fecha);
 };
@@ -242,7 +244,7 @@ function CargandoKpis() {
 
 function EstadoVacio() {
   return html`<div class="estado-vacio">
-    <div class="icono">🗂️</div>
+    <div class="icono"><${Icono} tipo="carpeta" /></div>
     <h2 style=${{ margin: "0 0 6px" }}>Aún no hay datos procesados</h2>
     <p style=${{ margin: 0 }}>Ejecuta el pipeline sobre una carpeta de lote y vuelve a cargar esta página:</p>
     <p style=${{ margin: "10px 0 0" }}><code>python pipeline.py &lt;ruta_raiz&gt;</code></p>
@@ -313,6 +315,14 @@ function MatrizApertura({ matriz, colores }) {
   </div>`;
 }
 
+function ExportadorExcel() {
+  const [idioma,setIdioma]=useState(()=>localStorage.getItem("ocr_export_idioma")||"es");
+  const [estado,setEstado]=useState(null); const [enviando,setEnviando]=useState(false);
+  useEffect(()=>localStorage.setItem("ocr_export_idioma",idioma),[idioma]);
+  async function exportar(){setEnviando(true);setEstado(null);try{const idiomas=idioma==="all"?["es","en","de"]:[idioma];setEstado(await enviarJSON("/api/resultados/exportar",{idiomas}));}catch(e){setEstado({error:e.message});}finally{setEnviando(false);}}
+  return html`<div class="tarjeta exportador-excel"><div><h3 class="titulo-seccion" style=${{margin:0}}>Exportar Excel</h3><p class="subtitulo-seccion">Elige el idioma independientemente de la interfaz. Los tres archivos usan la misma instantánea de datos.</p></div><div class="exportador-controles"><label>Idioma de exportación<select class="campo" value=${idioma} onChange=${e=>setIdioma(e.target.value)}><option value="es">Español</option><option value="en">English</option><option value="de">Deutsch</option><option value="all">Los tres idiomas</option></select></label><button class="boton boton-primario" onClick=${exportar} disabled=${enviando}>${enviando?"Exportando…":"Exportar Excel"}</button></div>${estado?.error&&html`<div class="aviso estado-error">${estado.error}</div>`}${estado?.generados?.length&&html`<div class="descargas-exportacion">${estado.generados.map(x=>html`<a class="boton" href=${x.url}>${x.nombre}</a>`)}</div>`}</div>`;
+}
+
 function VistaResumen() {
   const [resumen, , errorResumen] = useApi("/api/resumen");
   const [config, , errorConfig] = useApi("/api/config");
@@ -346,6 +356,7 @@ function VistaResumen() {
     </div>
 
     <${MatrizApertura} matriz=${resumen.matriz_apertura} colores=${colores} />
+    <${ExportadorExcel} />
 
     <div class="aviso ayuda-carga">
       <strong>Para procesar otra carpeta</strong>
@@ -370,6 +381,13 @@ function VistaCarga() {
   const [sobrescribirExcel, setSobrescribirExcel] = useState(false);
   const [tipoSt, setTipoSt] = useState("");
   const [modoEjecucion, setModoEjecucion] = useState("completo");
+  const [idiomasExportacion, setIdiomasExportacion] = useState(() => {
+    try {
+      const guardados = JSON.parse(localStorage.getItem("ocr_idiomas_exportacion") || "[\"es\"]");
+      const validos = Array.isArray(guardados) ? guardados.filter(x => ["es","en","de"].includes(x)) : [];
+      return validos.length ? validos : ["es"];
+    } catch (_) { return ["es"]; }
+  });
   const [plantillaId, setPlantillaId] = useState("");
   const [plantillas, setPlantillas] = useState([]);
   const [rutaNuevaPlantilla, setRutaNuevaPlantilla] = useState("");
@@ -401,6 +419,17 @@ function VistaCarga() {
     const id = setInterval(refrescar, 1200);
     return () => clearInterval(id);
   }, [refrescar, refrescarPlantillas]);
+
+  useEffect(() => {
+    try { localStorage.setItem("ocr_idiomas_exportacion", JSON.stringify(idiomasExportacion)); } catch (_) {}
+  }, [idiomasExportacion]);
+  function alternarIdiomaExportacion(codigo) {
+    setIdiomasExportacion(actual => {
+      const existe = actual.includes(codigo);
+      if (existe && actual.length === 1) return actual;
+      return existe ? actual.filter(x => x !== codigo) : [...actual, codigo];
+    });
+  }
 
   useEffect(() => {
     if (ruta || rutasRecientes.length) return;
@@ -436,11 +465,12 @@ function VistaCarga() {
         sobrescribir_excel: sobrescribirExcel,
         tipo_st: tipoSt || null, ruta_plantilla: null, plantilla_id: plantillaId || null,
         modo_ejecucion: modoEjecucion,
+        idiomas_exportacion: idiomasExportacion,
         ruta_inventario: null,
       });
       const nueva = {
         ruta: ruta.trim(), nombre_excel: nombreExcel.trim(),
-        usado_en: new Date().toISOString(),
+        idiomas_exportacion: idiomasExportacion, usado_en: new Date().toISOString(),
       };
       const actualizadas = [nueva, ...rutasRecientes.filter((item) => item.ruta !== nueva.ruta)];
       setRutasRecientes(actualizadas);
@@ -479,6 +509,8 @@ function VistaCarga() {
     if (!elegida) return;
     setRuta(elegida.ruta);
     setNombreExcel(elegida.nombre_excel || "");
+    if (Array.isArray(elegida.idiomas_exportacion) && elegida.idiomas_exportacion.length)
+      setIdiomasExportacion(elegida.idiomas_exportacion);
   }
   function quitarRutaActual() {
     const actualizadas = rutasRecientes.filter((item) => item.ruta !== ruta);
@@ -614,6 +646,15 @@ function VistaCarga() {
         <option value="completo">Completo: inventario + OCR + Excel</option>
         <option value="inventario">Solo inventario (sin OCR)</option>
       </select>
+      <fieldset class="selector-idiomas-exportacion" disabled=${activo || enviando || modoEjecucion === "inventario"}>
+        <legend><strong>Idiomas del Excel</strong></legend>
+        <p class="subtitulo-seccion">Independientes del idioma de la interfaz. Si eliges varios, salen de la misma instantánea.</p>
+        <div class="opciones-idioma-exportacion">
+          ${[["es","Español"],["en","English"],["de","Deutsch"]].map(([codigo,nombre]) => html`
+            <label key=${codigo}><input type="checkbox" checked=${idiomasExportacion.includes(codigo)}
+              onChange=${() => alternarIdiomaExportacion(codigo)} /> ${nombre}</label>`)}
+        </div>
+      </fieldset>
       <section class="base-plantillas">
         <label for="plantilla-registrada"><strong>Contrato Excel</strong></label>
         <p class="subtitulo-seccion">Selecciona una plantilla registrada o permite que el sistema elija
@@ -660,7 +701,7 @@ function VistaCarga() {
       <p class="subtitulo-seccion">Si está desactivado, se conserva el anterior y se crea, por ejemplo,
         <span class="mono"> resultado_maestro_1.xlsx</span>.</p>
       <div class="nota-local">
-        <span aria-hidden="true">🔒</span>
+        <span aria-hidden="true"><${Icono} tipo="documento" /></span>
         <span>Los archivos permanecen en su ubicación. Para lotes de 8 GB, esto evita una copia innecesaria.</span>
       </div>
       <button class="boton boton-primario" type="submit"
@@ -692,6 +733,7 @@ function VistaCarga() {
         <dt>Mensaje</dt><dd>${estado.mensaje || "Aún no se ha iniciado una ejecución."}</dd>
         <dt>Carpeta</dt><dd class="mono">${estado.ruta || "—"}</dd>
         <dt>Excel</dt><dd class="mono">${estado.nombre_excel || "resultado_maestro.xlsx"}</dd>
+        <dt>Idiomas Excel</dt><dd>${(estado.idiomas_exportacion || idiomasExportacion).map(x=>x.toUpperCase()).join(" · ")}</dd>
         <dt>Procesamiento</dt><dd>${estado.recursos
           ? `${estado.recursos.seleccionado.toUpperCase()} para OCR · ${estado.recursos.cpu_hilos} hilos CPU disponibles`
           : "—"}</dd>
@@ -709,12 +751,19 @@ function VistaCarga() {
       ${estado.ultimo_id_nombre && html`<p class="aviso checkpoint-aviso">
         Avance confirmado hasta: <strong>${estado.ultimo_id_nombre}</strong>. Las imágenes sin cambios se recuperarán del caché.
       </p>`}
-      ${estado.archivo_excel_parcial && html`<p class="aviso checkpoint-aviso">
+      ${estado.archivo_excel_parcial && html`<div class="aviso checkpoint-aviso">
         <strong>Excel parcial disponible.</strong>
         ${estado.excel_parcial_actualizado_en ? ` Actualizado: ${fmtFecha(estado.excel_parcial_actualizado_en)}.` : ""}
-        <a class="boton boton-compacto" href="/api/pipeline/excel-parcial" target="_blank">
-          Abrir Excel parcial</a>
-      </p>`}
+        <span class="acciones-excel-parcial">
+          ${Object.keys(estado.archivos_excel_parcial || {}).length
+            ? Object.keys(estado.archivos_excel_parcial || {}).map(idioma => html`
+              <a key=${idioma} class="boton boton-compacto"
+                href=${`/api/pipeline/excel-parcial?idioma=${encodeURIComponent(idioma)}`} target="_blank">
+                Abrir ${idioma.toUpperCase()}</a>`)
+            : html`<a class="boton boton-compacto" href="/api/pipeline/excel-parcial" target="_blank">
+                Abrir Excel parcial</a>`}
+        </span>
+      </div>`}
       ${estado.advertencia_excel_parcial && html`<div class="aviso alerta-warning" role="alert">
         <strong>El OCR y su checkpoint continúan seguros.</strong> ${estado.advertencia_excel_parcial}
       </div>`}
@@ -784,7 +833,7 @@ function TarjetaExterna({ prueba, alActualizarRevision }) {
   const [guardando, setGuardando] = useState(false);
   const [respuesta, setRespuesta] = useState(null);
   const [modoEdicion, setModoEdicion] = useState(false);
-  const [accionSupervision, setAccionSupervision] = useState("confirmar_entrenar");
+  const [accionSupervision, setAccionSupervision] = useState("guardar_sin_entrenar");
   const [region, setRegion] = useState(null);
   const [textoRegion, setTextoRegion] = useState("");
   const [resultadoRegion, setResultadoRegion] = useState(null);
@@ -1127,7 +1176,7 @@ function VistaExternas({ caso }) {
       ${resultados.map((prueba) => html`<${TarjetaExterna} key=${prueba.id} prueba=${prueba}
         alActualizarRevision=${refrescarExternas} />`)}
     </div>` : html`<div class="estado-vacio">
-      <div class="icono">🧪</div><h2>Las imágenes están listas para evaluarse</h2>
+      <div class="icono"><${Icono} tipo="documento" /></div><h2>Las imágenes están listas para evaluarse</h2>
       <p>Usa “Volver a ejecutar las pruebas” para generar sus lecturas y métricas.</p>
     </div>`}
     ${!caso && html`<p class="subtitulo-seccion pie-datos">Fuentes: ${(datos.fuentes || []).map((fuente, i) => html`
@@ -1285,7 +1334,7 @@ function VistaTabla() {
         onClick=${() => setPagina((p) => p + 1)}>Siguiente →</button>
     </div>`}
     ${!filas.items.length && html`<div class="estado-vacio" style=${{ marginTop: 16 }}>
-      <div class="icono">🔍</div><h2 style=${{ margin: 0 }}>Sin resultados para el filtro actual</h2>
+      <div class="icono"><${Icono} tipo="lista" /></div><h2 style=${{ margin: 0 }}>Sin resultados para el filtro actual</h2>
     </div>`}
     <p class="subtitulo-seccion" style=${{ marginTop: 10 }}>
       Navegación por teclado: <kbd>↑</kbd>/<kbd>↓</kbd> mueve entre filas, <kbd>Enter</kbd> abre el detalle.</p>
@@ -2045,9 +2094,16 @@ function VistaDetalle({ nombre }) {
   const [reglas, setReglas] = useApi("/api/reglas", [nombre]);
   const [unidadId, setUnidadId] = useState("");
   const [textoCorrecto, setTextoCorrecto] = useState("");
+  const versionBorradorRef = useRef(0);
+  const actualizarTextoCorrecto = useCallback((valor) => {
+    versionBorradorRef.current += 1;
+    setTextoCorrecto(valor);
+  }, []);
   const [imagenId, setImagenId] = useState("");
   const [modoEdicion, setModoEdicion] = useState(false);
   const [accionSupervision, setAccionSupervision] = useState("confirmar_entrenar");
+  const [componenteSupervision, setComponenteSupervision] = useState("por_identificar");
+  const [campoDestino, setCampoDestino] = useState("");
   const [guardandoCorreccion, setGuardandoCorreccion] = useState(false);
   const [resultadoCorreccion, setResultadoCorreccion] = useState(null);
   const [mostrarCorreccion, setMostrarCorreccion] = useState(false);
@@ -2073,7 +2129,7 @@ function VistaDetalle({ nombre }) {
     const valor = textoVisible(primero);
     setImagenId(primeraImagen?.id || "");
     setUnidadId(primero?.unidad_id || "");
-    setTextoCorrecto(valor);
+    actualizarTextoCorrecto(valor);
     setResultadoCorreccion(null);
     setMostrarCorreccion(false);
     setRegion(null);
@@ -2129,7 +2185,7 @@ function VistaDetalle({ nombre }) {
     const primera = unidadesOcr(ocr)[0];
     const valor = textoVisible(primera);
     setUnidadId(primera?.unidad_id || "");
-    setTextoCorrecto(valor);
+    actualizarTextoCorrecto(valor);
     setResultadoCorreccion(null);
     setMostrarCorreccion(false);
     setRegion(null);
@@ -2172,7 +2228,7 @@ function VistaDetalle({ nombre }) {
     const exacta = candidatas.find((item) => firmaUnidad(item) === firmaUnidad(unidad)) || candidatas[0];
     setImagenId(imagen?.id || "");
     setUnidadId(exacta?.unidad_id || "");
-    setTextoCorrecto(textoVisible(exacta));
+    actualizarTextoCorrecto(textoVisible(exacta));
     setModoEdicion(true);
     setResultadoCorreccion(null);
     setMostrarCorreccion(true);
@@ -2186,16 +2242,20 @@ function VistaDetalle({ nombre }) {
   }
   async function confirmarCorreccion(e) {
     e.preventDefault();
+    const versionEnviada = versionBorradorRef.current;
+    const textoEnviado = textoCorrecto;
     setGuardandoCorreccion(true);
     setResultadoCorreccion(null);
     try {
       const resultado = await enviarJSON("/api/aprendizaje/correcciones", {
         prueba_id: detalle.id, campo: "etiqueta", imagen_id: imagenSeleccionada?.id,
         texto_ocr: textoUnidad(unidadSeleccionada),
-        texto_correcto: textoCorrecto,
+        texto_correcto: textoEnviado,
         bbox: unidadSeleccionada?.bbox || null,
         tipo_unidad: unidadSeleccionada?.tipo_unidad || null,
-        accion: accionSupervision === "aceptar" && textoCorrecto !== textoVisible(unidadSeleccionada) ? "corregir" : accionSupervision,
+        componente: componenteSupervision,
+        campo_destino: campoDestino || null,
+        accion: accionSupervision === "aceptar" && textoEnviado !== textoVisible(unidadSeleccionada) ? "corregir" : accionSupervision,
       });
       const actualizado = await pedirJSON(`/api/pruebas/${encodeURIComponent(nombre)}`);
       setDetalle(actualizado);
@@ -2204,11 +2264,13 @@ function VistaDetalle({ nombre }) {
         u.tipo_unidad === unidadSeleccionada?.tipo_unidad &&
         JSON.stringify(u.bbox || null) === JSON.stringify(unidadSeleccionada?.bbox || null));
       if (!["ilegible","no_es_campo"].includes(accionSupervision)) {
-        if (!guardada || textoVisible(guardada).trim() !== textoCorrecto.trim()) {
+        if (!guardada || textoVisible(guardada).trim() !== textoEnviado.trim()) {
           throw new Error("El servidor respondió, pero la lectura recargada no coincide con tu corrección. Conservamos tu borrador; no la damos por confirmada.");
         }
         setUnidadId(guardada.unidad_id);
-        setTextoCorrecto(textoVisible(guardada));
+        // Si el usuario escribió un borrador nuevo mientras llegaba la respuesta,
+        // una confirmación tardía no puede pisarlo.
+        if (versionBorradorRef.current === versionEnviada) setTextoCorrecto(textoVisible(guardada));
       }
       setResultadoCorreccion({ ok: true, resultado });
       setAprendizaje(await pedirJSON("/api/aprendizaje"));
@@ -2601,7 +2663,7 @@ function VistaDetalle({ nombre }) {
             <p class="sobrelinea">BLOQUE EXACTO QUE SE GUARDARÁ</p>
             <${HerramientasRegion}
               key=${`${imagenSeleccionada.id}-${unidadSeleccionada.tipo_unidad}-${unidadSeleccionada.bbox.join(",")}`} item=${imagenSeleccionada}
-              bbox=${unidadSeleccionada.bbox} pruebaId=${detalle.id} onTexto=${setTextoCorrecto} />
+              bbox=${unidadSeleccionada.bbox} pruebaId=${detalle.id} onTexto=${actualizarTextoCorrecto} />
           </div>`}
           <label>Imagen
             <select class="campo" value=${imagenSeleccionada?.id || ""}
@@ -2632,17 +2694,23 @@ function VistaDetalle({ nombre }) {
           <label>Texto correcto (con espacios y saltos)
             <textarea class="campo mono campo-texto" value=${textoCorrecto} required maxLength=${4096}
               rows=${Math.min(8, Math.max(2, textoCorrecto.split("\n").length + 1))}
-              onChange=${(e) => setTextoCorrecto(e.target.value)} placeholder="Escribe el texto correcto" />
+              onChange=${(e) => actualizarTextoCorrecto(e.target.value)} placeholder="Escribe el texto correcto" />
+          </label>
+          <label>Componente
+            <select class="campo" value=${componenteSupervision} onChange=${(e)=>setComponenteSupervision(e.target.value)}><option value="por_identificar">Por identificar</option><option value="bolsa_aire">Bolsa de aire</option><option value="tablero">Tablero</option><option value="otro">Otro componente</option></select>
+          </label>
+          <label>Campo propuesto
+            <select class="campo" value=${campoDestino} onChange=${(e)=>setCampoDestino(e.target.value)}><option value="">Sin asignar</option>${Object.keys(detalle?.campos||{}).map(k=>html`<option value=${k}>${k}</option>`)}</select>
           </label>
           <label>Acción
             <select class="campo" value=${accionSupervision}
               onChange=${(e) => setAccionSupervision(e.target.value)}>
-              <option value="confirmar_entrenar">Confirmar para el próximo lote</option>
+              <option value="guardar_sin_entrenar">Guardar corrección (sin entrenar OCR)</option>
+              <option value="confirmar_entrenar">Guardar y proponer como ejemplo de entrenamiento</option>
               <option value="corregir">Corregir sin lote visual</option>
               <option value="aceptar">Aceptar lectura OCR</option>
               <option value="ilegible">Marcar ilegible</option>
               <option value="no_es_campo">No corresponde a un campo</option>
-              <option value="guardar_sin_entrenar">Guardar sin entrenar</option>
             </select>
           </label>
           <button class="boton boton-primario" disabled=${guardandoCorreccion || !textoCorrecto.trim()}>
@@ -2788,18 +2856,6 @@ function VistaDetalle({ nombre }) {
 
 /* ----------------------------- App / routing ----------------------------- */
 
-function MascotaProgramando() {
-  return html`<div class="mascota-programando" aria-hidden="true">
-    <span class="mascota-globo">Programando…</span>
-    <span class="mascota-chispas"><i></i><i></i><i></i></span>
-    <span class="mascota-cabeza"><span class="mascota-pantalla"><b></b><b></b></span></span>
-    <span class="mascota-cuerpo"><span></span></span>
-    <span class="mascota-brazo brazo-izquierdo"></span>
-    <span class="mascota-brazo brazo-derecho"></span>
-    <span class="mascota-teclado"><i></i><i></i><i></i><i></i><i></i><i></i></span>
-  </div>`;
-}
-
 function EstadoColaExcel() {
   const [cola, setCola] = useState(null);
   const [error, setError] = useState(false);
@@ -2818,13 +2874,20 @@ function EstadoColaExcel() {
   if (error) return html`<div class="aviso estado-cola-excel" role="status">
     No se pudo consultar la cola del Excel. Comprobando conexión…</div>`;
   if (!cola || (!cola.solicitada && !cola.pendientes)) return null;
-  return html`<div class="aviso estado-cola-excel" role="status" aria-live="polite">
-    ${cola.pendientes
-      ? html`<strong>Correcciones guardadas · Excel ${cola.estado === "actualizando" ? "actualizándose" : "pendiente"}.</strong>`
-      : html`<strong>Excel actualizado con los cambios de la cola.</strong>`}
+  const persistencia = cola.estado_persistencia || ({
+    actualizando: "guardando", pendiente: "pendiente", actualizado: "guardado", error: "error"
+  }[cola.estado] || "pendiente");
+  const etiquetas = {
+    guardando: "Guardando cambios en el Excel…",
+    pendiente: "Cambios guardados · actualización del Excel pendiente.",
+    guardado: "Excel guardado con los cambios confirmados.",
+    error: "Error al actualizar el Excel."
+  };
+  return html`<div class=${`aviso estado-cola-excel cola-${persistencia}`} role="status" aria-live="polite">
+    <strong>${etiquetas[persistencia] || etiquetas.pendiente}</strong>
     ${cola.pendientes > 0 && html`<span> ${cola.pendientes} actualizaciones pendientes. Puedes seguir corrigiendo.</span>`}
-    ${cola.estado === "error" && html`<span> No se pudo exportar: ${cola.error}.
-      Si tienes el Excel abierto, ciérralo. Se reintentará automáticamente.</span>`}
+    ${persistencia === "error" && html`<span> ${cola.error || "No se pudo completar la exportación."}
+      Si tienes el Excel abierto, ciérralo; el progreso OCR permanece guardado y la cola volverá a intentarlo.</span>`}
   </div>`;
 }
 
@@ -2843,15 +2906,15 @@ function App() {
   return html`
     <header class="cabecera">
       <div class="cabecera-inner">
-        <span class="logo"><span class="punto"></span>Validación de pruebas · OCR</span>
-        <span class="espacio"></span>
-        <button class="btn-tema" onClick=${alternarTema} aria-label="Cambiar tema claro/oscuro">
-          ${tema === "claro" ? "🌙 Oscuro" : "☀️ Claro"}</button>
+        <span class="logo"><span class="marca-logo"><${Icono} tipo="documento" /></span><span><strong>OCR Versuchsmatrix</strong><small>Validación y consolidación OCR</small></span></span>
         <nav class="navegacion" aria-label="Vistas">
-          <a class="tab" href="#/resumen" aria-current=${actual === "resumen" ? "page" : undefined}>Resumen</a>
-          <a class="tab" href="#/tabla" aria-current=${actual === "tabla" ? "page" : undefined}>Listado</a>
-          <a class="tab" href="#/carga" aria-current=${actual === "carga" ? "page" : undefined}>Procesar carpeta</a>
+          <a class="tab" href="#/resumen" aria-current=${actual === "resumen" ? "page" : undefined}><${Icono} tipo="grid" />Resumen</a>
+          <a class="tab" href="#/tabla" aria-current=${actual === "tabla" ? "page" : undefined}><${Icono} tipo="lista" />Listado</a>
+          <a class="tab" href="#/carga" aria-current=${actual === "carga" ? "page" : undefined}><${Icono} tipo="carpeta" />Procesar carpeta</a>
         </nav>
+        <span class="espacio"></span>
+        <select class="selector-idioma" value=${window.OCR_I18N?.get?.()||"es"} onChange=${e=>window.OCR_I18N?.set?.(e.target.value)} aria-label="Idioma"><option value="es">ES</option><option value="en">EN</option><option value="de">DE</option></select>
+        <button class="btn-tema" onClick=${alternarTema} aria-label="Cambiar tema claro/oscuro"><${Icono} tipo=${tema === "claro" ? "luna" : "sol"} />${tema === "claro" ? "Oscuro" : "Claro"}</button>
       </div>
     </header>
     <main class="contenedor">
@@ -2862,7 +2925,6 @@ function App() {
         : vista === "detalle" ? html`<${VistaDetalle} nombre=${decodeURIComponent(arg || "")} />`
         : html`<${VistaResumen} />`}
     </main>
-    <${MascotaProgramando} />
   `;
 }
 

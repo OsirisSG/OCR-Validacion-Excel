@@ -10,7 +10,7 @@ assert(!source.includes('Corrección textual bloqueada temporalmente'));
 assert(source.includes('/api/aprendizaje/lecturas-orientacion'));
 assert(source.includes('Lecturas por orientación'));
 assert(source.includes('variantes-siempre-visibles'));
-assert(source.includes('onTexto=${setTextoCorrecto}'));
+assert(source.includes('onTexto=${setTextoCorrecto}') || source.includes('onTexto=${actualizarTextoCorrecto}'));
 assert(source.includes('Solo se guarda al pulsar Aplicar supervisión'));
 assert(styles.includes('.seleccion-exacta-correccion'));
 assert(styles.includes('grid-column: 1 / -1'));

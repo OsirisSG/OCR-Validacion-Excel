@@ -38,10 +38,17 @@ class ColaExcel:
         with closing(self._conectar()) as con:
             fila = dict(con.execute('SELECT * FROM cola WHERE id=1').fetchone())
         pendientes = fila['solicitada'] - fila['completada']
-        return {**fila, 'pendientes': pendientes,
-                'estado': 'actualizando' if self.activo else
-                'error' if pendientes and fila['error'] else
-                'pendiente' if pendientes else 'actualizado'}
+        estado = ('actualizando' if self.activo else
+                  'error' if pendientes and fila['error'] else
+                  'pendiente' if pendientes else 'actualizado')
+        # Conserva `estado` para compatibilidad y expone el contrato de UI
+        # pedido por el usuario: pendiente / guardando / guardado / error.
+        estado_persistencia = {
+            'actualizando': 'guardando', 'pendiente': 'pendiente',
+            'actualizado': 'guardado', 'error': 'error',
+        }[estado]
+        return {**fila, 'pendientes': pendientes, 'estado': estado,
+                'estado_persistencia': estado_persistencia}
 
     def procesar(self):
         # Nunca confirmar revisiones que llegaron durante la exportación.

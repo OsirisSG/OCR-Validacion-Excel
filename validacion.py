@@ -349,6 +349,7 @@ def _fila_empresarial_parcial(caso: dict, evidencias: list[dict],
         "nombre": caso["nombre"],
         "identificador": consolidado["test_number"] or caso["nombre"],
         "test_number": consolidado["test_number"], "tipo_st": caso.get("tipo_st"),
+        "project_id": caso.get("project_id"),
         **caso.get("metadata_ruta", {}), "perfil": "empresarial",
         "estado": "procesando", "parcial": True, "progreso": deepcopy(progreso),
         "imagenes": deepcopy(imagenes), "trazabilidad": deepcopy(trazabilidad),
@@ -629,9 +630,13 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
                                 "mensaje": resultado.get("error", "No se pudo leer la imagen.")})
             confianza = resultado.get("confianza_media") or 0.0
             foto_contexto = {**foto, "confianza_ocr": confianza}
+            contexto_caso = {**(caso.get("metadata_ruta", {}) or {}),
+                            "project_id": caso.get("project_id"),
+                            "tipo_st": caso.get("tipo_st"),
+                            "case_key": caso.get("case_key"),
+                            "version_procesamiento": "v8"}
             evidencias.extend(extraer_candidatos_texto(
-                resultado.get("texto_completo", ""), foto_contexto,
-                caso.get("metadata_ruta", {})))
+                resultado.get("texto_completo", ""), foto_contexto, contexto_caso))
             evidencias.extend(evidencias_desde_qr(
                 resultado.get("qrs", []), foto_contexto,
                 config.get("fase1", {}).get("qr", {}).get("aliases")))
@@ -649,7 +654,7 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
                 evidencias.extend(extraer_candidatos_texto(
                     anotacion.get("texto_correcto", ""),
                     {**foto_contexto, "fuente": "manual", "confianza_ocr": 1.0},
-                    caso.get("metadata_ruta", {})))
+                    contexto_caso))
             qrs_foto = resultado.get("qrs", [])
             evidencias_foto = [e for e in evidencias
                                if e.get("imagen") == foto.get("ruta_relativa")]

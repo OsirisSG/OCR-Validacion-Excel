@@ -77,7 +77,8 @@ def ejecutar_pipeline(ruta_raiz: str | Path, config: dict | None = None,
                       roi_manual: dict[str, float] | None = None,
                       modo_ejecucion: str = "completo",
                       ruta_inventario: str | Path | None = None,
-                      zoom_forzado: float | None = None) -> dict:
+                      zoom_forzado: float | None = None,
+                      idiomas_exportacion: list[str] | None = None) -> dict:
     """Corre las Fases 0-3 y retorna un dict con artefactos y resumen por fase."""
     config = config or cargar_config()
     recursos = detectar_recursos(config.get("fase1", {}).get("dispositivo", "auto"))
@@ -269,30 +270,74 @@ def ejecutar_pipeline(ruta_raiz: str | Path, config: dict | None = None,
     if not nombre.lower().endswith(".xlsx"):
         nombre = (Path(nombre).with_suffix(".xlsx").name if Path(nombre).suffix
                   else nombre + ".xlsx")
-    ruta_destino = RAIZ_PROYECTO / nombre
-    if ruta_destino.exists() and not sobrescribir_excel:
-        base, extension = ruta_destino.stem, ruta_destino.suffix
+
+    permitidos = {"es": "ES", "en": "EN", "de": "DE"}
+    idiomas = []
+    for idioma in (idiomas_exportacion or config.get("fase3", {}).get(
+            "idiomas_exportacion_default", ["es"])):
+        codigo = str(idioma).lower().strip()
+        if codigo not in permitidos:
+            raise ValueError(f"Idioma de exportación no válido: {idioma}")
+        if codigo not in idiomas:
+            idiomas.append(codigo)
+    if not idiomas:
+        idiomas = ["es"]
+
+    # Elegimos una base libre una sola vez para que ES/EN/DE pertenezcan a la
+    # misma instantánea y compartan el mismo sufijo de versión.
+    base_solicitada = RAIZ_PROYECTO / nombre
+    def destinos_para(base: Path) -> dict[str, Path]:
+        if len(idiomas) == 1 and idiomas[0] == "es":
+            return {"es": base}
+        return {idioma: base.with_name(
+            f"{base.stem}_{permitidos[idioma]}{base.suffix}") for idioma in idiomas}
+
+    ruta_base = base_solicitada
+    destinos = destinos_para(ruta_base)
+    if not sobrescribir_excel and any(r.exists() for r in destinos.values()):
         indice = 1
         while True:
-            candidata = ruta_destino.with_name(f"{base}_{indice}{extension}")
-            if not candidata.exists():
-                ruta_destino = candidata
+            candidata = base_solicitada.with_name(
+                f"{base_solicitada.stem}_{indice}{base_solicitada.suffix}")
+            candidatos = destinos_para(candidata)
+            if not any(r.exists() for r in candidatos.values()):
+                ruta_base, destinos = candidata, candidatos
                 break
             indice += 1
+
+    firma_excel = inspect.signature(generar_excel).parameters
     extras_excel = ({"datos_validacion": validacion}
-                    if "datos_validacion" in inspect.signature(generar_excel).parameters else {})
-    ruta_excel = (generar_excel(None, ruta_destino, config,
-                               ruta_plantilla=ruta_plantilla, **extras_excel)
-                  if ruta_plantilla else generar_excel(None, ruta_destino, config, **extras_excel))
+                    if "datos_validacion" in firma_excel else {})
+    soporta_idioma = "idioma" in firma_excel
+    archivos_excel: dict[str, str] = {}
+    # `validacion` no se modifica entre idiomas: las tres salidas nacen de una
+    # única instantánea posterior al OCR y a las correcciones vigentes.
+    for idioma in idiomas:
+        destino = destinos[idioma]
+        extras_iter = dict(extras_excel)
+        if soporta_idioma:
+            extras_iter["idioma"] = idioma
+        ruta_excel = (generar_excel(None, destino, config,
+                                   ruta_plantilla=ruta_plantilla, **extras_iter)
+                      if ruta_plantilla else generar_excel(
+                          None, destino, config, **extras_iter))
+        archivos_excel[idioma] = str(ruta_excel)
+    ruta_excel = Path(archivos_excel[idiomas[0]])
+    validacion["idiomas_exportacion"] = idiomas
+    validacion["archivos_excel"] = archivos_excel
+    validacion["nombre_excel_base"] = str(ruta_base)
     if validacion.get("perfil") == "empresarial":
         validacion["archivo_excel"] = str(ruta_excel)
+        validacion["archivos_excel"] = archivos_excel
+        validacion["idiomas_exportacion"] = idiomas
         validacion["ruta_plantilla"] = str(ruta_plantilla) if ruta_plantilla else None
         guardado_validacion = escribir_json_seguro(validacion["archivo_salida"], validacion)
         if not guardado_validacion:
             validacion.setdefault("advertencias_persistencia", []).append(
                 guardado_validacion.error)
     resumen["fases"]["fase3"] = {
-        "artifacto": str(ruta_excel), "plantilla": seleccion_plantilla}
+        "artifacto": str(ruta_excel), "archivos": archivos_excel,
+        "idiomas": idiomas, "plantilla": seleccion_plantilla}
     resumen["duracion_segundos"] = round(time.time() - t0, 1)
     progreso("completado", "Resultados y Excel actualizados", {
         "porcentaje": 100, "eta_segundos": 0, "restantes": 0,
@@ -316,10 +361,13 @@ if __name__ == "__main__":
                         help="Ruta del inventario persistente de Fase A.")
     parser.add_argument("--zoom", type=float, default=None,
                         help="Fuerza el zoom OCR dentro de los límites configurados.")
+    parser.add_argument("--idioma-exportacion", action="append", choices=["es", "en", "de"],
+                        help="Idioma del Excel. Repite la opción para generar varios desde la misma instantánea.")
     args = parser.parse_args()
     resumen = ejecutar_pipeline(
         args.ruta_raiz.strip().strip('"\''), nombre_excel=args.excel,
         sobrescribir_excel=args.sobrescribir, tipo_st=args.tipo_st,
         ruta_plantilla=args.plantilla, modo_ejecucion=args.modo,
-        ruta_inventario=args.inventario, zoom_forzado=args.zoom)
+        ruta_inventario=args.inventario, zoom_forzado=args.zoom,
+        idiomas_exportacion=args.idioma_exportacion)
     print(json.dumps(resumen, ensure_ascii=False, indent=2))

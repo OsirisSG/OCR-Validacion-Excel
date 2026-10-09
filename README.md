@@ -6,11 +6,14 @@ Aplicación local para recorrer lotes de fotografías, extraer nomenclaturas con
 OCR, comparar etiquetas contra imágenes de referencia, generar un Excel maestro
 y consultar los resultados desde un dashboard responsivo.
 
-> **Versión V8 · 2026-09-20.** Esta copia conserva el editor OCR aprobado en V6/V7 y agrega
-> identidad portable proyecto/etapa/caso, consolidación 1ST/2ST, procedencia, interfaz
-> ES/EN/DE y exportación BMG multiidioma desde una misma instantánea. Consulta
-> `LEEME_V8_OCR_VERSUCHSMATRIX.md` y `README_CORRECCIONES_VERSIONES.md` antes de
-> reemplazar una instalación que ya tenga aprendizaje o progreso guardado.
+> **Versión V15.8 · 2026-10-09.** Parte del ZIP completo proporcionado el 9 de octubre,
+> con cambios V15.7.4, no de la copia V8 anterior. Añade extracción contextual según
+> la guía de etiquetas, indicios de ruptura a resolución nativa y confirmación del
+> máximo despliegue visible por separado. Conserva SOP, revisión, aprendizaje,
+> persistencia, cola Excel, 1ST/2ST y ES/EN/DE.
+> Incluye límites del semáforo elegidos por el usuario en Resumen y revisión
+> explícita de códigos de prototipo/apertura láser.
+> Consulta [la guía de esta actualización](LEEME_V15_8_GUIA_RUPTURA_MAXIMO.md) antes de instalar.
 
 El procesamiento no utiliza APIs de OCR ni servicios en la nube. EasyOCR es el
 motor de producción: se mantiene una sola instancia por ejecución y usa
@@ -31,6 +34,11 @@ CUDA/MPS cuando están disponibles, con CPU como respaldo seguro.
 - Detección automática y extensible de plantilla según la estructura del lote.
 - Clasificación visible de códigos útiles y descarte explicable de frases o valores espurios.
 - Selección automática CUDA/MPS/CPU con fallback seguro y CPU para preprocesamiento.
+- SOP V14: preparación CPU/lectura anticipada con cola RAM acotada y backpressure.
+- Perfiles Estable/Alto/Máximo (ALTO por defecto) con límites orientativos de CPU/RAM/VRAM.
+- Batch EasyOCR adaptativo con histéresis, reducción ante OOM y fallback temporal por tarea sin abandonar CUDA.
+- Reanudación idempotente con `ejecucion_id`: un doble clic no lanza dos ejecuciones.
+- Aprendizaje incremental por imagen: observaciones confirmadas antes de pausar/detener.
 - Aprendizaje incremental supervisado con versiones, evaluación y rollback.
 - Dataset visual auditable y entrenamiento EasyOCR por lotes, separado del OCR normal.
 - Comparación etiqueta ↔ referencia por tokens alfanuméricos.
@@ -599,3 +607,7 @@ artefactos locales y no deben copiarse como fuente de datos entre equipos.
 - Mantén datos empresariales, credenciales, modelos y artefactos generados fuera
   de Git; `.gitignore` ya excluye sus ubicaciones habituales.
 - Revisa `git status` antes de cada commit.
+
+### V9 · estabilidad del editor y experiencia de revisión
+
+V9 corrige traducciones dinámicas y contraste oscuro, agrega notificaciones flotantes de actividad, evita que una respuesta tardía devuelva el editor a una corrección anterior, corrige el falso aviso de borrador tras un guardado confirmado, permite ajustar/dividir bloques que se superponen con anotaciones manuales sin borrar esas anotaciones y añade descarte múltiple. Guardar una corrección no entrena el OCR por sí solo; el entrenamiento visual se propone explícitamente y se ejecuta por lote. También se añadieron caché de variantes de orientación y agrupación de actualizaciones de Excel. Consulta `LEEME_V9_ESTABILIDAD_UI.md`.

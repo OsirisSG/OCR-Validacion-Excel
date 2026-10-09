@@ -69,16 +69,47 @@ ETIQUETAS_REVISION = {
 }
 
 
+def _lista_opcional(mapa: dict | None, campo: str, contexto: str) -> list:
+    """Normaliza únicamente colecciones opcionales conocidas.
+
+    Un ``None`` en imágenes/tokens/observaciones significa que todavía no hay
+    elementos; otros tipos siguen siendo error y se reportan con el campo exacto.
+    Así evitamos el opaco ``'NoneType' object is not iterable`` sin esconder datos
+    estructuralmente inválidos.
+    """
+    if not isinstance(mapa, dict):
+        raise TypeError(f"{contexto} debe ser dict, no {type(mapa).__name__}")
+    valor = mapa.get(campo)
+    if valor is None:
+        return []
+    if not isinstance(valor, list):
+        raise TypeError(f"{contexto}.{campo} debe ser una lista o None, no {type(valor).__name__}")
+    return valor
+
+
+def _resultados_opcionales(documento: dict | None, contexto: str) -> list:
+    if documento is None:
+        return []
+    if not isinstance(documento, dict):
+        raise TypeError(f"{contexto} debe ser dict, no {type(documento).__name__}")
+    return _lista_opcional(documento, "resultados", contexto)
+
+
 def _hex_a_fill(hex_color: str) -> PatternFill:
     """'#22c55e' -> PatternFill aRGB sólido (openpyxl exige canal alfa)."""
     return PatternFill(start_color="FF" + hex_color.lstrip("#"),
                        end_color="FF" + hex_color.lstrip("#"), fill_type="solid")
 
 
-def _resumen_tipos(tipos: dict) -> str:
+def _resumen_tipos(tipos: dict | None) -> str:
+    if tipos is None:
+        return "—"
+    if not isinstance(tipos, dict):
+        raise TypeError(f"tipos_archivo debe ser dict o None, no {type(tipos).__name__}")
     partes = []
     for cat, archivos in sorted(tipos.items()):
-        partes.append(f"{len(archivos)} {cat}")
+        cantidad = len(archivos or []) if isinstance(archivos, (list, tuple, set)) or archivos is None else 1
+        partes.append(f"{cantidad} {cat}")
     return ", ".join(partes) if partes else "—"
 
 
@@ -114,10 +145,12 @@ def _texto_fila(fila: dict, anotaciones_por_ruta: dict | None = None,
     et_ocr = et.get("resultado_ocr") or {}
     ref_ocr = ref.get("resultado_ocr") or {}
     et_tokens = et_ocr.get("texto_completo") or " | ".join(
-        t["texto"] for t in et_ocr.get("tokens", []))
+        str(t.get("texto") or "") for t in _lista_opcional(et_ocr, "tokens", "etiqueta.resultado_ocr")
+        if isinstance(t, dict) and t.get("texto"))
     ref_tokens = ref_ocr.get("texto_completo") or " | ".join(
-        t["texto"] for t in ref_ocr.get("tokens", []))
-    imagenes = fila.get("imagenes") or []
+        str(t.get("texto") or "") for t in _lista_opcional(ref_ocr, "tokens", "referencia.resultado_ocr")
+        if isinstance(t, dict) and t.get("texto"))
+    imagenes = _lista_opcional(fila, "imagenes", "resultado")
     anotaciones_por_ruta = anotaciones_por_ruta or {}
     bloques_imagen = []
     for item in imagenes:
@@ -149,7 +182,7 @@ def _texto_fila(fila: dict, anotaciones_por_ruta: dict | None = None,
         "Confianza OCR (%)": fila.get("confianza_ocr_pct"),
         "QR detectado": "Sí" if fila.get("qr_detectado") else "No",
         "Anomalías Fase 0": fila.get("anomalia_fase0") or "",
-        "Observaciones": "; ".join(fila.get("observaciones", [])),
+        "Observaciones": "; ".join(str(v) for v in _lista_opcional(fila, "observaciones", "resultado")),
     }
 
 
@@ -173,11 +206,20 @@ def generar_excel(ruta_validacion: str | Path | None = None,
     else:
         datos = datos_validacion
 
+    if not isinstance(datos, dict):
+        raise TypeError(f"datos_validacion debe ser dict, no {type(datos).__name__}")
+    if "resultados" not in datos:
+        raise ValueError("datos_validacion no contiene la clave obligatoria 'resultados'")
+    if datos.get("resultados") is None:
+        raise ValueError("datos_validacion['resultados'] es None; se esperaba una lista")
+    if not isinstance(datos.get("resultados"), list):
+        raise TypeError("datos_validacion['resultados'] debe ser una lista")
+
     from copy import deepcopy
     datos = deepcopy(datos)
     gestor_filtro = GestorAprendizaje(config)
     for fila in datos.get("resultados", []):
-        for item in [*fila.get("imagenes", []), fila.get("etiqueta"), fila.get("referencia")]:
+        for item in [*_lista_opcional(fila, "imagenes", "resultado"), fila.get("etiqueta"), fila.get("referencia")]:
             if item and item.get("ruta"):
                 item["resultado_ocr"] = gestor_filtro.filtrar_no_texto(
                     item.get("resultado_ocr") or {}, item["ruta"])
@@ -207,12 +249,14 @@ def generar_excel(ruta_validacion: str | Path | None = None,
         datos_externos = cargar_externas(config)
     except (FileNotFoundError, OSError, ValueError):
         datos_externos = {"resultados": []}
+    resultados_externos = _resultados_opcionales(datos_externos, "pruebas_externas")
 
     rutas_imagen = [str(item["ruta"])
                     for fila in datos.get("resultados", [])
-                    for item in fila.get("imagenes", [])]
+                    for item in _lista_opcional(fila, "imagenes", "resultado")
+                    if isinstance(item, dict) and item.get("ruta")]
     rutas_externas = [str(fila["ruta"])
-                      for fila in datos_externos.get("resultados", [])
+                      for fila in resultados_externos
                       if fila.get("ruta") and Path(fila["ruta"]).is_file()]
     rutas_consulta = [*rutas_imagen, *rutas_externas]
     gestor = GestorAprendizaje(config)
@@ -332,7 +376,7 @@ def generar_excel(ruta_validacion: str | Path | None = None,
         revision = revisiones.get(("carpeta", _id_carpeta(fila_datos))) or {}
         estado_revision = revision.get("estado", _estado_inicial_carpeta(fila_datos))
         revision_texto = _revision_texto(estado_revision)
-        for item in fila_datos.get("imagenes", []):
+        for item in _lista_opcional(fila_datos, "imagenes", "resultado"):
             ruta_item = str(item["ruta"])
             nombre_imagen = item.get("nombre") or Path(ruta_item).name
             ocr = item.get("resultado_ocr") or {}
@@ -364,7 +408,7 @@ def generar_excel(ruta_validacion: str | Path | None = None,
     wt.auto_filter.ref = f"A1:{get_column_letter(len(COLUMNAS_TEXTOS))}{max(wt.max_row, 1)}"
 
     # Las pruebas complejas se agregan al mismo inventario de textos.
-    for externa in datos_externos.get("resultados", []):
+    for externa in resultados_externos:
         revision = revisiones.get(("externa", externa["id"])) or {}
         estado_revision = revision.get("estado", _estado_inicial_externa(externa))
         lineas = externa.get("lineas_texto") or ([{"texto": externa.get("texto_completo")}]
@@ -405,7 +449,7 @@ def generar_excel(ruta_validacion: str | Path | None = None,
                    fila_datos.get("identificador") or fila_datos.get("nombre"), resultado,
                    _revision_texto(estado_revision),
                    "Sí" if revision.get("oculto") else "No", revision.get("actualizado_en")])
-    for externa in datos_externos.get("resultados", []):
+    for externa in resultados_externos:
         revision = revisiones.get(("externa", externa["id"])) or {}
         estado_revision = revision.get("estado", _estado_inicial_externa(externa))
         resultado = ("Código exacto" if externa.get("coincidencia_exacta") else

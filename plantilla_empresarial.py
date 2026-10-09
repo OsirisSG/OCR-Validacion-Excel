@@ -393,7 +393,7 @@ def generar_desde_plantilla(ruta_plantilla: str | Path, ruta_salida: str | Path,
             hoja.cell(fila, columna).value = None
 
     for numero, resultado in enumerate(resultados, start=FILA_DATOS):
-        campos = resultado.get("campos") or resultado.get("consolidado", {}).get("campos", {})
+        campos = resultado.get("campos") or (resultado.get("consolidado") or {}).get("campos", {})
         for clave, columna in contrato["claves"].items():
             valor = campos.get(clave, {})
             valor = valor.get("valor") if isinstance(valor, dict) else valor
@@ -425,7 +425,7 @@ def generar_desde_plantilla(ruta_plantilla: str | Path, ruta_salida: str | Path,
         traza.column_dimensions[get_column_letter(columna)].width = (
             46 if "ruta" in nombre else 50 if nombre == "texto_crudo" else 20)
     for resultado in resultados:
-        for evidencia in resultado.get("trazabilidad", []):
+        for evidencia in (resultado.get("trazabilidad") or []):
             traza.append([
                 ", ".join(evidencia.get(nombre, [])) if isinstance(evidencia.get(nombre), list)
                 else str(evidencia.get(nombre)) if isinstance(evidencia.get(nombre), tuple)

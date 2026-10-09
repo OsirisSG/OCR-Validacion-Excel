@@ -1,0 +1,41 @@
+OCR V14.14 — RESULTADOS DE VALIDACIÓN
+Fecha: 2026-09-28
+
+Suite Python completa:
+- 238 pruebas aprobadas.
+- 8 fallos preexistentes por fixtures/datos externos ausentes.
+- No se detectaron regresiones nuevas atribuibles a V14.14.
+
+Los 8 fallos restantes corresponden a:
+- pruebas del dashboard que esperan el banco externo de validación;
+- pruebas Excel que requieren validacion_resultados.json.
+
+Pruebas dirigidas:
+- supervisión simple y aprendizaje positivo automático: OK;
+- aceptación OCR como muestra entrenable: OK;
+- compatibilidad de la antigua acción guardar_sin_entrenar convertida a evidencia positiva: OK;
+- geometría flexible V14.13: OK;
+- uniones entrenables V14.12: OK;
+- recortes inclinados V14.11: OK.
+
+Frontend:
+- 18 archivos de pruebas JavaScript ejecutados correctamente.
+- node --check dashboard/frontend/app.js: OK.
+- node --check dashboard/frontend/i18n.js: OK.
+
+Compilación:
+- aprendizaje.py: OK.
+- dashboard/backend/app.py: OK.
+
+Cambios V14.14 comprobados:
+- solo dos acciones positivas visibles: Aceptar lectura / Aplicar corrección;
+- toda confirmación positiva entra al dataset visual entrenable;
+- texto nuevo, unión y geometría confirmada siempre alimentan el aprendizaje;
+- acciones negativas como ilegible/no es campo no se usan como muestras positivas;
+- unión múltiple por clic restaurada;
+- aviso de cambios sin guardar desglosado por origen;
+- ayuda visible ⓘ;
+- traducciones ES/EN/DE para controles dinámicos y confirmaciones.
+
+Limitación:
+- La validación CUDA real y el entrenamiento efectivo sobre RTX A3000 deben comprobarse en el equipo Windows del usuario.

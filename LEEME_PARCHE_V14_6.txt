@@ -1,0 +1,15 @@
+PARCHE OCR V14.6 SOBRE V14.5 — 2026-09-24
+
+1. Cierra completamente el dashboard/OCR.
+2. Extrae este ZIP sobre la raíz de OCR-Validacion-Excel y acepta reemplazar archivos.
+3. NO borres .aprendizaje, .cache_ocr, checkpoints ni la cola SQLite del Excel.
+4. Inicia de nuevo el programa.
+
+Incluye:
+- ajuste fino normal ±15°;
+- ajuste extendido hasta ±30° sólo con evidencia geométrica fuerte;
+- micro-búsqueda ±2° alrededor del ángulo estimado;
+- clasificación Código / Fecha / Valor / Texto / Ruido;
+- consenso entre variantes;
+- filtros visuales de lecturas;
+- protección para no sobrescribir Texto correcto cuando todas las candidatas son poco congruentes.

@@ -1,0 +1,19 @@
+PARCHE V14.1 SOBRE V14
+
+1. Cierra el dashboard OCR.
+2. Haz una copia de seguridad de tu carpeta actual.
+3. Copia el contenido de este parche sobre la carpeta principal de V14 y acepta reemplazar archivos.
+4. NO borres .aprendizaje ni .cache_ocr. La cola Excel pendiente se conserva ahí y se reintentará al iniciar.
+5. Ejecuta el programa normalmente.
+
+Archivos modificados:
+- dashboard/backend/app.py
+- dashboard/frontend/app.js
+- generar_excel.py
+- gestor_recursos.py
+- config.yaml
+- VERSION.txt
+- pruebas/test_dashboard.py
+- pruebas/test_v14_sop_recuperacion.py
+
+El parche no contiene ni reemplaza .aprendizaje ni .cache_ocr.

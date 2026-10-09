@@ -1,0 +1,28 @@
+OCR V14.7 — resultados de pruebas
+Fecha: 2026-09-25
+
+Suite Python completa:
+- 214 aprobadas
+- 8 fallos preexistentes por fixtures externos ausentes
+- Fallos preexistentes: validacion_resultados.json y banco externo esperado por pruebas del dashboard
+- 0 regresiones nuevas detectadas
+
+Pruebas JavaScript (.cjs):
+- Todas las pruebas incluidas pasan
+
+Pruebas V14.7 añadidas:
+- Control avanzado visible
+- Tipo esperado configurable
+- Umbral de congruencia configurable
+- Copia automática activable/desactivable
+- Endpoint de relectura angular manual
+- Ajuste manual acotado a ±45°
+- Tratamientos Original / CLAHE / Adaptativa / Relieve / Auto
+- Relectura manual respeta orientación, ángulo y tipo esperado
+- Cadenas con símbolos fuertes no se promueven a código por confianza alta
+
+Prueba funcional simulada del backend:
+- Base 90° + ajuste -4° = lectura efectiva 86°
+- Comparación automática de 4 tratamientos
+- Código S4054664 clasificado como código coherente
+- Sin persistir cambios durante la relectura

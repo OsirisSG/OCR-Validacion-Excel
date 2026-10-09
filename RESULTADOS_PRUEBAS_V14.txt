@@ -1,0 +1,47 @@
+OCR Versuchsmatrix V14 - resultados de validacion
+Fecha: 2026-09-22
+
+Entorno de construccion:
+- Python del entorno: 3.13 (contenedor de validacion)
+- PyTorch: 2.10.0+cpu
+- CUDA disponible en este entorno: NO
+
+Comprobaciones ejecutadas:
+1) python -m py_compile ocr_engine.py pipeline.py recursos.py gestor_recursos.py orquestador_ocr.py utilidades/cola_excel.py generar_excel.py validacion.py dashboard/backend/app.py
+   Resultado: OK
+
+2) node --check dashboard/frontend/app.js
+   Resultado: OK
+
+3) python -m pytest -q pruebas/test_v14_sop_recuperacion.py
+   Resultado: 9 passed
+
+4) python -m pytest -q
+   Resultado: 187 passed, 8 failed
+
+Comparacion con la V13 base, antes de modificar:
+- 178 passed, 8 failed
+- Los mismos 8 fallos ya existian y dependen de fixtures externos ausentes del ZIP:
+  validacion_resultados.json y el banco controlado usado por pruebas del dashboard/Excel.
+- Regresiones nuevas detectadas al cierre: 0
+
+Casos V14 cubiertos por pruebas nuevas:
+- Perfiles Estable/Alto/Maximo y ALTO predeterminado.
+- Telemetria sin inventar utilizacion GPU.
+- Prefetch CPU acotado y backpressure.
+- Cola Excel durable e idempotente por ID.
+- NoneType clasificado como error de datos y pendiente conservado.
+- Contrato explicito resultados=None en generar_excel.
+- OOM con batch minimo: fallback temporal de una tarea a CPU conservando CUDA.
+- Estado cancelando obsoleto no bloquea una ejecucion nueva.
+- Hilo anterior realmente vivo impide un segundo propietario CUDA.
+
+Pendiente de comprobar en el equipo del usuario (RTX A3000 Laptop 6 GB):
+- Utilizacion SM/GPU y VRAM reales.
+- Throughput imagenes/minuto V13 vs V14 con el mismo lote.
+- Batch alcanzado y estabilidad termica/potencia.
+- Recuperacion de CUDA OOM real.
+- Precision OCR comparada con el conjunto corregido.
+- Perfiles Estable/Alto/Maximo bajo carga real.
+
+No se afirma una mejora de velocidad GPU sin esas mediciones reales.

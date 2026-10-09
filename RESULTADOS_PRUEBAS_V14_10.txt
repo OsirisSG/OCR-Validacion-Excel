@@ -1,0 +1,32 @@
+OCR V14.10 — resultados de validación
+Fecha: 2026-09-25
+
+Suite Python completa:
+- 225 pruebas aprobadas.
+- 8 fallos restantes.
+- Los 8 fallos son los mismos fixtures externos ausentes de versiones anteriores:
+  validacion_resultados.json / banco externo controlado del dashboard-Excel.
+- No se introdujeron regresiones nuevas.
+
+Pruebas JavaScript:
+- 14/14 scripts .cjs aprobados.
+- node --check dashboard/frontend/app.js: correcto.
+
+Pruebas nuevas V14.10:
+- Persistencia JSON compacta conserva exactamente el contenido.
+- El JSON compacto reduce el tamaño frente al formato indentado.
+- Debounce deslizante de Excel agrupa correcciones rápidas en una sola exportación.
+- Activos de identidad visual presentes y referenciados por frontend.
+- Configuración de latencias dentro de límites seguros.
+- Caché SHA-256 reutiliza el hash si la imagen no cambió.
+
+Benchmark sintético de serialización JSON (1000 casos x 8 imágenes):
+- Formato indentado: 3,765,144 bytes.
+- Formato compacto: 1,460,136 bytes.
+- Reducción aproximada: 61.2% de bytes escritos en ese conjunto sintético.
+El porcentaje real depende de la estructura del lote.
+
+Limitación de hardware del entorno de prueba:
+- No se midió rendimiento CUDA real de la RTX A3000 en este entorno.
+- Las optimizaciones V14.10 atacan I/O/persistencia y carga del dashboard y son
+  independientes de la disponibilidad de CUDA.

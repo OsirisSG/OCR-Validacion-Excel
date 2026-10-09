@@ -16,6 +16,7 @@ import inspect
 import json
 import os
 import time
+import uuid
 from copy import deepcopy
 from pathlib import Path
 from typing import Callable
@@ -78,11 +79,25 @@ def ejecutar_pipeline(ruta_raiz: str | Path, config: dict | None = None,
                       modo_ejecucion: str = "completo",
                       ruta_inventario: str | Path | None = None,
                       zoom_forzado: float | None = None,
-                      idiomas_exportacion: list[str] | None = None) -> dict:
+                      idiomas_exportacion: list[str] | None = None,
+                      ejecucion_id: str | None = None,
+                      perfil_rendimiento: str | None = None,
+                      contenido: str = "todo") -> dict:
     """Corre las Fases 0-3 y retorna un dict con artefactos y resumen por fase."""
-    config = config or cargar_config()
+    config = deepcopy(config or cargar_config())
+    from gestor_recursos import normalizar_perfil, obtener_gestor_recursos
+    perfil_rendimiento = normalizar_perfil(
+        perfil_rendimiento or config.get("fase1", {}).get("rendimiento", {}).get("perfil_sop", "alto"))
+    config.setdefault("fase1", {}).setdefault("rendimiento", {})["perfil_sop"] = perfil_rendimiento
+    gestor_recursos = obtener_gestor_recursos(perfil_rendimiento)
+    # Las métricas son por ejecución; no mezclar throughput de un lote anterior.
+    gestor_recursos.iniciar_ejecucion(perfil_rendimiento)
+    ejecucion_id = str(ejecucion_id or uuid.uuid4().hex)
     recursos = detectar_recursos(config.get("fase1", {}).get("dispositivo", "auto"))
-    resumen: dict = {"raiz": str(ruta_raiz), "fases": {}, "recursos": recursos}
+    recursos["perfil_sop"] = perfil_rendimiento
+    recursos["limites_sop"] = gestor_recursos.limites
+    resumen: dict = {"raiz": str(ruta_raiz), "fases": {}, "recursos": recursos,
+                     "ejecucion_id": ejecucion_id}
 
     def progreso(fase: str, mensaje: str, detalle: dict | None = None) -> None:
         if al_progreso:
@@ -92,6 +107,7 @@ def ejecutar_pipeline(ruta_raiz: str | Path, config: dict | None = None,
     if modo_ejecucion not in {"completo", "inventario", "reanudar"}:
         raise ValueError("Modo inválido: usa completo, inventario o reanudar.")
     t0 = time.time()
+    t_descubrimiento = time.monotonic()
     if control:
         control()
     progreso("fase_a", "Analizando la estructura de carpetas", {
@@ -110,9 +126,11 @@ def ejecutar_pipeline(ruta_raiz: str | Path, config: dict | None = None,
         ruta_inventario = ruta_inventario or RAIZ_PROYECTO / "inventario_proyecto.json"
         inventario = cargar_inventario(ruta_inventario, ruta_raiz)
         estructura = estructura_desde_inventario(inventario)
+        total_archivos_inv = (inventario.get("fotografias", 0) if contenido != "videos" else 0) + \
+                             (inventario.get("videos", 0) if contenido != "fotos" else 0)
         progreso("fase_a", "Inventario existente recuperado", {
             "porcentaje": 7, "casos_detectados": inventario["casos_encontrados"],
-            "imagenes_total": inventario["fotografias"],
+            "imagenes_total": total_archivos_inv,
         })
     else:
         parametros_mapeo = inspect.signature(mapear_estructura).parameters
@@ -176,14 +194,18 @@ def ejecutar_pipeline(ruta_raiz: str | Path, config: dict | None = None,
         "casos_incompletos": estructura.get("casos_incompletos", 0),
         "plantilla": seleccion_plantilla,
     }
+    gestor_recursos.registrar_etapa("descubrimiento", time.monotonic() - t_descubrimiento)
     resumen["fases"]["fase_a"] = {
         "artifacto": inventario.get("archivo_salida") if inventario else str(ruta_estructura),
         "casos": inventario.get("casos_encontrados", total_hojas) if inventario else total_hojas,
         "fotografias": inventario.get("fotografias") if inventario else None,
+        "videos": inventario.get("videos") if inventario else None,
+        "contenido": contenido,
         "modo": modo_ejecucion,
     }
     if modo_ejecucion == "inventario":
         resumen["duracion_segundos"] = round(time.time() - t0, 1)
+        resumen["metricas_rendimiento"] = gestor_recursos.snapshot(forzar=True)
         progreso("completado", "Inventario terminado; OCR no ejecutado", {
             "porcentaje": 100, "eta_segundos": 0, "restantes": 0,
         })
@@ -225,6 +247,8 @@ def ejecutar_pipeline(ruta_raiz: str | Path, config: dict | None = None,
     argumentos_validacion = {
         "al_resultado": resultado_listo,
         "al_imagen": imagen_lista,
+        "ejecucion_id_aprendizaje": ejecucion_id,
+        "contenido": contenido,
     }
     if control is not None:
         argumentos_validacion["control"] = control
@@ -240,19 +264,24 @@ def ejecutar_pipeline(ruta_raiz: str | Path, config: dict | None = None,
             "roi_manual": roi_manual,
             "zoom_forzado": zoom_forzado,
         })
+    t_validacion = time.monotonic()
     if usar_empresarial:
+        firma_validador = inspect.signature(validar_lote_empresarial).parameters
+        args_emp = {k: v for k, v in argumentos_validacion.items() if k in firma_validador}
         validacion = validar_lote_empresarial(
-            ruta_estructura, config, **argumentos_validacion)
+            ruta_estructura, config, **args_emp)
     else:
         # Conserva compatibilidad con integraciones/pruebas que sustituyen el
         # validador legacy con la firma anterior.
-        if (casos_omitidos and
-                "casos_omitidos" in inspect.signature(validar_lote).parameters):
+        firma_validador = inspect.signature(validar_lote).parameters
+        if casos_omitidos and "casos_omitidos" in firma_validador:
             argumentos_validacion["casos_omitidos"] = casos_omitidos
-        validacion = validar_lote(ruta_estructura, config, **argumentos_validacion)
+        args_legacy = {k: v for k, v in argumentos_validacion.items() if k in firma_validador}
+        validacion = validar_lote(ruta_estructura, config, **args_legacy)
     conteo: dict[str, int] = {}
     for fila in validacion["resultados"]:
         conteo[fila["comparacion"]["resultado"]] = conteo.get(fila["comparacion"]["resultado"], 0) + 1
+    gestor_recursos.registrar_etapa("ocr_validacion", time.monotonic() - t_validacion)
     resumen["fases"]["fase2"] = {
         "artifacto": validacion["archivo_salida"],
         "carpetas_procesadas": validacion["carpetas_procesadas"],
@@ -261,6 +290,7 @@ def ejecutar_pipeline(ruta_raiz: str | Path, config: dict | None = None,
     }
 
     progreso("fase3", "Generando el Excel maestro", {"porcentaje": 95, "eta_segundos": None})
+    t_excel = time.monotonic()
     if control:
         control()
     nombre = str(nombre_excel or config.get("fase3", {}).get(
@@ -335,10 +365,12 @@ def ejecutar_pipeline(ruta_raiz: str | Path, config: dict | None = None,
         if not guardado_validacion:
             validacion.setdefault("advertencias_persistencia", []).append(
                 guardado_validacion.error)
+    gestor_recursos.registrar_etapa("exportacion_excel", time.monotonic() - t_excel)
     resumen["fases"]["fase3"] = {
         "artifacto": str(ruta_excel), "archivos": archivos_excel,
         "idiomas": idiomas, "plantilla": seleccion_plantilla}
     resumen["duracion_segundos"] = round(time.time() - t0, 1)
+    resumen["metricas_rendimiento"] = gestor_recursos.snapshot(forzar=True)
     progreso("completado", "Resultados y Excel actualizados", {
         "porcentaje": 100, "eta_segundos": 0, "restantes": 0,
     })
@@ -363,11 +395,14 @@ if __name__ == "__main__":
                         help="Fuerza el zoom OCR dentro de los límites configurados.")
     parser.add_argument("--idioma-exportacion", action="append", choices=["es", "en", "de"],
                         help="Idioma del Excel. Repite la opción para generar varios desde la misma instantánea.")
+    parser.add_argument("--perfil-rendimiento", choices=["estable", "alto", "maximo"],
+                        default=None, help="Perfil SOP. Por defecto usa ALTO desde config.yaml.")
     args = parser.parse_args()
     resumen = ejecutar_pipeline(
         args.ruta_raiz.strip().strip('"\''), nombre_excel=args.excel,
         sobrescribir_excel=args.sobrescribir, tipo_st=args.tipo_st,
         ruta_plantilla=args.plantilla, modo_ejecucion=args.modo,
         ruta_inventario=args.inventario, zoom_forzado=args.zoom,
-        idiomas_exportacion=args.idioma_exportacion)
+        idiomas_exportacion=args.idioma_exportacion,
+        perfil_rendimiento=args.perfil_rendimiento)
     print(json.dumps(resumen, ensure_ascii=False, indent=2))

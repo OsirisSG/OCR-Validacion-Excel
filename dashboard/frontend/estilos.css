@@ -606,6 +606,7 @@ td.numero { font-variant-numeric: tabular-nums; }
 .mensaje-error {
   color: #b91c1c; background: #fef2f2; border: 1px solid #fecaca;
   border-radius: var(--radio-sm); padding: 10px 12px; margin: 12px 0 0;
+  white-space: pre-line;
 }
 .aviso-error { border-left-color: #ef4444; background: #fef2f2; color: #7f1d1d; }
 
@@ -754,6 +755,30 @@ td.numero { font-variant-numeric: tabular-nums; }
   opacity: .72;
   cursor: wait;
 }
+.candidato-orientacion.candidato-recomendado {
+  outline: 2px solid var(--acento);
+  outline-offset: 1px;
+}
+.orientacion-recomendada, .codigo-probable {
+  display: inline-flex;
+  width: fit-content;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--acento) 14%, transparent);
+  color: var(--texto-1);
+  font-size: .72rem;
+  font-weight: 700;
+}
+.ajuste-fino-etiqueta {
+  display: inline-flex;
+  width: fit-content;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--acento) 14%, transparent);
+  color: var(--texto-1);
+  font-size: .72rem;
+  font-weight: 700;
+}
 @media (max-width: 900px) {
   .variantes-siempre-visibles { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
 }
@@ -800,4 +825,466 @@ html,body{max-width:100%;overflow-x:hidden}.contenedor{max-width:1440px}.cabecer
 .acciones-excel-parcial { display: inline-flex; flex-wrap: wrap; gap: .45rem; margin-left: .55rem; vertical-align: middle; }
 @media (max-width: 680px) {
   .acciones-excel-parcial { display: flex; margin: .55rem 0 0; }
+}
+
+/* V9 · contraste, notificaciones persistentes y acciones múltiples */
+html[data-tema="claro"], html[data-tema="oscuro"] {
+  --superficie: var(--tarjeta);
+  --texto-1: var(--texto);
+  --texto-secundario: var(--texto-2);
+  --azul: var(--acento);
+}
+
+.centro-notificaciones {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 110;
+  width: min(430px, calc(100vw - 36px));
+  display: grid;
+  gap: 10px;
+  pointer-events: none;
+}
+.notificacion-actividad {
+  pointer-events: auto;
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--borde-fuerte);
+  border-left: 4px solid var(--acento);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--tarjeta) 96%, var(--acento-suave));
+  color: var(--texto);
+  box-shadow: 0 16px 36px rgba(2, 6, 23, .24);
+  backdrop-filter: blur(12px);
+}
+.notificacion-actividad > span { display: block; color: var(--texto-2); margin-top: 3px; }
+.notificacion-actividad small { color: var(--texto-3); }
+.notificacion-cabecera { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.cerrar-notificacion {
+  width: 28px; height: 28px; border-radius: 999px; border: 1px solid var(--borde);
+  background: var(--fondo); color: var(--texto); cursor: pointer; line-height: 1;
+}
+.notificacion-progreso { height: 7px; overflow: hidden; margin: 9px 0 5px; border-radius: 999px; background: var(--borde); }
+.notificacion-progreso i { display: block; height: 100%; border-radius: inherit; background: var(--acento); transition: width .3s ease; }
+.cola-guardando, .proceso-procesando { border-left-color: var(--acento); }
+.cola-pendiente, .proceso-pausado { border-left-color: #f59e0b; }
+.cola-guardado, .proceso-completado { border-left-color: #22c55e; }
+.cola-error, .proceso-error { border-left-color: #ef4444; }
+
+.acciones-borrado-multiple {
+  display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 8px;
+  align-items: center;
+}
+.selector-texto-multiple { width: 18px; height: 18px; accent-color: var(--acento); flex: 0 0 auto; }
+
+/* Evita combinaciones de bajo contraste en tema oscuro. */
+html[data-tema="oscuro"] .boton-verificada,
+html[data-tema="oscuro"] .estado-miniatura.estado-verificada,
+html[data-tema="oscuro"] .rotacion-auto,
+html[data-tema="oscuro"] .estado-entorno.listo,
+html[data-tema="oscuro"] .estado-completado {
+  color: #bbf7d0; background: rgba(22, 101, 52, .34); border-color: #22c55e;
+}
+html[data-tema="oscuro"] .estado-miniatura.estado-sin-texto,
+html[data-tema="oscuro"] .estado-entorno.pendiente,
+html[data-tema="oscuro"] .mensaje-error,
+html[data-tema="oscuro"] .aviso-error {
+  color: #fecaca; background: rgba(127, 29, 29, .34); border-color: #ef4444;
+}
+html[data-tema="oscuro"] .estado-miniatura.estado-pendiente,
+html[data-tema="oscuro"] .revision-por_revisar,
+html[data-tema="oscuro"] .texto-pendiente {
+  color: #fde68a; background: rgba(120, 53, 15, .34); border-color: #f59e0b;
+}
+html[data-tema="oscuro"] .rotacion-manual,
+html[data-tema="oscuro"] .vista-previa-rotacion,
+html[data-tema="oscuro"] .estado-procesando {
+  color: #bfdbfe; background: rgba(30, 64, 175, .32); border-color: #60a5fa;
+}
+html[data-tema="claro"] .editor-region-form,
+html[data-tema="claro"] .navegacion-imagenes,
+html[data-tema="claro"] .herramientas-region,
+html[data-tema="claro"] .zona-dimension-fila {
+  color: var(--texto);
+  background: var(--tarjeta);
+  border-color: var(--borde-fuerte);
+  box-shadow: none;
+}
+html[data-tema="oscuro"] .editor-region-form,
+html[data-tema="oscuro"] .navegacion-imagenes,
+html[data-tema="oscuro"] .herramientas-region,
+html[data-tema="oscuro"] .zona-dimension-fila {
+  color: var(--texto);
+}
+html[data-tema="oscuro"] .campo,
+html[data-tema="oscuro"] .boton,
+html[data-tema="oscuro"] .selector-idioma,
+html[data-tema="oscuro"] textarea,
+html[data-tema="oscuro"] select,
+html[data-tema="oscuro"] input {
+  color: var(--texto);
+}
+html[data-tema="oscuro"] .campo::placeholder,
+html[data-tema="oscuro"] textarea::placeholder,
+html[data-tema="oscuro"] input::placeholder { color: #93a4bb; opacity: 1; }
+
+@media (max-width: 680px) {
+  .centro-notificaciones { right: 10px; bottom: 10px; width: calc(100vw - 20px); }
+}
+
+/* V9.1 · contraste adicional de estados que antes conservaban colores de tema claro */
+html[data-tema="oscuro"] .revision-completada,
+html[data-tema="oscuro"] .fragmentos-esperados .encontrado {
+  color: #bbf7d0;
+}
+html[data-tema="oscuro"] .revision-parcial,
+html[data-tema="oscuro"] .estado-pausado,
+html[data-tema="oscuro"] .fragmentos-esperados .faltante {
+  color: #fed7aa;
+  background: rgba(124, 45, 18, .32);
+  border-color: #fb923c;
+}
+html[data-tema="oscuro"] .revision-casi_listo {
+  color: #bae6fd;
+  background: rgba(7, 89, 133, .34);
+  border-color: #38bdf8;
+}
+html[data-tema="oscuro"] .alerta-advertencia,
+html[data-tema="oscuro"] .alerta-warning {
+  color: #fde68a;
+}
+html[data-tema="oscuro"] .alerta-error {
+  color: #fecaca;
+}
+html[data-tema="oscuro"] .alerta-info {
+  color: #bae6fd;
+}
+html[data-tema="oscuro"] .fragmentos-esperados,
+html[data-tema="oscuro"] .anotaciones-manuales,
+html[data-tema="oscuro"] .lecturas-secundarias,
+html[data-tema="oscuro"] .ficha,
+html[data-tema="oscuro"] .subtitulo-seccion,
+html[data-tema="oscuro"] small {
+  border-color: var(--borde);
+}
+html[data-tema="oscuro"] option {
+  color: #f1f5f9;
+  background: #131c2e;
+}
+html[data-tema="oscuro"] .notificacion-actividad {
+  background: rgba(19, 28, 46, .97);
+}
+html[data-tema="claro"] .notificacion-actividad {
+  background: rgba(255, 255, 255, .98);
+}
+.proceso-detenido_con_avance { border-left-color: #f59e0b; }
+
+/* V11 · notificaciones plegables y selector de ajuste fino */
+.acciones-notificacion { display:flex; align-items:center; gap:6px; }
+.plegar-notificacion {
+  width:28px; height:28px; border-radius:999px; border:1px solid var(--borde);
+  background:var(--fondo); color:var(--texto); cursor:pointer; line-height:1;
+}
+.notificacion-plegada { padding-top:9px; padding-bottom:9px; }
+.contenido-notificacion { margin-top:4px; }
+.contenido-notificacion > span { display:block; color:var(--texto-2); margin-top:3px; }
+.selector-ajuste-fino { margin:8px 0 4px; align-items:center; }
+html[data-tema="oscuro"] .plegar-notificacion,
+html[data-tema="oscuro"] .cerrar-notificacion { background:#111827; color:#f8fafc; border-color:#475569; }
+
+/* V14.5: controles de cierre consistentes en herramientas de selección */
+.cabecera-editor-herramienta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.cabecera-editor-herramienta h3 { margin: 0; }
+
+/* V14.6 · clasificación semántica y filtros de lecturas OCR */
+.resumen-lectura-inteligente {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px 20px;
+  flex-wrap: wrap;
+  margin: 12px 0 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--borde);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--acento) 6%, transparent);
+}
+.resumen-lectura-inteligente > div { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.filtros-lectura-inteligente { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin:6px 0 10px; }
+.filtros-lectura-inteligente small { margin-left:auto; }
+.chip-tipo-lectura, .consenso-lectura {
+  display:inline-flex; width:fit-content; padding:2px 6px; border-radius:999px;
+  font-size:.72rem; font-weight:700; border:1px solid var(--borde);
+}
+.tipo-codigo { background:rgba(34,197,94,.14); }
+.tipo-fecha { background:rgba(14,165,233,.14); }
+.tipo-numero { background:rgba(245,158,11,.16); }
+.tipo-texto { background:rgba(139,92,246,.13); }
+.tipo-ruido { background:rgba(148,163,184,.13); opacity:.82; }
+.consenso-lectura { background:color-mix(in srgb, var(--acento) 10%, transparent); }
+@media (max-width: 680px) { .filtros-lectura-inteligente small { width:100%; margin-left:0; } }
+
+/* V14.7 · control avanzado de OCR regional */
+.panel-control-ocr-avanzado {
+  margin: 10px 0 14px;
+  padding: 12px;
+  border: 1px solid var(--borde);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--acento) 5%, transparent);
+  display: grid;
+  gap: 10px;
+}
+.control-ocr-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 10px 14px;
+  align-items: end;
+}
+.control-ocr-grid label { display:grid; gap:6px; }
+.check-control-ocr { display:flex !important; align-items:center; gap:8px; min-height:42px; }
+.check-control-ocr input { width:auto; }
+.control-angulo-manual { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.control-angulo-manual input[type="range"] { flex:1 1 260px; min-width:160px; }
+.control-variante-manual { align-items:end !important; }
+.control-variante-manual label { display:grid; gap:5px; min-width:min(100%, 260px); }
+.separador-control-ocr { height:1px; background:var(--borde); margin:2px 0; }
+.resultado-lectura-manual {
+  display:grid; gap:8px; padding:10px 12px; border:1px solid var(--borde);
+  border-radius:10px; background:color-mix(in srgb, var(--fondo) 82%, transparent);
+}
+.resultado-lectura-manual > div:first-child { display:flex; gap:8px 14px; justify-content:space-between; flex-wrap:wrap; }
+.resultado-lectura-manual pre, .comparacion-base-fino pre {
+  margin:0; padding:8px; white-space:pre-wrap; overflow-wrap:anywhere;
+  border:1px solid var(--borde); border-radius:8px; background:var(--fondo);
+}
+.detalle-candidata-seleccionada {
+  margin:8px 0 12px; padding:10px 12px; border:1px dashed var(--borde); border-radius:10px;
+  display:grid; gap:8px;
+}
+.detalle-candidata-seleccionada > div:first-child { display:flex; gap:8px 16px; justify-content:space-between; flex-wrap:wrap; }
+.comparacion-base-fino { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
+@media (max-width: 700px) {
+  .comparacion-base-fino { grid-template-columns:1fr; }
+  .control-ocr-grid { grid-template-columns:1fr; }
+}
+
+/* ---------- Identidad OCR V14.10 ---------- */
+.logo-identidad { gap: 9px; min-width: max-content; }
+.logo-grafico {
+  display: block;
+  width: 116px;
+  height: 42px;
+  object-fit: contain;
+  object-position: center;
+  border-radius: 8px;
+}
+.logo-texto { display: grid; line-height: 1.05; }
+.logo-texto strong { letter-spacing: .01em; }
+.logo-texto small { margin-top: 4px; }
+html[data-tema="oscuro"] .logo-grafico {
+  box-shadow: 0 0 0 1px rgba(93, 220, 239, .08), 0 7px 18px rgba(0, 0, 0, .16);
+}
+@media (max-width: 760px) {
+  .logo-grafico { width: 96px; height: 36px; }
+  .logo-texto strong { font-size: 13px; }
+}
+@media (max-width: 560px) {
+  .logo-texto { display: none; }
+  .logo-grafico { width: 92px; height: 34px; }
+}
+
+/* V14.11 — recortes inclinados de supervisión */
+.control-recorte-inclinado {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--borde);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--fondo-panel) 92%, var(--acento) 8%);
+}
+.control-recorte-inclinado input[type="range"] { min-width: 180px; flex: 1 1 220px; }
+.control-recorte-inclinado small { flex-basis: 100%; }
+.capa-poligonos-region {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 13;
+  pointer-events: none;
+  overflow: visible;
+}
+.poligono-region-manual {
+  fill: rgba(14, 165, 233, .12);
+  stroke: #38bdf8;
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+  stroke-dasharray: 6 4;
+}
+
+/* V14.12.1 — ayuda compacta en uniones entrenables */
+.control-entrenamiento-union { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.icono-ayuda-inline { display: inline-flex; align-items: center; justify-content: center; width: 1.15em; height: 1.15em; border-radius: 999px; cursor: help; font-weight: 700; opacity: .82; user-select: none; }
+.icono-ayuda-inline:hover, .icono-ayuda-inline:focus { opacity: 1; }
+
+/* V14.13 — geometría flexible de cuatro esquinas */
+.capa-poligono-seleccion { z-index: 18; }
+.poligono-seleccion-flexible {
+  fill: rgba(34, 156, 204, .14);
+  stroke: #51c7ff;
+  stroke-width: 2.5;
+  vector-effect: non-scaling-stroke;
+  stroke-dasharray: 7 4;
+}
+.tirador-poligono {
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1;
+  cursor: move;
+}
+.capa-poligono-borrador { z-index: 14; }
+.poligono-borrador-dimension {
+  fill: rgba(255,191,71,.10);
+  stroke: #ffbf47;
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+  stroke-dasharray: 6 4;
+}
+
+
+/* V14.14 — supervisión simple y aprendizaje automático */
+.acciones-correccion-simple { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.formulario-externo .acciones-correccion-simple { grid-column: 1 / -1; }
+.aprendizaje-auto-info { display: inline-flex; align-items: center; gap: 6px; color: var(--texto-2); font-size: 12px; }
+.ayuda-inline-detalle { display: inline-block; position: relative; }
+.ayuda-inline-detalle > summary { list-style: none; width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--borde); border-radius: 999px; cursor: pointer; color: var(--acento); font-weight: 800; user-select: none; }
+.ayuda-inline-detalle > summary::-webkit-details-marker { display: none; }
+.ayuda-inline-popover { position: absolute; z-index: 80; left: 0; top: calc(100% + 6px); width: min(360px, 76vw); padding: 9px 11px; border: 1px solid var(--borde); border-radius: 8px; background: var(--fondo-panel); color: var(--texto-1); box-shadow: 0 10px 30px #0005; line-height: 1.35; }
+.caja-ocr.caja-union-seleccionada { border-color: #38bdf8; background: rgba(56,189,248,.30); outline: 2px solid rgba(255,255,255,.85); }
+.ayuda-union-click { flex-basis: 100%; color: var(--texto-2); }
+
+/* V15 · revisión de videos de alta velocidad */
+.panel-videos-airbag{margin-top:16px}.lista-videos-airbag{display:grid;gap:14px;margin-top:12px}.tarjeta-video-airbag{border:1px solid var(--borde);border-radius:14px;padding:12px;background:var(--superficie)}.tarjeta-video-airbag.video-confirmado{box-shadow:inset 4px 0 0 var(--verde,#22c55e)}.video-airbag-cabecera{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;margin-bottom:10px}.video-airbag-cabecera>div{display:grid;gap:3px}.video-airbag-cabecera small{color:var(--texto-3);word-break:break-all}.video-airbag-grid{display:grid;grid-template-columns:minmax(280px,520px) 1fr;gap:14px}.video-airbag-preview{display:grid;gap:5px}.video-airbag-preview img{width:100%;max-height:360px;object-fit:contain;background:#050b14;border:1px solid var(--borde);border-radius:10px}.video-airbag-datos{min-width:0}.ficha-video{grid-template-columns:max-content 1fr}.video-frame-controles{display:flex;flex-wrap:wrap;gap:8px;align-items:end;margin-top:10px}.video-frame-controles label{display:grid;gap:4px;min-width:150px}.acciones-revision-video{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px}@media(max-width:900px){.video-airbag-grid{grid-template-columns:1fr}}
+
+/* V15.2 · aprendizaje supervisado de zonas de apertura en video */
+.video-frame-zona-lienzo{position:relative;width:100%;line-height:0;touch-action:none;user-select:none}
+.video-frame-zona-lienzo img{display:block;width:100%;height:auto;max-height:none;object-fit:initial;user-select:none;-webkit-user-drag:none}
+.video-airbag-preview.seleccionando-zona .video-frame-zona-lienzo{cursor:crosshair}
+.video-zona-overlay{position:absolute;box-sizing:border-box;pointer-events:none;border:2px solid var(--verde,#22c55e);border-radius:6px;background:rgba(34,197,94,.08);box-shadow:0 0 0 1px rgba(0,0,0,.35)}
+.video-zona-overlay.temporal{border-style:dashed;border-color:var(--acento,#60a5fa);background:rgba(96,165,250,.10)}
+.video-zona-overlay span{position:absolute;left:0;top:0;transform:translateY(-100%);padding:3px 6px;border-radius:5px 5px 0 0;background:rgba(5,11,20,.88);color:#fff;font-size:11px;line-height:1.2;white-space:nowrap}
+.video-zona-acciones{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px}
+.video-zona-instruccion{margin-top:6px;line-height:1.35}
+
+/* V15.4 · Revisor de video tipo high-speed: tiempo unificado + timeline */
+.tarjeta-video-airbag:focus{outline:2px solid color-mix(in srgb,var(--acento,#60a5fa) 65%,transparent);outline-offset:2px}
+.video-lectura-actual{display:flex;justify-content:space-between;gap:10px;align-items:center;padding:7px 9px;border:1px solid var(--borde);border-radius:9px;background:var(--superficie-2,#0d1726);font-variant-numeric:tabular-nums}
+.video-lectura-actual span{font-weight:700;color:var(--acento,#60a5fa)}
+.video-timeline{display:grid;gap:4px;margin-top:12px}.video-timeline input[type="range"]{width:100%;accent-color:var(--acento,#60a5fa)}
+.video-timeline-marcas{display:flex;justify-content:space-between;color:var(--texto-3);font-size:11px;font-variant-numeric:tabular-nums}
+.video-frame-controles .campo-tiempo-sincronizado{font-weight:700;font-variant-numeric:tabular-nums;background:color-mix(in srgb,var(--superficie) 80%,var(--acento,#60a5fa) 20%);cursor:not-allowed}
+.video-frame-controles label small{max-width:230px;color:var(--texto-3);font-size:11px;line-height:1.25}
+.video-aviso-tiempo{margin-top:10px}.atajos-video{display:block;margin-top:6px;color:var(--texto-3)}
+.chip-mini{font-size:10px;padding:2px 6px;vertical-align:middle}
+
+/* V15.6 · revisor estable: transporte e imagen no saltan al cambiar de cuadro */
+@media (min-width:901px){
+  .video-airbag-preview{position:sticky;top:78px;align-self:start}
+  .video-airbag-datos{position:relative;align-self:start}
+  .video-revisor-controles-estables{
+    position:sticky;top:78px;z-index:12;
+    padding:10px 11px 9px;margin:-2px -2px 10px;
+    border:1px solid var(--borde);border-radius:12px;
+    background:color-mix(in srgb,var(--superficie) 94%,transparent);
+    backdrop-filter:blur(10px);box-shadow:0 8px 24px rgba(0,0,0,.16)
+  }
+}
+.video-revisor-controles-estables .video-timeline{margin-top:0}
+.video-mensaje-reservado{min-height:44px;margin-top:8px;display:flex;align-items:flex-start}
+.video-mensaje-reservado>.aviso,.video-mensaje-reservado>.mensaje-error{width:100%;margin:0}
+.video-frame-zona-lienzo{min-height:240px;background:#050b14;border-radius:10px;overflow:hidden}
+.video-frame-zona-lienzo img{min-height:240px;object-fit:contain;background:#050b14}
+@media(max-width:900px){
+  .video-airbag-preview,.video-revisor-controles-estables{position:static}
+  .video-frame-zona-lienzo,.video-frame-zona-lienzo img{min-height:180px}
+}
+
+/* V15.7 · revisor sin saltos + ROI manual bloqueada
+   El lienzo usa la proporción real del video (aspect-ratio en línea) y la
+   imagen la llena exactamente: no se encoge mientras carga y las coordenadas
+   de la ROI coinciden con los píxeles del cuadro (sin bandas por contain). */
+.video-frame-zona-lienzo{min-height:0;height:auto}
+.video-frame-zona-lienzo img{position:absolute;inset:0;width:100%;height:100%;min-height:0;object-fit:fill}
+@media(max-width:900px){.video-frame-zona-lienzo,.video-frame-zona-lienzo img{min-height:0}}
+.video-frame-error{position:absolute;left:8px;bottom:8px;padding:4px 8px;border-radius:6px;background:rgba(127,29,29,.9);color:#fff;font-size:12px;line-height:1.2}
+.video-lectura-actual .validando{font-weight:400;color:var(--texto-3);font-size:11px}
+.video-zona-overlay.bloqueada{border-width:2px;border-color:var(--verde,#22c55e)}
+.video-zona-overlay.sugerida{border:2px dashed #f59e0b;background:rgba(245,158,11,.06)}
+.video-zona-overlay.sugerida span{background:rgba(120,53,15,.92)}
+.video-roi-estado{display:grid;gap:6px;min-height:96px;padding:8px 10px;border:1px solid var(--borde);border-radius:9px;background:var(--superficie-2,#0d1726);line-height:1.35}
+.video-roi-estado>div:first-child{display:grid;gap:3px}
+.video-roi-estado.bloqueada{border-color:color-mix(in srgb,var(--verde,#22c55e) 55%,var(--borde))}
+.video-roi-estado small{color:var(--texto-3)}
+.video-roi-sugerencia{display:flex;gap:8px;align-items:center;flex-wrap:wrap;min-height:30px}
+.video-aviso-tiempo-reservado{min-height:58px}
+.video-aviso-tiempo-reservado>.video-aviso-tiempo{margin-top:6px}
+.video-panel-avisos-reservado:empty{display:none}
+.ficha-video dd{min-height:1.3em}
+.video-zona-acciones button[hidden]{display:none}
+
+/* V15.7.4 · zoom de ROI, recálculo individual y controles directos */
+.video-panel-herramientas{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin:10px 0 12px}
+.video-contador-visible{margin-left:auto}
+.boton-vista-videos{display:inline-flex;align-items:center;gap:8px;min-height:38px;padding:7px 10px;border-radius:11px;background:color-mix(in srgb,var(--superficie-2,#0d1726) 88%,var(--acento,#60a5fa) 12%);border-color:color-mix(in srgb,var(--borde) 75%,var(--acento,#60a5fa) 25%);box-shadow:none}
+.boton-vista-videos:hover{background:color-mix(in srgb,var(--superficie-2,#0d1726) 78%,var(--acento,#60a5fa) 22%)}
+.video-vista-icono{display:inline-grid;place-items:center;width:22px;height:22px;border-radius:7px;background:color-mix(in srgb,var(--acento,#60a5fa) 18%,transparent);font-size:14px;font-weight:900;line-height:1}
+.video-vista-contador{display:inline-grid;place-items:center;min-width:24px;height:22px;padding:0 6px;border-radius:999px;background:var(--superficie);border:1px solid var(--borde);font-size:11px;font-variant-numeric:tabular-nums}
+.video-recalculo-estado{margin:0 0 10px}
+.videos-ocultos-resumen{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-top:12px;padding:12px;border:1px dashed var(--borde);border-radius:12px;background:var(--superficie-2,#0d1726)}
+.videos-ocultos-resumen p{margin:3px 0 0}
+.video-cabecera-acciones{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}
+.boton-recalcular-video{padding:6px 9px;min-height:32px;font-size:12px;white-space:nowrap}
+.video-recalculo-individual{display:flex;align-items:center;gap:7px;margin-top:8px;padding:7px 9px;border:1px solid var(--borde);border-radius:9px;background:var(--superficie-2,#0d1726);font-size:12px;color:var(--texto-2)}
+.spinner-inline{display:inline-block;font-weight:900;animation:giro-video .9s linear infinite}
+@keyframes giro-video{to{transform:rotate(360deg)}}
+.video-airbag-preview.seleccionando-zona .video-zona-overlay.temporal{box-shadow:0 0 0 9999px rgba(2,8,18,.48),0 0 0 2px rgba(255,255,255,.18) inset;border-width:2px}
+.video-zona-zoom{display:grid;gap:6px;padding:8px;border:1px solid color-mix(in srgb,var(--acento,#60a5fa) 48%,var(--borde));border-radius:10px;background:color-mix(in srgb,var(--superficie-2,#0d1726) 88%,var(--acento,#60a5fa) 12%)}
+.video-zona-zoom-cabecera{display:flex;align-items:center;justify-content:space-between;gap:8px;line-height:1.2}
+.video-zona-zoom-cabecera span,.video-zona-zoom small{color:var(--texto-3);font-size:11px}
+.video-zona-zoom-imagen{width:100%;aspect-ratio:2.15/1;border:1px solid var(--borde);border-radius:8px;background-color:#050b14;background-repeat:no-repeat;image-rendering:auto;box-shadow:inset 0 0 0 1px rgba(255,255,255,.04)}
+.boton-aprender-apertura{font-weight:750;border-color:color-mix(in srgb,var(--verde,#22c55e) 58%,var(--borde));background:color-mix(in srgb,var(--verde,#22c55e) 18%,var(--superficie));color:var(--texto-1)}
+.boton-aprender-apertura:hover{background:color-mix(in srgb,var(--verde,#22c55e) 26%,var(--superficie))}
+@media(max-width:700px){.video-contador-visible{width:100%;margin-left:0}.videos-ocultos-resumen{align-items:flex-start;flex-direction:column}.video-cabecera-acciones{width:100%;justify-content:flex-start}.boton-recalcular-video{flex:1}.boton-vista-videos{flex:1;justify-content:center}}
+
+/* V15.7.4 · microzona exacta del nacimiento del airbag */
+.video-zona-nacimiento-overlay{position:absolute;box-sizing:border-box;pointer-events:none;border:2px solid #f59e0b;border-radius:5px;background:rgba(245,158,11,.13);box-shadow:0 0 0 1px rgba(255,255,255,.35),0 0 14px rgba(245,158,11,.25);z-index:5}
+.video-zona-nacimiento-overlay.manual{border-style:solid;border-color:var(--verde,#22c55e);background:rgba(34,197,94,.13);box-shadow:0 0 0 1px rgba(255,255,255,.35),0 0 14px rgba(34,197,94,.22)}
+.video-zona-nacimiento-overlay span{position:absolute;left:50%;top:0;transform:translate(-50%,-110%);padding:3px 6px;border-radius:6px;background:rgba(8,12,20,.92);color:#fff;font-size:10px;line-height:1.2;white-space:nowrap;font-weight:750}
+.video-zona-zoom{gap:8px}
+.video-zona-zoom-cabecera>div{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap}
+.video-zona-zoom-lienzo{position:relative;width:100%;min-height:150px;max-height:360px;overflow:hidden;border:1px solid var(--borde);border-radius:9px;background:#050b14;box-shadow:inset 0 0 0 1px rgba(255,255,255,.04);touch-action:none;user-select:none}
+.video-zona-zoom-lienzo>img{position:absolute;max-width:none;max-height:none;display:block;user-select:none;pointer-events:none}
+.video-zona-zoom-lienzo.ajustando{cursor:crosshair;box-shadow:inset 0 0 0 2px color-mix(in srgb,var(--acento,#60a5fa) 60%,transparent)}
+.video-zona-nacimiento-zoom{position:absolute;box-sizing:border-box;border:2px solid #f59e0b;background:rgba(245,158,11,.10);border-radius:5px;box-shadow:0 0 0 9999px rgba(0,0,0,.10),0 0 0 1px rgba(255,255,255,.45);pointer-events:none;z-index:4}
+.video-zona-nacimiento-zoom.manual{border-color:var(--verde,#22c55e);background:rgba(34,197,94,.11)}
+.video-zona-nacimiento-zoom span{position:absolute;left:0;top:0;transform:translateY(-100%);padding:3px 6px;border-radius:5px 5px 0 0;background:rgba(8,12,20,.92);color:#fff;font-size:10px;font-weight:750;white-space:nowrap}
+.video-zona-localizando{position:absolute;inset:auto 10px 10px 10px;display:flex;align-items:center;justify-content:center;gap:7px;padding:8px 10px;border:1px solid rgba(255,255,255,.16);border-radius:8px;background:rgba(5,11,20,.90);color:#fff;font-size:12px;z-index:6;backdrop-filter:blur(5px)}
+.video-zona-zoom-info{display:flex;align-items:center;min-height:24px;padding:6px 8px;border-radius:8px;background:color-mix(in srgb,var(--superficie,#101827) 72%,transparent);font-size:12px;color:var(--texto-2)}
+.video-zona-zoom-acciones{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.video-zona-zoom-acciones .boton{min-height:32px;padding:6px 9px;font-size:12px}
+@media(max-width:700px){.video-zona-zoom-lienzo{min-height:120px}.video-zona-zoom-acciones .boton{flex:1 1 180px}}
+.video-maximo-visible {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--borde, #64748b);
 }

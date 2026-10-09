@@ -1,0 +1,20 @@
+OCR V14.15 — resultados de validación
+Fecha: 2026-09-28
+
+JavaScript / frontend:
+- node --check dashboard/frontend/app.js: OK
+- node --check dashboard/frontend/i18n.js: OK
+- 19/19 archivos de pruebas .cjs: OK
+
+Python:
+- pytest: 238 aprobadas / 8 fallos
+- Los 8 fallos son los mismos casos históricos que dependen de fixtures/datos externos ausentes del paquete:
+  * pruebas del dashboard que esperan validacion_resultados.json / banco externo
+  * pruebas Excel que requieren validacion_resultados.json
+- No se detectaron fallos nuevos asociados a V14.15.
+
+Cambios V14.15 validados:
+- Un solo botón "Editar bloque" sustituye "Ajustar / dividir bloque" y "Mover bloque".
+- El editor conserva mover, redimensionar, cuatro esquinas, giro, relectura y división.
+- Traducciones ES/EN/DE reforzadas para botones y etiquetas dinámicas visibles.
+- Cache-busting actualizado a 20260928-v14-15.

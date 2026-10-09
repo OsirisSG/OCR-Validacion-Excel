@@ -1,0 +1,10 @@
+PARCHE V14.12 SOBRE V14.11
+
+1. Cierra completamente el dashboard y el proceso Python.
+2. Descomprime el parche sobre la raíz de tu instalación V14.11 y acepta reemplazar archivos.
+3. NO borres .aprendizaje, .cache_ocr, checkpoints ni el Excel.
+4. Reinicia el dashboard y usa Ctrl+F5 en el navegador.
+
+Desde V14.12, Confirmar reemplazo de bloques propone la unión al entrenamiento visual por defecto. Puedes desactivar la casilla para una unión excepcional/no representativa.
+
+Las uniones antiguas se incorporan de forma oportunista cuando vuelves a marcar esa imagen como verificada.

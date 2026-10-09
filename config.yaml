@@ -22,10 +22,22 @@ fase1:
   # auto selecciona CUDA, después MPS (Apple Silicon) y finalmente CPU.
   dispositivo: auto
   rendimiento:
-    hilos_cpu: null       # null = todos menos uno para mantener responsiva la UI
-    batch_gpu: 4
+    hilos_cpu: null       # null = todos menos uno; el SOP regula el preprocesamiento aparte
+    perfil_sop: alto      # estable | alto | maximo. ALTO es el perfil predeterminado V14
+    perfil_gpu: adaptativo # compatibilidad: EasyOCR ajusta su batch con ventana e histéresis
+    batch_gpu: 4          # preferencia local conservada; EasyOCR lo aplica a regiones, no a fotografías
+    batch_gpu_max: 12     # techo para RTX A3000 6 GB; se respeta el límite real de VRAM
     batch_cpu: 1
-    workers_easyocr: 0   # un Reader compartido; evita duplicar VRAM/RAM
+    workers_easyocr: 0    # un Reader CUDA compartido; evita duplicar el modelo/VRAM en Windows
+    ventana_batch: 12     # éxitos consecutivos antes de considerar aumentar batch
+    reintentos_oom: 3     # evita ciclos infinitos
+    prefetch_cpu: true
+    workers_preparacion: auto  # usa 2/3/4 según perfil Estable/Alto/Máximo
+    cola_preparacion_max: auto # usa 4/8/12 según perfil y aplica backpressure
+    perfiles:
+      estable: {gpu_objetivo: [70, 85], vram_limite: 75, ram_limite: 65, cpu_objetivo: [60, 75], workers_cpu: 2, cola_max: 4}
+      alto: {gpu_objetivo: [85, 95], vram_limite: 85, ram_limite: 80, cpu_objetivo: [75, 90], workers_cpu: 3, cola_max: 8}
+      maximo: {gpu_objetivo: [90, 100], vram_limite: 90, ram_limite: 85, cpu_objetivo: [85, 95], workers_cpu: 4, cola_max: 12}
   lang: en                # el texto es nomenclatura alfanumérica, no lenguaje natural
   # Restringe EasyOCR al dominio de códigos y reduce confusiones con símbolos.
   caracteres_permitidos: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_/"
@@ -40,6 +52,13 @@ fase1:
     activar: true
     deskew: true                    # corrige rotación fina (±15°)
     angulo_minimo_correccion: 2.0   # grados; por debajo no rota (evita ruido)
+    ajuste_fino_regiones:
+      activar: true                 # permite etiquetas sesgadas/diagonales dentro de una misma foto
+      angulo_minimo: 1.25           # no gastar OCR en inclinaciones despreciables
+      angulo_maximo: 15.0           # ajuste fino normal: evita perseguir aristas/ruido
+      angulo_maximo_extendido: 30.0 # solo con evidencia geométrica fuerte; nunca ±45°
+      micro_ajuste_grados: 2.0      # prueba ±2° alrededor del ángulo estimado en la mejor orientación
+      todas_variantes_editor: true  # optimiza cada tarjeta; el resultado queda cacheado
     variante_principal: original    # mejor para fotos reales; adaptativa queda como respaldo
     binarizacion_adaptativa: true
     binarizacion_blocksize: 51      # debe ser impar
@@ -151,6 +170,9 @@ fase3:
 empresarial:
   # Opcional. Si se deja vacío, se usa el nombre de la carpeta raíz como ID portable.
   proyecto_id: null
+  # Opciones sólo con evidencia del perfil: laboratorio EDAG/VW,
+  # componente bolsa_aire/tablero y formato_fecha DMY. Vacío conserva ambigüedades.
+  perfil_extraccion: {}
   archivo_cache: .cache_ocr/imagenes.sqlite3
   archivo_cache_legacy: .cache_ocr/imagenes_legacy.sqlite3
   archivo_avance_ids: .cache_ocr/avances_ids.json
@@ -196,6 +218,19 @@ aprendizaje:
   minimo_soporte_caracter: 3
   minimo_soporte_patron: 2
   dominancia_minima: 0.80
+  estrategias_ocr:
+    # V14.8: aprende orientación, ajuste fino y tratamiento sólo de decisiones
+    # humanas que finalmente se confirman con “Aplicar supervisión”.
+    activar: true
+    # V14.9: una sola confirmación humana ya puede ensayarse inmediatamente
+    # en otra imagen del mismo contexto/posición. Siempre se compara contra OCR normal.
+    minimo_soporte_sugerencia: 1
+    minimo_soporte_automatico: 4
+    dominancia_minima: 0.75
+    tolerancia_ajuste_grados: 4
+    aplicar_inmediato_desde_primera_imagen: true
+    inmediato_exigir_mismo_grupo_ruta: true
+    inmediato_exigir_bbox_equivalente: true
   # Desde este volumen se reserva automáticamente 20% de imágenes como holdout.
   minimo_correcciones_validacion: 20
   visual:
@@ -204,6 +239,13 @@ aprendizaje:
     minimo_ids: 15
     proporcion_validacion: 0.20  # separación por ID, nunca por recorte aleatorio
     epocas: 3
+    # V14.9: el ajuste visual automático se dispara sin botón. Usa una sola época
+    # por actualización para que varias verificaciones seguidas no congelen la revisión.
+    auto_entrenar: true
+    auto_entrenar_al_verificar: true
+    auto_activar_si_mejora: true
+    epocas_auto: 1
+    auto_debounce_segundos: 1.5
     batch: 8
     learning_rate: 0.00001
     alto: 64
@@ -215,6 +257,17 @@ aprendizaje:
 pruebas_externas:
   directorio: .pruebas_externas/embossed-text-reader/images
   archivo_resultados: .pruebas_externas/resultados.json
+
+# Persistencia V14.10: prioriza respuesta rápida sin sacrificar la escritura
+# atómica de correcciones confirmadas.
+persistencia:
+  # Los eventos visuales del pipeline se agrupan durante una fracción de segundo.
+  # Pausa, cancelación, error y finalización siguen escribiendo de inmediato.
+  checkpoint_debounce_segundos: 0.35
+  # Una corrección aislada dispara el Excel rápidamente; varias seguidas se
+  # agrupan para evitar regenerar el libro repetidas veces.
+  excel_debounce_segundos: 0.80
+  excel_latencia_max_segundos: 2.50
 
 # Paleta del semáforo: MISMO hex en Excel y dashboard (doc §6, requisito visual).
 # El backend la expone en GET /api/config para que el frontend no la duplique.
@@ -229,3 +282,18 @@ dashboard:
   # el backend rechaza rutas fuera de esta raíz).
   raiz_datos_permitida: null   # null -> se toma del último pipeline ejecutado
   puerto: 8000
+
+# V15: análisis de videos de alta velocidad dentro de VIDEO/VIDEOS.
+video_airbag:
+  activar: true
+  leer_timestamp_overlay: true
+  max_ancho_analisis: 960
+  margen_vertical_deteccion: 0.12
+  fraccion_superior_overlay: 0.18
+  fraccion_inferior_overlay: 0.18
+  frames_baseline_min: 3
+  frames_baseline_max: 6
+  umbral_diff_min: 6.0
+  persistencia_frames: 2
+  tolerancia_consenso_ms: 0.15
+  min_videos_consenso: 3

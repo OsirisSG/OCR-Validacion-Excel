@@ -1,0 +1,13 @@
+PARCHE OCR V14.15 SOBRE V14.14
+
+1. Cierra por completo el dashboard/servidor Python.
+2. Descomprime este ZIP sobre la raíz de tu proyecto V14.14.
+3. Acepta reemplazar archivos.
+4. NO borres .aprendizaje, .cache_ocr, checkpoints, resultados ni Excel.
+5. Inicia de nuevo el dashboard.
+6. El frontend lleva cache-busting V14.15; si ves botones antiguos, usa Ctrl+F5.
+
+Cambio principal:
+- "Ajustar / dividir bloque" + "Mover bloque" => "Editar bloque".
+- Se conserva toda la funcionalidad de ambas herramientas en un solo flujo.
+- Se refuerzan traducciones ES/EN/DE de botones y textos dinámicos.

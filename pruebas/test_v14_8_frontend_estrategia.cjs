@@ -1,0 +1,10 @@
+const fs = require('fs');
+const assert = require('assert');
+const s = fs.readFileSync(require('path').join(__dirname,'..','dashboard','frontend','app.js'),'utf8');
+assert(s.includes('onEstrategia = null'));
+assert(s.includes('estrategia_ocr: estrategiaOcrPendiente'));
+assert(s.includes('Estrategia OCR lista para aprender al confirmar'));
+assert(s.includes('Aprendizaje de estrategia OCR'));
+assert(s.includes('Probar estrategia aprendida'));
+assert(s.includes('estrategia_aprendida_reconfirmada'));
+console.log('V14.8 frontend strategy learning OK');

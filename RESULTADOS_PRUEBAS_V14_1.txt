@@ -1,0 +1,26 @@
+OCR Versuchsmatrix V14.1 — resultados de verificación
+Fecha: 2026-09-23
+
+Pruebas específicas V14/V14.1:
+- pruebas/test_v14_sop_recuperacion.py: 14 aprobadas.
+
+Cobertura nueva V14.1:
+- Tiempo activo congela durante la pausa y continúa después de reanudar.
+- La pausa se publica como `pausando` durante la imagen activa y cambia a `pausado` sólo en el siguiente punto cooperativo seguro.
+- Rutas relativas PHOTOS/... se reubican bajo la raíz del lote.
+- Excel admite None únicamente en colecciones opcionales conocidas sin lanzar el TypeError genérico.
+- Telemetría GPU usa `nvidia-smi` cuando NVML/pynvml no está disponible.
+
+Suite completa:
+- 192 pruebas aprobadas.
+- 8 pruebas fallan por los mismos fixtures externos ausentes que ya faltaban en V14/V13: `validacion_resultados.json` y el banco externo controlado del dashboard/Excel.
+- No quedan fallos nuevos introducidos por V14.1.
+
+Validaciones estáticas:
+- `dashboard/backend/app.py`: compila correctamente.
+- `generar_excel.py`: compila correctamente.
+- `gestor_recursos.py`: compila correctamente.
+- `dashboard/frontend/app.js`: `node --check` correcto.
+
+CUDA real:
+- Este entorno de construcción no expone una GPU CUDA; la utilización real de la RTX A3000 y el rendimiento por perfil deben medirse en el equipo de producción.

@@ -1,0 +1,22 @@
+PARCHE OCR V15.7.2
+==================
+
+Este parche es acumulado sobre V15.7.1 e incluye los controles nuevos de video.
+
+Instalación
+1. Cierra completamente el dashboard y cualquier proceso Python del proyecto.
+2. Haz una copia de seguridad del proyecto si quieres poder volver atrás.
+3. Descomprime este parche sobre la raíz del proyecto y acepta reemplazar.
+4. NO borres .aprendizaje, .cache_ocr, checkpoints ni tus Excel.
+5. Inicia el dashboard. Los archivos web llevan una versión nueva para evitar caché viejo.
+
+NUEVO EN V15.7.2
+- Botón “Recalcular” dentro del panel V15 de cada ID.
+- Recalcula sólo los videos del ID que estás viendo; no vuelve a procesar las fotos/OCR.
+- Muestra progreso del recálculo, video actual y errores si los hubiera.
+- Menú “Vista de videos” para ocultar o desplegar todas las tarjetas de video del ID.
+- Al ocultar, los videos no se borran ni pierden revisiones; sólo se contrae la vista.
+- Al terminar el recálculo, el detalle se refresca automáticamente para mostrar el resultado nuevo.
+
+Se conserva el comportamiento de V15.7.1 para revisión manual, regiones de apertura,
+consenso entre cámaras, caché y validación Rec...fps.

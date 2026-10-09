@@ -212,13 +212,17 @@ def validar_lote(ruta_estructura: str | Path | None = None,
                  al_resultado: Callable[[int, int, dict, float | None], None] | None = None,
                  al_imagen: Callable[[int, int, str, float | None], None] | None = None,
                  control: Callable[[], None] | None = None,
-                 casos_omitidos: set[str] | None = None) -> dict:
+                 casos_omitidos: set[str] | None = None,
+                 ejecucion_id_aprendizaje: str | None = None) -> dict:
     """
     Recorre las carpetas hoja de la estructura detectada, valida cada una y
     serializa validacion_resultados.json. Retorna la estructura completa
     (no imprime; el CLI se encarga de eso).
     """
     config = config or cargar_config()
+    contenido = str(contenido or "todo").lower()
+    if contenido not in {"todo", "fotos", "videos"}:
+        raise ValueError("Contenido inválido: usa todo, fotos o videos.")
     f2 = config.get("fase2", {})
     ruta_estructura = Path(ruta_estructura) if ruta_estructura else \
         RAIZ_PROYECTO / config.get("fase0", {}).get("archivo_salida", "estructura_detectada.json")
@@ -238,7 +242,7 @@ def validar_lote(ruta_estructura: str | Path | None = None,
     if casos_omitidos and destino.is_file():
         try:
             resultados_existentes = json.loads(
-                destino.read_text(encoding="utf-8")).get("resultados", [])
+                destino.read_text(encoding="utf-8")).get("resultados") or []
         except (OSError, json.JSONDecodeError):
             resultados_existentes = []
     resultados = [fila for fila in resultados_existentes
@@ -282,7 +286,8 @@ def validar_lote(ruta_estructura: str | Path | None = None,
     for indice, carpeta in enumerate(hojas, start=1):
         fila = _validar_carpeta(
             carpeta, config, f2, cache_ocr, patron_dominante, imagen_lista, control,
-            cache_persistente, gestor_aprendizaje)
+            cache_persistente, gestor_aprendizaje, ejecucion_id_aprendizaje,
+            estructura.get("raiz"))
         resultados.append(fila)
         persistir_legacy(parcial=True)
         if al_resultado:
@@ -295,8 +300,11 @@ def validar_lote(ruta_estructura: str | Path | None = None,
     if config.get("aprendizaje", {}).get("activar", True):
         try:
             from aprendizaje import GestorAprendizaje
-            aprendizaje = GestorAprendizaje(config).registrar_ejecucion(
-                list(cache_ocr.values()), raiz=estructura.get("raiz"))
+            gestor_final = GestorAprendizaje(config)
+            aprendizaje = (gestor_final.finalizar_ejecucion_incremental(
+                ejecucion_id_aprendizaje) if ejecucion_id_aprendizaje else
+                gestor_final.registrar_ejecucion(
+                    list(cache_ocr.values()), raiz=estructura.get("raiz")))
         except Exception as exc:
             # El registro de aprendizaje nunca debe invalidar un lote ya
             # procesado; el error queda explícito en el artefacto de salida.
@@ -379,7 +387,9 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
                              modo_recorte: str | None = None,
                              roi_manual: dict[str, float] | None = None,
                              zoom_forzado: float | None = None,
-                             al_caso: Callable[[dict], None] | None = None) -> dict:
+                             al_caso: Callable[[dict], None] | None = None,
+                             ejecucion_id_aprendizaje: str | None = None,
+                             contenido: str = "todo") -> dict:
     """Procesa todos los casos empresariales y consolida una sola salida por ID."""
     config = config or cargar_config()
     if roi_manual:
@@ -436,7 +446,7 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
     if destino.is_file():
         try:
             resultados_existentes = json.loads(
-                destino.read_text(encoding="utf-8")).get("resultados", [])
+                destino.read_text(encoding="utf-8")).get("resultados") or []
         except (OSError, json.JSONDecodeError):
             resultados_existentes = []
     if casos_filtrados or casos_omitidos:
@@ -460,7 +470,7 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
             cfg_emp.get("reglas_minimo_ids", 3), cfg_emp.get("reglas_consenso_minimo", 0.90))
         existentes_nuevos = resultados_existentes
         if destino.is_file():
-            existentes_nuevos = json.loads(destino.read_text(encoding="utf-8")).get("resultados", [])
+            existentes_nuevos = json.loads(destino.read_text(encoding="utf-8")).get("resultados") or []
         firma_supervision = {
             "anterior": cache.config_version,
             "modelos": modelos_nuevos,
@@ -497,17 +507,24 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
             conocimiento_actualizado = True
     control = control_actualizado
     inicio = time.monotonic()
-    total_imagenes = sum(len(c.get("fotos", [])) if c.get("estructura_valida")
-                         else len(_imagenes_legacy_caso(c)) for c in casos)
+    total_imagenes = 0
+    for c in casos:
+        if contenido != "videos":
+            total_imagenes += (len(c.get("fotos", [])) if c.get("estructura_valida")
+                               else len(_imagenes_legacy_caso(c)))
+        if contenido != "fotos":
+            total_imagenes += len(c.get("videos") or [])
     procesadas = 0
     duraciones: deque[float] = deque(maxlen=12)
     anterior = inicio
 
     def persistir(parcial: bool) -> dict:
+        inicio_persistencia = time.monotonic()
         combinados = {r.get("case_key") or r.get("ruta"): r for r in resultados_previos}
         combinados.update({r.get("case_key") or r.get("ruta"): r for r in resultados})
         salida_parcial = {
             "raiz": estructura["raiz"], "generado_en": datetime.now().isoformat(timespec="seconds"),
+            "ejecucion_id": ejecucion_id_aprendizaje,
             "estructura_usada": str(ruta_estructura), "perfil": "empresarial",
             "tipo_st": estructura.get("tipo_st"), "tipos_st": estructura.get("tipos_st", []),
             "parcial": parcial, "carpetas_procesadas": len(combinados),
@@ -516,15 +533,69 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
         escribir_json_seguro(
             destino, salida_parcial,
             al_error=lambda mensaje: advertencias_persistencia.append(mensaje))
+        if gestor_recursos:
+            gestor_recursos.registrar_etapa(
+                "persistencia_validacion", time.monotonic() - inicio_persistencia)
         return salida_parcial
 
     def persistir_avance_id() -> None:
         """Guarda sólo el ID activo; evita reescribir todo el lote por imagen."""
+        inicio_persistencia = time.monotonic()
         escribir_json_seguro(
             ruta_avances,
             {"raiz": estructura["raiz"], "actualizado_en": ahora(),
-             "avances_ids": avances_ids},
+             "ejecucion_id": ejecucion_id_aprendizaje, "avances_ids": avances_ids},
             al_error=lambda mensaje: advertencias_persistencia.append(mensaje))
+        if gestor_recursos:
+            gestor_recursos.registrar_etapa(
+                "persistencia_checkpoint", time.monotonic() - inicio_persistencia)
+
+    rendimiento = config.get("fase1", {}).get("rendimiento", {})
+    preparador = None
+    gestor_recursos = None
+    if rendimiento.get("prefetch_cpu", False):
+        from gestor_recursos import obtener_gestor_recursos
+        from orquestador_ocr import PreparadorImagenes
+        gestor_recursos = obtener_gestor_recursos(rendimiento.get("perfil_sop", "alto"))
+        limites = gestor_recursos.limites
+        workers_cfg = rendimiento.get("workers_preparacion")
+        cola_cfg = rendimiento.get("cola_preparacion_max")
+        workers_preparacion = max(1, int(
+            limites.get("workers_cpu", 2) if workers_cfg in {None, "auto"} else workers_cfg))
+        cola_preparacion = max(workers_preparacion, int(
+            limites.get("cola_max", 4) if cola_cfg in {None, "auto"} else cola_cfg))
+        preparador = PreparadorImagenes(
+            cargar_imagen, workers=workers_preparacion, max_pendientes=cola_preparacion)
+
+    cache_anticipada: dict[str, tuple[dict | None, dict | None, bool]] = {}
+
+    def resolver_preexistente(ruta: str) -> tuple[dict | None, dict | None, bool]:
+        """Resuelve revisión/caché antes de gastar CPU en decodificar una imagen."""
+        revision_sin_datos = gestor_aprendizaje.imagen_sin_datos(ruta)
+        if revision_sin_datos:
+            return ({"imagen": ruta, "tokens": [], "lineas_texto": [],
+                     "texto_completo": "", "estado_imagen": "revisada_sin_datos",
+                     "motivo_sin_datos": revision_sin_datos.get("motivo"),
+                     "modo_recorte": "revision_manual"}, revision_sin_datos, True)
+        resultado = None
+        if not conocimiento_actualizado:
+            try:
+                resultado = cache.obtener(ruta)
+                if (resultado and
+                        resultado.get("orientaciones_regionales_usadas", {}) !=
+                        gestor_aprendizaje.orientaciones_regionales(ruta)):
+                    resultado = None
+            except OSError:
+                resultado = None
+        desde_cache = resultado is not None
+        if imagenes_filtradas and ruta in imagenes_filtradas:
+            resultado = None
+            desde_cache = False
+        if (solo_errores and desde_cache and
+                (resultado.get("error") or str(resultado.get("estado_imagen", "")).startswith("error"))):
+            resultado = None
+            desde_cache = False
+        return resultado, None, desde_cache
 
     for indice, caso in enumerate(casos, start=1):
         if control:
@@ -535,42 +606,81 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
         caso["estado"] = "procesando"
         if al_caso:
             al_caso(deepcopy(caso))
-        fotos = caso.get("fotos", []) if caso.get("estructura_valida") else _imagenes_legacy_caso(caso)
+        previo = next((r for r in resultados_existentes
+                       if r.get("case_key") == caso.get("case_key")), {})
+        fotos_base = caso.get("fotos", []) if caso.get("estructura_valida") else _imagenes_legacy_caso(caso)
+        fotos = [] if contenido == "videos" else fotos_base
+        videos = [] if contenido == "fotos" else list(caso.get("videos") or [])
         trazabilidad, evidencias, imagenes_salida, alertas = [], [], [], []
-        if not fotos:
+        videos_salida = []
+        video_consenso = {"estado": "no_procesado", "tiempo_ms": None, "soporte": 0,
+                          "total_validos": 0, "requiere_revision": contenido != "fotos"}
+        # Los modos selectivos nunca borran lo ya obtenido por la otra fuente.
+        if contenido == "videos" and previo:
+            imagenes_salida = deepcopy(previo.get("imagenes") or [])
+            trazabilidad = deepcopy(previo.get("trazabilidad") or [])
+            evidencias = [deepcopy(e) for e in (previo.get("candidatos") or [])
+                          if e.get("fuente") not in {"ruta_carpeta", "video"}]
+        elif contenido == "fotos" and previo:
+            videos_salida = deepcopy(previo.get("videos") or [])
+            video_consenso = deepcopy(previo.get("video_apertura") or video_consenso)
+            from video_airbag import consenso_valido
+            if consenso_valido(video_consenso):
+                from video_airbag import evidencia_apertura_desde_consenso
+                ev_previa = evidencia_apertura_desde_consenso(caso, video_consenso)
+                if ev_previa:
+                    evidencias.append(ev_previa)
+        if contenido != "videos" and not fotos:
             alertas.append({"codigo": "SIN_IMAGENES", "nivel": "warning",
                             "mensaje": "El ID no contiene fotografías NACH/VOR procesables."})
+        if contenido != "fotos" and not videos:
+            alertas.append({"codigo": "SIN_VIDEOS", "nivel": "info",
+                            "mensaje": "El ID no contiene videos en VIDEO/VIDEOS."})
         con_texto = sin_texto = errores = 0
-        for foto in fotos:
+        if contenido == "videos" and previo:
+            con_texto = int((previo.get("progreso") or {}).get("con_texto") or 0)
+            sin_texto = int((previo.get("progreso") or {}).get("sin_texto") or 0)
+            errores = int((previo.get("progreso") or {}).get("errores") or 0)
+        for posicion_foto, foto in enumerate(fotos):
             if control:
                 control()
             ruta = foto["ruta"]
-            resultado = None
-            revision_sin_datos = gestor_aprendizaje.imagen_sin_datos(ruta)
-            if revision_sin_datos:
-                resultado = {"imagen": ruta, "tokens": [], "lineas_texto": [],
-                             "texto_completo": "", "estado_imagen": "revisada_sin_datos",
-                             "motivo_sin_datos": revision_sin_datos.get("motivo"),
-                             "modo_recorte": "revision_manual"}
-            try:
-                resultado = resultado or (None if conocimiento_actualizado else cache.obtener(ruta))
-                if (resultado and not revision_sin_datos and
-                        resultado.get("orientaciones_regionales_usadas", {}) !=
-                        gestor_aprendizaje.orientaciones_regionales(ruta)):
-                    resultado = None
-            except OSError:
-                resultado = resultado
-            desde_cache = resultado is not None
+            # Si la revisión/aprendizaje cambió desde que se anticipó esta ruta,
+            # se invalida la decisión de caché; la imagen decodificada sigue siendo reutilizable.
+            if ruta in cache_anticipada and not conocimiento_actualizado:
+                resultado, revision_sin_datos, desde_cache = cache_anticipada.pop(ruta)
+            else:
+                cache_anticipada.pop(ruta, None)
+                resultado, revision_sin_datos, desde_cache = resolver_preexistente(ruta)
             estado_cache = "revision_manual" if revision_sin_datos else (
                 "leida" if desde_cache else "omitida")
-            if imagenes_filtradas and ruta in imagenes_filtradas and not revision_sin_datos:
-                resultado = None
-                desde_cache = False
-            if (solo_errores and desde_cache and not revision_sin_datos and
-                    (resultado.get("error") or str(resultado.get("estado_imagen", "")).startswith("error"))):
-                resultado = None
-                desde_cache = False
             if resultado is None:
+                if preparador:
+                    # Puede venir preparado desde la imagen anterior. Para la primera
+                    # imagen (o si hubo backpressure), se solicita aquí y se espera.
+                    preparador.preparar(ruta)
+                    imagen_preparada = preparador.obtener(ruta)
+                    # Antes de lanzar CUDA se llenan huecos con trabajo que realmente
+                    # necesita OCR; los aciertos de caché no se decodifican por prefetch.
+                    admitidas = 0
+                    inspeccionadas = 0
+                    max_inspeccion = max(cola_preparacion, workers_preparacion * 4)
+                    for siguiente in fotos[posicion_foto + 1:]:
+                        if admitidas >= workers_preparacion or inspeccionadas >= max_inspeccion:
+                            break
+                        inspeccionadas += 1
+                        ruta_siguiente = siguiente["ruta"]
+                        if ruta_siguiente not in cache_anticipada:
+                            cache_anticipada[ruta_siguiente] = resolver_preexistente(ruta_siguiente)
+                        resultado_siguiente, _, _ = cache_anticipada[ruta_siguiente]
+                        if resultado_siguiente is None:
+                            if preparador.preparar(ruta_siguiente):
+                                admitidas += 1
+                            else:
+                                # Backpressure real: no seguir recorriendo/cargando el lote.
+                                break
+                else:
+                    imagen_preparada = None
                 try:
                     if caso.get("estructura_valida"):
                         preferencia_roi = gestor_aprendizaje.roi_preferida(
@@ -584,9 +694,15 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
                             ruta, config, fase=foto.get("fase", "VOR"),
                             modo_recorte=modo_foto, roi_manual=roi_foto,
                             zoom_forzado=(zoom_forzado if zoom_forzado is not None else
-                                          (preferencia_roi or {}).get("zoom")))
+                                          (preferencia_roi or {}).get("zoom")),
+                            imagen_preparada=imagen_preparada)
                     else:
-                        resultado = extraer_texto(ruta, config)
+                        try:
+                            resultado = extraer_texto(ruta, config, imagen_preparada=imagen_preparada)
+                        except TypeError as exc:
+                            if "imagen_preparada" not in str(exc):
+                                raise
+                            resultado = extraer_texto(ruta, config)
                         resultado.update({"estado_imagen": "procesada_con_texto" if
                                           resultado.get("tokens") or resultado.get("lineas_texto")
                                           else "descartada_sin_texto",
@@ -606,11 +722,33 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
                         alertas.append({"codigo": "ERROR_CACHE", "nivel": "warning",
                                         "imagen": Path(ruta).name,
                                         "mensaje": f"OCR conservado en memoria: {cache_exc}"})
+            if desde_cache and preparador:
+                preparador.descartar(ruta)
             if estado_cache == "error_cache":
                 alertas.append({"codigo": "ERROR_CACHE", "nivel": "warning",
                                 "imagen": Path(ruta).name,
                                 "mensaje": "No se pudo confirmar la escritura del caché; se reintentará."})
             resultado = gestor_aprendizaje.filtrar_no_texto(resultado, ruta)
+            inicio_validacion_post = time.monotonic()
+            if gestor_recursos and not desde_cache:
+                td = resultado.get("tiempo_deteccion_seg")
+                tocr = resultado.get("tiempo_ocr_seg")
+                if isinstance(td, (int, float)):
+                    gestor_recursos.registrar_etapa("preprocesamiento_deteccion", float(td))
+                if isinstance(tocr, (int, float)):
+                    gestor_recursos.registrar_etapa("ocr_total_imagen", float(tocr))
+            # V13: cada imagen terminada se confirma en aprendizaje antes de
+            # avanzar. Pausar, detener o cerrar ya no deja observaciones sólo
+            # en memoria/caché. La firma evita duplicados al reanudar.
+            if ejecucion_id_aprendizaje:
+                try:
+                    gestor_aprendizaje.registrar_observacion_incremental(
+                        resultado, raiz=estructura.get("raiz"),
+                        ejecucion_id=ejecucion_id_aprendizaje)
+                except Exception as exc:
+                    alertas.append({"codigo": "ERROR_APRENDIZAJE", "nivel": "warning",
+                                    "imagen": Path(ruta).name,
+                                    "mensaje": f"Observación OCR no persistida: {type(exc).__name__}: {exc}"})
             if any(r.get("orientacion_dudosa") for r in resultado.get("recortes", []) or []):
                 alertas.append({"codigo": "ORIENTACION_DUDOSA", "nivel": "warning",
                     "imagen": Path(ruta).name,
@@ -634,13 +772,14 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
                             "project_id": caso.get("project_id"),
                             "tipo_st": caso.get("tipo_st"),
                             "case_key": caso.get("case_key"),
+                            "perfil_extraccion": cfg_emp.get("perfil_extraccion") or {},
                             "version_procesamiento": "v8"}
             evidencias.extend(extraer_candidatos_texto(
                 resultado.get("texto_completo", ""), foto_contexto, contexto_caso))
             evidencias.extend(evidencias_desde_qr(
                 resultado.get("qrs", []), foto_contexto,
                 config.get("fase1", {}).get("qr", {}).get("aliases")))
-            for qr in resultado.get("qrs", []):
+            for qr in (resultado.get("qrs") or []):
                 interpretacion = qr.get("interpretacion", {})
                 qr.update({
                     "qr_detectado": True, "payload_original": qr.get("payload", ""),
@@ -681,7 +820,7 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
                 "mensaje_error": resultado.get("error"), "desde_cache": desde_cache,
                 "revision_sin_datos": revision_sin_datos,
                 "estado_cache": estado_cache,
-                "qr_payloads": [q.get("payload") for q in resultado.get("qrs", [])
+                "qr_payloads": [q.get("payload") for q in (resultado.get("qrs") or [])
                                 if q.get("payload")],
                 "qr_detectado": bool(qrs_foto),
                 "payload_qr": [q.get("payload_original") or q.get("payload") for q in qrs_foto],
@@ -699,7 +838,12 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
                                     "fase": foto.get("fase"), "tor": foto.get("tor"),
                                     "rol": "foto_empresarial", "estado_imagen": estado_imagen,
                                     "resultado_ocr": _compacto(resultado)})
+            if gestor_recursos:
+                gestor_recursos.registrar_etapa(
+                    "validacion_post_ocr", time.monotonic() - inicio_validacion_post)
             procesadas += 1
+            if gestor_recursos:
+                gestor_recursos.registrar_completada()
             caso["progreso"] = {
                 "total_imagenes": len(fotos), "revisadas": len(trazabilidad),
                 "con_texto": con_texto, "sin_texto": sin_texto, "errores": errores,
@@ -727,6 +871,42 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
                 eta = statistics.median(duraciones) * max(total_imagenes - procesadas, 0)
                 al_imagen(procesadas, total_imagenes, ruta, round(eta, 1))
 
+        if videos:
+            from video_airbag import analizar_video, consenso_videos, evidencia_apertura_desde_consenso
+            for video in videos:
+                if control:
+                    control()
+                try:
+                    analisis_video = analizar_video(video["ruta"], config)
+                except Exception as exc:
+                    analisis_video = {
+                        "ruta": video.get("ruta"), "nombre": Path(video.get("ruta", "video")).name,
+                        "estado": "error", "error": f"{type(exc).__name__}: {exc}",
+                    }
+                analisis_video = {**video, **analisis_video}
+                analisis_video["id"] = hashlib.sha256(str(video.get("ruta") or "").encode()).hexdigest()[:16]
+                videos_salida.append(analisis_video)
+                procesadas += 1
+                if gestor_recursos:
+                    gestor_recursos.registrar_completada()
+                if al_imagen:
+                    ahora_monotonic = time.monotonic()
+                    duraciones.append(max(0.001, ahora_monotonic - anterior))
+                    anterior = ahora_monotonic
+                    eta = statistics.median(duraciones) * max(total_imagenes - procesadas, 0)
+                    al_imagen(procesadas, total_imagenes, str(video.get("ruta") or ""), round(eta, 1))
+            video_consenso = consenso_videos(videos_salida, config)
+            evidencia_video = evidencia_apertura_desde_consenso(caso, video_consenso)
+            if evidencia_video:
+                evidencias.append(evidencia_video)
+            if video_consenso.get("requiere_revision"):
+                alertas.append({
+                    "codigo": "VIDEO_APERTURA_REQUIERE_REVISION", "nivel": "warning",
+                    "mensaje": (f"Videos analizados sin consenso 3 de 4; "
+                                f"soporte actual {video_consenso.get('soporte', 0)}/"
+                                f"{video_consenso.get('total_validos', 0)}."),
+                })
+
         recuperacion_cache = cache.recuperar_pendientes()
         fallos_cache = [item for item in recuperacion_cache
                         if item.get("estado") == "error_cache"]
@@ -735,8 +915,6 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
                             "mensaje": (f"Persisten {len(fallos_cache)} escrituras OCR en memoria; "
                                         "se reintentará en la siguiente ejecución.")})
 
-        previo = next((r for r in resultados_existentes
-                       if r.get("case_key") == caso.get("case_key")), {})
         consolidado = consolidar_caso(
             caso, evidencias,
             requeridos=set(cfg_emp.get("campos_requeridos") or CAMPOS_REQUERIDOS_DEFAULT),
@@ -768,10 +946,12 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
             any(a.get("codigo") == "ORIENTACION_DUDOSA" for a in alertas) or
             consolidado["conflictos"] or any(
                 dato.get("requiere_revision") for dato in consolidado["campos"].values()))
-        progreso = {"total_imagenes": len(fotos), "revisadas": len(trazabilidad),
+        total_fotos_progreso = len(fotos) if contenido != "videos" else int((previo.get("progreso") or {}).get("total_imagenes") or len(imagenes_salida))
+        progreso = {"total_imagenes": total_fotos_progreso, "revisadas": len(trazabilidad),
                     "con_texto": con_texto, "sin_texto": sin_texto,
-                    "errores": errores,
-                    "porcentaje": round(100 * len(trazabilidad) / len(fotos), 2) if fotos else 100.0}
+                    "errores": errores, "total_videos": len(videos),
+                    "videos_analizados": len(videos_salida),
+                    "porcentaje": round(100 * len(trazabilidad) / total_fotos_progreso, 2) if total_fotos_progreso else 100.0}
         alertas_agrupadas: dict[tuple[str, str], dict] = {}
         for alerta in alertas:
             clave_alerta = (alerta.get("codigo", "ADVERTENCIA"), alerta.get("mensaje", ""))
@@ -793,11 +973,13 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
             **caso.get("metadata_ruta", {}), "perfil": "empresarial",
             "modo_procesamiento": caso["modo_procesamiento"],
             "estructura_valida": caso["estructura_valida"], "validaciones": caso["validaciones"],
-            "estado": estado, "progreso": progreso, "total_imagenes": len(fotos),
+            "estado": estado, "progreso": progreso, "total_imagenes": total_fotos_progreso,
+            "total_videos": len(videos),
             "imagenes_nach": caso.get("imagenes_nach", 0), "imagenes_vor": caso.get("imagenes_vor", 0),
             "carpetas_tor": caso.get("carpetas_tor", []),
             "imagenes_omitidas_fuera_photos": caso.get("imagenes_omitidas_fuera_photos", 0),
-            "imagenes": imagenes_salida, "trazabilidad": trazabilidad,
+            "imagenes": imagenes_salida, "videos": videos_salida,
+            "video_apertura": video_consenso, "trazabilidad": trazabilidad,
             "consolidado": consolidado, "campos": consolidado["campos"],
             "correcciones_manual_campos": correcciones_manual_campos,
             "campos_faltantes": consolidado["campos_faltantes"],
@@ -806,7 +988,8 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
             "requiere_revision": consolidado["requiere_revision"] or bool(errores),
             "ultima_ejecucion": ahora(), "alertas": alertas,
             # Compatibilidad con Excel/dashboard anteriores.
-            "tipos_archivo": {"fotografia": [i["nombre"] for i in imagenes_salida]},
+            "tipos_archivo": {"fotografia": [i["nombre"] for i in imagenes_salida],
+                              "video": [i.get("nombre") for i in videos_salida]},
             "etiqueta": ({"ruta": imagenes_salida[0]["ruta"],
                            "resultado_ocr": imagenes_salida[0]["resultado_ocr"]}
                           if imagenes_salida else None),
@@ -821,7 +1004,7 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
             "qr_detectado": any(i.get("resultado_ocr", {}).get("qrs") for i in imagenes_salida),
             "observaciones": (["procesado por fallback legacy del caso"]
                                                        if not caso["estructura_valida"] else []),
-            "historial_ejecuciones": [*previo.get("historial_ejecuciones", []), {
+            "historial_ejecuciones": [*(previo.get("historial_ejecuciones") or []), {
                 "iniciado_en": datetime.fromtimestamp(
                     datetime.now().timestamp() - (time.monotonic() - inicio)
                 ).isoformat(timespec="seconds"),
@@ -832,8 +1015,10 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
                 "sin_texto": sin_texto, "errores": errores,
                 "reproceso_selectivo": bool(casos_filtrados),
             }],
-            "historial_acciones": deepcopy(previo.get("historial_acciones", [])),
+            "historial_acciones": deepcopy(previo.get("historial_acciones") or []),
         }
+        from maximos_video import incorporar_maximos
+        incorporar_maximos(fila)
         resultados.append(fila)
         avances_ids[caso["case_key"]] = {
             "case_key": caso["case_key"], "nombre": caso.get("nombre"),
@@ -847,6 +1032,8 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
             eta = transcurrido / indice * (len(casos) - indice)
             al_resultado(indice, len(casos), fila, round(eta, 1))
 
+    if preparador:
+        preparador.cerrar(cancelar=False)
     propuestas = conocimiento.proponer([*resultados_previos, *resultados])
     salida = persistir(parcial=False)
     salida.update({
@@ -867,6 +1054,13 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
             "reglas_propuestas": len(propuestas),
         },
     })
+    if ejecucion_id_aprendizaje:
+        try:
+            salida["aprendizaje"] = gestor_aprendizaje.finalizar_ejecucion_incremental(
+                ejecucion_id_aprendizaje)
+        except Exception as exc:
+            salida["aprendizaje"] = {"registrada": False,
+                                     "error": f"{type(exc).__name__}: {exc}"}
     if advertencias_persistencia:
         salida["advertencias_persistencia"] = list(dict.fromkeys(advertencias_persistencia))
     guardado_final = escribir_json_seguro(
@@ -882,7 +1076,9 @@ def _validar_carpeta(carpeta: dict, config: dict, f2: dict,
                      al_imagen: Callable[[str], None] | None = None,
                      control: Callable[[], None] | None = None,
                      cache_persistente: CacheOCR | None = None,
-                     gestor_aprendizaje: GestorAprendizaje | None = None) -> dict:
+                     gestor_aprendizaje: GestorAprendizaje | None = None,
+                     ejecucion_id_aprendizaje: str | None = None,
+                     raiz_aprendizaje: str | None = None) -> dict:
     """Procesa una carpeta hoja completa (clasificación + OCR + comparación)."""
     ruta = Path(carpeta["ruta"])
     observaciones: list[str] = []
@@ -950,11 +1146,22 @@ def _validar_carpeta(carpeta: dict, config: dict, f2: dict,
                 "imagen": img.name,
                 "mensaje": f"No se encontró texto legible en {img.name}; requiere revisión manual.",
             })
-        for warning_motor in resultado_actual.get("advertencias_motor", []):
+        for warning_motor in (resultado_actual.get("advertencias_motor") or []):
             alerta = {"codigo": "FALLBACK_ACELERADOR", "nivel": "warning",
                       "imagen": img.name, "mensaje": warning_motor}
             if alerta not in alertas:
                 alertas.append(alerta)
+        if gestor_aprendizaje and ejecucion_id_aprendizaje:
+            try:
+                gestor_aprendizaje.registrar_observacion_incremental(
+                    resultado_actual, raiz=raiz_aprendizaje,
+                    ejecucion_id=ejecucion_id_aprendizaje)
+            except Exception as exc:
+                alertas.append({
+                    "codigo": "ERROR_APRENDIZAJE", "nivel": "warning",
+                    "imagen": img.name,
+                    "mensaje": f"Observación OCR no persistida: {type(exc).__name__}: {exc}",
+                })
         ocr_por_imagen.append({"ruta": clave, "resultado_ocr": cache_ocr[clave]})
         if al_imagen:
             al_imagen(clave)
@@ -1024,9 +1231,9 @@ def _validar_carpeta(carpeta: dict, config: dict, f2: dict,
 
     et_ocr = etiqueta_item["resultado_ocr"]
     tokens_etiqueta = [t["texto"] for foto in fotos
-                       for t in foto["resultado_ocr"].get("tokens", [])]
+                       for t in (foto["resultado_ocr"].get("tokens") or [])]
     tokens_referencia = [t["texto"] for item in items_referencia
-                         for t in item["resultado_ocr"].get("tokens", [])]
+                         for t in (item["resultado_ocr"].get("tokens") or [])]
     comparacion = comparar_tokens(
         tokens_etiqueta,
         tokens_referencia,

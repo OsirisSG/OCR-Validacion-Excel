@@ -1,0 +1,10 @@
+OCR V14.13 - Parche sobre V14.12.1
+
+1. Cierra completamente el dashboard y el servidor Python.
+2. Haz una copia de seguridad de tu proyecto si lo deseas.
+3. Descomprime el contenido del parche sobre la raíz de V14.12.1 y acepta reemplazar archivos.
+4. NO borres ni reemplaces .aprendizaje, .cache_ocr, checkpoints ni resultados del usuario.
+5. Inicia nuevamente el dashboard.
+6. En el navegador usa Ctrl+F5 si la interfaz anterior permanece en caché.
+
+El parche no contiene bases SQLite de desarrollo ni datos del usuario.

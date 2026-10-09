@@ -113,3 +113,22 @@ def test_error_checkpoint_no_convierte_el_pipeline_en_error(monkeypatch, tmp_pat
     finally:
         backend._pipeline_estado.clear()
         backend._pipeline_estado.update(estado_original)
+
+
+def test_json_compacto_reduce_bytes_y_conserva_contenido(tmp_path):
+    datos = {
+        "resultados": [
+            {"id": f"ID-{i:04d}", "texto": "ABC 123", "imagenes": [
+                {"ruta": f"PHOTOS/NACH/IMG_{j:04d}.JPG", "estado": "verificada"}
+                for j in range(8)
+            ]}
+            for i in range(120)
+        ]
+    }
+    legible = tmp_path / "legible.json"
+    compacto = tmp_path / "compacto.json"
+    assert escribir_json_seguro(legible, datos, fsync=False)
+    assert escribir_json_seguro(compacto, datos, compacto=True, fsync=False)
+    assert json.loads(legible.read_text(encoding="utf-8")) == datos
+    assert json.loads(compacto.read_text(encoding="utf-8")) == datos
+    assert compacto.stat().st_size < legible.stat().st_size * 0.72

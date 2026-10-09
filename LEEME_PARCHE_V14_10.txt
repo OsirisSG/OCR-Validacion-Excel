@@ -1,0 +1,18 @@
+PARCHE OCR V14.10 SOBRE V14.9
+
+1. Cierra completamente el dashboard y cualquier proceso Python del proyecto.
+2. Descomprime el contenido de este parche sobre la raíz de tu V14.9.
+3. Acepta reemplazar los archivos existentes.
+4. NO borres .aprendizaje, .cache_ocr, checkpoints ni tu Excel.
+5. Inicia el dashboard normalmente.
+
+Incluye:
+- identidad visual OCR basada en el logo original y su variante nocturna;
+- favicon y cabecera adaptativa claro/oscuro;
+- checkpoints de progreso agrupados para reducir I/O durante OCR;
+- JSON grande compacto con escritura atómica;
+- cola Excel con actualización más rápida y agrupación de correcciones consecutivas;
+- caché SHA-256 de imágenes para evitar releer el mismo archivo en cada corrección;
+- índice de rutas para acelerar vistas previas en lotes grandes.
+
+La lógica empresarial, aprendizaje, reanudación, Excel, 1ST/2ST y editor se conservan.

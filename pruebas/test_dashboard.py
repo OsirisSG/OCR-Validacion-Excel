@@ -9,6 +9,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from fastapi.testclient import TestClient
+import pytest
 
 import dashboard.backend.app as backend
 from dashboard.backend.app import (_aplicar_correcciones_publicas,
@@ -21,6 +22,69 @@ from aprendizaje import dimensiones_rotadas
 cliente = TestClient(app)
 
 
+@pytest.fixture
+def lote_dashboard_sintetico(monkeypatch, tmp_path):
+    """Seis carpetas y ocho externas autocontenidas, independientes del ZIP."""
+    import cv2
+    import numpy as np
+    import pruebas_externas
+
+    raiz = tmp_path / "datos_prueba" / "Lote_Pruebas"
+    banco = tmp_path / "externas"
+    banco.mkdir()
+    config = deepcopy(backend.CONFIG)
+    config["aprendizaje"] = {"activar": True, "directorio": str(tmp_path / ".aprendizaje")}
+    config["dashboard"] = {"raiz_datos_permitida": str(raiz)}
+    config["colores"] = {"verde": "#22c55e", "amarillo": "#f59e0b", "rojo": "#ef4444", "gris": "#9ca3af"}
+    filas = []
+    nombres = ["01_A1_variante2", "02_A1_variante3", "03_B7_variante1",
+               "04_B7_variante2", "05_C2_variante1", "06_D4_variante1"]
+    for i, nombre in enumerate(nombres):
+        carpeta = raiz / nombre
+        carpeta.mkdir(parents=True)
+        ruta = carpeta / "etiqueta.png"
+        assert cv2.imwrite(str(ruta), np.full((80, 160, 3), i * 20, np.uint8))
+        tokens = [{"texto": f"ETQ-{i}", "bbox": [10, 10, 60, 20], "confianza": .96}]
+        ocr = {"tokens": tokens, "lineas_texto": deepcopy(tokens), "texto_completo": f"ETQ-{i}",
+               "dimensiones": [160, 80]}
+        etiqueta = {"ruta": str(ruta), "resultado_ocr": deepcopy(ocr)}
+        filas.append({"nombre": nombre, "ruta": str(carpeta), "perfil": "legacy",
+            "identificador": nombre, "nomenclatura": nombre.split("_")[1],
+            "comparacion": {"resultado": "coincidencia_total" if i % 2 == 0 else "discrepancia"},
+            "confianza_ocr_pct": 96 if i % 2 == 0 else 55, "etiqueta": etiqueta,
+            "imagenes": [{"id": f"imagen-{i}", "nombre": ruta.name, "ruta": str(ruta),
+                          "rol": "etiqueta", "resultado_ocr": deepcopy(ocr)}]})
+    documento = {"raiz": str(raiz), "resultados": filas}
+    ruta_validacion = tmp_path / "validacion.json"
+    ruta_validacion.write_text(json.dumps(documento), encoding="utf-8")
+    externas = []
+    for i in range(8):
+        nombre = f"externa-{i}.png"
+        ruta = banco / nombre
+        assert cv2.imwrite(str(ruta), np.full((80, 160, 3), 180 + i, np.uint8))
+        token = {"texto": f"EXT-{i}", "bbox": [10, 10, 60, 20], "confianza": .9}
+        linea = {"texto": f"CODIGO EXT-{i}", "bbox": [5, 10, 140, 20], "confianza": .9}
+        externas.append({"id": f"externa-{i:08d}", "imagen": nombre, "ruta": str(ruta),
+            "tipo": "codigo", "esperado": f"EXT-{i}", "coincidencia_exacta": i % 2 == 0,
+            "tokens": [token], "lineas_texto": [linea], "dimensiones": [160, 80]})
+    banco_datos = {"casos": 8, "exactitud_ocr_bruta": .5, "exactitud": .5, "resultados": externas}
+    monkeypatch.setattr(backend, "CONFIG", config)
+    monkeypatch.setattr(backend, "RUTA_VALIDACION", ruta_validacion)
+    monkeypatch.setattr(backend, "RUTA_ESTRUCTURA", tmp_path / "estructura_ausente.json")
+    monkeypatch.setattr(backend, "_cache", {"mtime": None, "datos": None})
+    monkeypatch.setattr(backend, "_cache_rutas_registradas", {"firma": None, "rutas": set()})
+    monkeypatch.setattr(backend, "_pipeline_estado", {"estado": "inactivo", "resultados_parciales": []})
+    monkeypatch.setattr(backend, "_regenerar_excel", lambda _resultado: None)
+    monkeypatch.setattr(backend, "_programar_entrenamiento_visual_auto", lambda *_a, **_kw: None)
+    monkeypatch.setattr(pruebas_externas, "cargar", lambda _config: deepcopy(banco_datos))
+    monkeypatch.setattr(pruebas_externas, "rutas", lambda _config: (banco, tmp_path / "externas.json"))
+    monkeypatch.setattr(pruebas_externas, "CASOS", {
+        fila["imagen"]: {"tipo": "codigo", "esperado": fila["esperado"]}
+        for fila in externas
+    })
+    return documento
+
+
 def test_estado_config_y_frontend():
     estado = cliente.get("/api/estado")
     assert estado.status_code == 200
@@ -28,13 +92,14 @@ def test_estado_config_y_frontend():
 
     config = cliente.get("/api/config")
     assert config.status_code == 200
+    # V14+: el gris marca "sin dato" en el listado y en la matriz.
     assert config.json()["colores"] == {
-        "verde": "#22c55e", "amarillo": "#f59e0b", "rojo": "#ef4444"
+        "verde": "#22c55e", "amarillo": "#f59e0b", "rojo": "#ef4444", "gris": "#9ca3af"
     }
 
     portada = cliente.get("/")
     assert portada.status_code == 200
-    assert "Validación de pruebas" in portada.text
+    assert "OCR Versuchsmatrix" in portada.text
 
     capacidad = cliente.get("/api/pipeline/capacidad")
     assert capacidad.status_code == 200
@@ -75,7 +140,7 @@ def test_estado_config_y_frontend():
     assert "mini-visor-marco" in frontend and "onWheel=${alRueda}" in frontend
     assert "Abrir Excel parcial" in frontend
     assert "miniatura-imagen-lista" in frontend
-    assert "imagenesDetalle.map((imagen)" in frontend
+    assert "imagenesVisibles.map((imagen)" in frontend  # V14: lista filtrable
     assert "visor-imagen-${imagen.id}" in frontend
     assert 'id="ruta-plantilla"' not in frontend
     assert 'id="ruta-inventario"' not in frontend
@@ -109,12 +174,16 @@ def test_checkpoint_persistido_recupera_avance_y_separa_pausa_de_error(
             "solicitud": {"ruta": str(tmp_path)}, "error": None,
         })
         pausa = backend.pausar_pipeline()
-        assert pausa["estado"] == "pausado"
+        assert pausa["estado"] == "pausando"
         assert backend._pipeline_estado["reanudable"] is True
         guardado = json.loads(checkpoint.read_text(encoding="utf-8"))
         assert guardado["ultimo_id_nombre"] == "ID 15"
         assert guardado["resultados_parciales"][0]["id"] == "abc"
 
+        # El worker publica `pausado` sólo al llegar al siguiente punto seguro.
+        with backend._pipeline_lock:
+            backend._congelar_tiempo_pipeline_locked()
+            backend._pipeline_estado["estado"] = "pausado"
         reanudado = backend.reanudar_pipeline()
         assert reanudado["estado"] == "procesando"
         assert backend._pipeline_estado["error"] is None
@@ -323,7 +392,7 @@ def test_correccion_empresarial_se_refleja_y_deja_historial(monkeypatch, tmp_pat
     assert len(historial.json()["ejecuciones"]) == 1
 
 
-def test_resumen_cuadra_con_el_total():
+def test_resumen_cuadra_con_el_total(lote_dashboard_sintetico):
     datos = cliente.get("/api/resumen").json()
     assert datos["total_carpetas"] == sum(datos["semaforo"].values())
     assert round(sum(datos["pct"].values()), 1) == 100.0
@@ -332,7 +401,7 @@ def test_resumen_cuadra_con_el_total():
     assert raiz_normalizada.endswith("datos_prueba/Lote_Pruebas")
 
 
-def test_busqueda_filtro_y_paginacion():
+def test_busqueda_filtro_y_paginacion(lote_dashboard_sintetico):
     busqueda = cliente.get("/api/pruebas", params={"q": "B7"}).json()
     assert busqueda["total"] == 2
 
@@ -347,7 +416,7 @@ def test_busqueda_filtro_y_paginacion():
     assert all(len(fila["id"]) == 16 for fila in pagina["items"])
 
 
-def test_detalle_e_imagen_portable_y_restringida():
+def test_detalle_e_imagen_portable_y_restringida(lote_dashboard_sintetico):
     fila = cliente.get("/api/pruebas", params={"q": "01_A1_variante2"}).json()["items"][0]
     detalle = cliente.get(f"/api/pruebas/{fila['id']}")
     assert detalle.status_code == 200
@@ -378,7 +447,7 @@ def test_detalle_e_imagen_portable_y_restringida():
     assert fuera.status_code in {400, 409}
 
 
-def test_banco_externo_es_visible_y_restringido():
+def test_banco_externo_es_visible_y_restringido(lote_dashboard_sintetico):
     respuesta = cliente.get("/api/externas")
     assert respuesta.status_code == 200
     datos = respuesta.json()
@@ -617,7 +686,7 @@ def test_recupera_orientacion_automatica_de_resultado_anterior():
     }) == 180
 
 
-def test_listado_unificado_tiene_cuatro_estados_y_enlace_de_detalle_externo():
+def test_listado_unificado_tiene_cuatro_estados_y_enlace_de_detalle_externo(lote_dashboard_sintetico):
     listado = cliente.get("/api/pruebas", params={"incluir_ocultos": True}).json()
     externa = next(item for item in listado["items"] if item["origen"] == "externa")
     assert externa["enlace"] == f"#/externas/{externa['id']}"

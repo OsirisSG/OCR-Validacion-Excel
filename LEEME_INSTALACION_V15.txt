@@ -1,0 +1,10 @@
+OCR V15 — instalación sobre V14.15.1
+
+1. Cierra por completo el dashboard/servidor OCR.
+2. Haz una copia de seguridad de .aprendizaje y de tus resultados si lo deseas.
+3. Descomprime este parche sobre la raíz de V14.15.1 y acepta reemplazar archivos.
+4. NO borres .aprendizaje, .cache_ocr, checkpoints, resultados ni Excel.
+5. Inicia el dashboard y en el navegador usa Ctrl+F5.
+
+V15 añade análisis local de hasta 4 videos por caso en carpetas VIDEO/VIDEOS,
+consenso 3 de 4 y revisión manual cuadro a cuadro. Consulta LEEME_V15_VIDEO_APERTURA.md.

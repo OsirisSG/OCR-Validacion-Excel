@@ -3,10 +3,11 @@ from copy import deepcopy
 
 
 def aplicar_correcciones(ocr, correcciones):
+    ocr = ocr or {}
     salida = deepcopy(ocr)
     # El proveedor entrega el historial cronológico. Acepta también registros
     # antiguos que guardaron como origen la corrección visible anterior.
-    historial = list(correcciones)
+    historial = list(correcciones or [])
 
     def resolver(original, visible, bbox):
         conocidos = {str(original).strip()}
@@ -19,9 +20,16 @@ def aplicar_correcciones(ocr, correcciones):
             ultimo = i
         return texto, ultimo
 
+    # En resultados parciales/antiguos estas colecciones pueden existir con
+    # valor None. Semánticamente significan "sin unidades todavía", no un
+    # iterable inválido. Normalizamos únicamente los campos OCR conocidos.
+    for clave in ('tokens', 'lineas_texto', 'codigos_detectados', 'recortes', 'qrs'):
+        if salida.get(clave) is None:
+            salida[clave] = []
+
     ultimo_espacial = -1
     for clave in ('tokens', 'lineas_texto'):
-        for unidad in salida.get(clave, []):
+        for unidad in (salida.get(clave) or []):
             original = str(unidad.get('texto_original') or unidad.get('texto') or '')
             texto, indice = resolver(original, unidad.get('texto', ''), unidad.get('bbox'))
             if indice >= 0:

@@ -31,7 +31,8 @@ PATRON_CASO = re.compile(
 )
 PATRON_TOR = re.compile(r"^TOR\s+(.+)$", re.IGNORECASE)
 EXTENSIONES_IMAGEN = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp"}
-VERSION_PARSER = "empresarial-4-regiones-independientes"
+EXTENSIONES_VIDEO = {".avi", ".mp4", ".mov", ".mkv", ".wmv", ".m4v"}
+VERSION_PARSER = "empresarial-6-guia-motivo-prototipos"
 
 CLAVES_PLANTILLA = (
     "week", "test_reason", "test_number", "test_date", "test_place",
@@ -78,6 +79,14 @@ REGLAS_CODIGO_VISIBLES = (
     "Un serial numérico necesita por lo menos cinco dígitos.",
     "Las oraciones, números cortos, unidades sueltas y símbolos aislados no llenan campos.",
     "Un valor sólo se consolida si coincide con una regla de campo, la ruta, un QR válido o evidencia corroborada.",
+    "El componente visible o declarado distingue bolsa y tablero; un número compacto sólo llena tablero con ese contexto.",
+    "EDAG Testlab o un número de prueba que empieza por VW identifica el laboratorio; VW AG en una etiqueta no lo identifica.",
+    "La semana WW del número EDAG WWYYNN se contrasta con la fecha de prueba; no se aplica a otros laboratorios.",
+    "Las fechas numéricas ambiguas requieren un formato explícito; los originales de etiquetas distintas se conservan.",
+    "El nivel de ingeniería requiere componente; delay requiere una etiqueta explícita y no se deduce del número de parte.",
+    "Proyecto/motivo explícitos pueden aportar Motivo de prueba; no copiar el nombre interno de carpeta sin evidencia.",
+    "La apertura láser requiere confirmación propia; no se deduce del tiempo de ruptura ni del PN del tablero.",
+    "Un P/N ALV de prototipo señalado como serie se conserva como candidato: necesita corroboración o confirmación humana.",
 )
 
 
@@ -301,6 +310,12 @@ def recorrer_fotos_caso(ruta_caso: str | Path) -> list[dict]:
     return fotos
 
 
+def recorrer_videos_caso(ruta_caso: str | Path) -> list[dict]:
+    """Descubre videos de alta velocidad en carpetas VIDEO/VIDEOS del caso."""
+    from video_airbag import descubrir_videos_caso
+    return descubrir_videos_caso(ruta_caso)
+
+
 def _contar_omitidas(caso: Path) -> int:
     total = 0
     for nombre in ("DIAGRAMM", "TEMPERATURE"):
@@ -344,6 +359,7 @@ def descubrir_casos(raiz: str | Path, tipo_st_manual: str | None = None,
         }
         valida = all(validaciones.values())
         fotos = recorrer_fotos_caso(ruta) if valida else []
+        videos = recorrer_videos_caso(ruta) if valida else []
         tor = sorted({f["tor"] for f in fotos if f.get("tor")})
         proyecto = resolver_proyecto_id(raiz, proyecto_configurado)
         caso = {
@@ -354,13 +370,14 @@ def descubrir_casos(raiz: str | Path, tipo_st_manual: str | None = None,
             "estructura_valida": valida, "validaciones": validaciones,
             "estado_deteccion": "estructura_valida" if valida else "estructura_incompleta",
             "estado": "detectada", "modo_procesamiento": "empresarial" if valida else "legacy",
-            "fotos": fotos, "total_imagenes": len(fotos),
+            "fotos": fotos, "videos": videos, "total_imagenes": len(fotos),
+            "total_videos": len(videos),
             "imagenes_nach": sum(f["fase"] == "NACH" for f in fotos),
             "imagenes_vor": sum(f["fase"] == "VOR" for f in fotos),
             "carpetas_tor": tor, "imagenes_omitidas_fuera_photos": _contar_omitidas(ruta),
             "existe_diagramm": (ruta / "DIAGRAMM").is_dir(),
             "existe_temperature": (ruta / "TEMPERATURE").is_dir(),
-            "existe_videos": (ruta / "VIDEOS").is_dir(),
+            "existe_videos": bool(videos),
             "progreso": {"total_imagenes": len(fotos), "revisadas": 0, "con_texto": 0,
                          "sin_texto": 0, "porcentaje": 0.0},
             "ultima_ejecucion": None,
@@ -414,22 +431,48 @@ def normalizar_temperatura(texto: str, contexto: str | None = None) -> str | Non
 
 
 def normalizar_serial(texto: str | None) -> str | None:
-    """Conserva letras, números, espacios, asteriscos y ceros iniciales."""
+    """Conserva letras, números, espacios, guiones, asteriscos y ceros iniciales."""
     if texto is None:
         return None
     limpio = str(texto).strip().upper()
     if not limpio:
         return None
-    if not re.fullmatch(r"[A-Z0-9* ]+", limpio):
+    if not re.fullmatch(r"[A-Z0-9* /-]+", limpio):
         return None
     return re.sub(r"\s+", " ", limpio)
 
 
-def interpretar_fecha_impresa(texto: str | None) -> dict:
+def interpretar_fecha_impresa(texto: str | None, formato: str | None = None) -> dict:
     """Interpreta sólo formatos inequívocos; conserva ambiguos sin adivinar proveedor."""
     original = str(texto or "").strip()
     if not original:
         return {"original": original, "interpretacion": None, "estado": "vacia"}
+    # Un mes escrito elimina la ambigüedad numérica (overlay: 04 JUN 25).
+    meses = {"JAN": 1, "ENE": 1, "FEB": 2, "MAR": 3, "APR": 4, "ABR": 4,
+             "MAY": 5, "MAI": 5, "JUN": 6, "JUL": 7, "AUG": 8, "AGO": 8,
+             "SEP": 9, "SEPT": 9, "OCT": 10, "OKT": 10, "NOV": 11,
+             "DEC": 12, "DIC": 12, "DEZ": 12}
+    m = re.fullmatch(r"(\d{1,2})\s+([A-Z]{3,4})\s+(\d{2}|20\d{2})", original.upper())
+    if m and m.group(2) in meses:
+        d, mes, y = m.groups()
+        try:
+            fecha = datetime(2000 + int(y) if len(y) == 2 else int(y), meses[mes], int(d))
+            return {"original": original, "interpretacion": fecha.date().isoformat(),
+                    "estado": "interpretada", "regla": "mes_escrito"}
+        except ValueError:
+            return {"original": original, "interpretacion": None, "estado": "invalida"}
+    # DMY sólo viene de una declaración de imagen/perfil, nunca del proveedor.
+    formato_normalizado = re.sub(r"[^A-Z]", "", str(formato or "").upper())
+    if formato_normalizado in {"DMY", "DDMMYY", "DDMMYYYY"}:
+        m = re.fullmatch(r"(\d{1,2})[./-](\d{1,2})[./-](\d{2}|20\d{2})", original)
+        if m:
+            d, mo, y = m.groups()
+            try:
+                fecha = datetime(2000 + int(y) if len(y) == 2 else int(y), int(mo), int(d))
+                return {"original": original, "interpretacion": fecha.date().isoformat(),
+                        "estado": "interpretada", "regla": "dmy_explicito"}
+            except ValueError:
+                return {"original": original, "interpretacion": None, "estado": "invalida"}
     # Año de cuatro dígitos al inicio: YYYY-MM-DD / YYYY.MM.DD / YYYY/MM/DD.
     m = re.fullmatch(r"(20\d{2})[./-](\d{1,2})[./-](\d{1,2})", original)
     if m:
@@ -464,26 +507,61 @@ def interpretar_fecha_impresa(texto: str | None) -> dict:
 
 def _componente_contextual(texto: str) -> str:
     mayus = str(texto or "").upper()
-    if re.search(r"DASH|INSTRUMENT|I-?TAFEL|TABLERO", mayus):
+    tablero = bool(re.search(r"DASH|INSTRUMENT|I-?TAFEL|TABLERO", mayus))
+    bolsa = bool(re.search(r"\b(?:AIRBAG|AIR\s*BAG|PAB|MODULE|MODUL)\b", mayus))
+    if tablero and not bolsa:
         return "tablero"
-    if re.search(r"AIRBAG|AIR\s*BAG|PAB|MODULE|MODUL", mayus):
+    if bolsa and not tablero:
         return "bolsa_aire"
     return "por_identificar"
 
 def extraer_candidatos_texto(texto: str, imagen: dict, contexto: dict) -> list[dict]:
-    """Parser conservador: produce candidatos, nunca completa campos sin evidencia."""
+    """Parser conservador que conserva originales y procedencia.
+
+    Opciones explícitas: ``componente`` (bolsa_aire/tablero), ``laboratorio``
+    (EDAG/VW) y ``formato_fecha`` (DMY) en imagen o contexto. Un perfil puede
+    declararlas en ``contexto.perfil_extraccion``; la imagen tiene prioridad.
+    Las menciones locales del componente distinguen etiquetas en una misma foto.
+    """
     texto = str(texto or "")
     mayus = texto.upper().replace("−", "-")
     candidatos: list[dict] = []
+    perfil = contexto.get("perfil_extraccion") or {}
+
+    def opcion(clave):
+        return imagen.get(clave) or contexto.get(clave) or perfil.get(clave)
+
+    componente_declarado = opcion("componente")
+    if componente_declarado not in {"bolsa_aire", "tablero"}:
+        componente_declarado = _componente_contextual(mayus)
+
+    def componente_en(posicion):
+        # La última cabecera cercana permite una etiqueta AIRBAG y otra TABLERO
+        # en el mismo OCR, sin asignar todo al primer componente encontrado.
+        inicio = max(mayus.rfind("\n\n", 0, posicion), posicion - 240, 0)
+        anteriores = list(re.finditer(
+            r"\b(?:DASHBOARD|DASH|INSTRUMENT\w*|I-?TAFEL|TABLERO|AIRBAG|AIR\s*BAG|PAB|MODULE|MODUL)\b",
+            mayus[inicio:posicion]))
+        return (_componente_contextual(anteriores[-1].group()) if anteriores
+                else componente_declarado)
+
+    formato_fecha = opcion("formato_fecha")
+    if not formato_fecha:
+        fm = re.search(r"\b(?:DMY|DD[./-]MM[./-](?:YYYY|YY))\b", mayus)
+        formato_fecha = fm.group() if fm else None
+    laboratorio = str(opcion("laboratorio") or "").strip().upper()
+    if re.search(r"\bEDAG\s*(?:TEST\s*LAB|TESTLAB)\b", mayus):
+        laboratorio = "EDAG"
 
     def agregar(clave: str, original: str, normalizado: str, confianza: float,
                 regla: str, valido: bool = True,
-                requiere_confirmacion_manual: bool = False) -> None:
+                requiere_confirmacion_manual: bool = False,
+                componente: str | None = None, **metadatos) -> None:
         candidatos.append({
             "proyecto": contexto.get("project_id") or contexto.get("proyecto"),
             "etapa": contexto.get("tipo_st") or contexto.get("stage"),
             "caso": contexto.get("case_key") or contexto.get("test_number"),
-            "componente": _componente_contextual(texto),
+            "componente": componente or componente_declarado,
             "clave": clave, "valor_original": original.strip(),
             "valor_normalizado": normalizado, "fuente": imagen.get("fuente", "ocr"),
             "imagen": imagen.get("ruta_relativa") or imagen.get("ruta"),
@@ -497,9 +575,53 @@ def extraer_candidatos_texto(texto: str, imagen: dict, contexto: dict) -> list[d
             "confirmacion_manual": imagen.get("fuente") == "manual",
             "requiere_confirmacion_manual": requiere_confirmacion_manual,
             "version_procesamiento": contexto.get("version_procesamiento") or "v8",
+            **metadatos,
         })
 
     confianza = float(imagen.get("confianza_ocr") or 0.0)
+    for m in re.finditer(
+            r"(?im)^\s*(?:PROYECTO|PROJECT|PROJEKT|MOTIVO(?:\s+DE\s+PRUEBA)?|TEST\s+REASON|PRÜFGRUND)"
+            r"\s*[:=]\s*([^\r\n]{1,100})", texto):
+        original = m.group(1).strip()
+        if original:
+            agregar("test_reason", original, original, confianza, "motivo_proyecto_explicito",
+                    componente="por_identificar")
+    prueba_vw_detectada = False
+    for m in re.finditer(r"\bVW[- /]?\d{3,12}(?:[-/][A-Z0-9]+)*\b", mayus):
+        antes = mayus[max(0, m.start()-28):m.start()]
+        if re.search(r"(?:SERIAL|S/?N|SERIE|PART|P/?N)\s*[:#-]?\s*$", antes):
+            continue
+        if (componente_en(m.start()) != "por_identificar" and
+                not re.search(r"(?:TEST|PRUEBA|VERSUCH)\s*(?:NO|NR|NUMBER|NUMERO)?\s*[:#.-]?\s*$", antes)):
+            continue
+        numero = re.sub(r"\s+", "", m.group())
+        prueba_vw_detectada = True
+        agregar("test_number", m.group(), numero, confianza, "numero_prueba_vw")
+        agregar("test_place", m.group(), "VW", confianza, "laboratorio_numero_vw")
+    if laboratorio == "VW" and not prueba_vw_detectada:
+        agregar("test_place", laboratorio, laboratorio, confianza, "laboratorio_vw_explicito")
+    if laboratorio == "EDAG":
+        agregar("test_place", "EDAG Testlab" if "EDAG" in mayus else laboratorio,
+                "EDAG", confianza, "laboratorio_edag_explicito")
+        # Sólo WWYYNN con semana ISO válida y secuencia no nula; no cualquier serial.
+        for m in re.finditer(r"(?<![A-Z0-9])([0-5]\d)(\d{2})(\d{2})(?![A-Z0-9])", mayus):
+            semana, anio, secuencia = map(int, m.groups())
+            try:
+                datetime.fromisocalendar(2000 + anio, semana, 1)
+            except ValueError:
+                continue
+            if not secuencia:
+                continue
+            antes = mayus[max(0, m.start()-28):m.start()]
+            if re.search(r"(?:SERIAL|S/?N|SERIE|PART|P/?N)\s*[:#-]?\s*$", antes):
+                continue
+            if (componente_en(m.start()) != "por_identificar" and
+                    not re.search(r"(?:TEST|PRUEBA|VERSUCH)\s*(?:NO|NR|NUMBER|NUMERO)?\s*[:#.-]?\s*$", antes)):
+                continue
+            numero = m.group()
+            agregar("test_number", numero, numero, confianza, "numero_prueba_edag_wwyynn")
+            agregar("week", numero, str(semana), confianza, "semana_numero_edag",
+                    anio_prueba=2000 + anio, secuencia_prueba=secuencia)
     for original in re.findall(r"\b(?:RDW|RWD|ROW|NAR|N4R)\b", mayus):
         normalizado = {"RWD": "RDW", "ROW": "RDW", "N4R": "NAR"}.get(original, original)
         agregar("module_version", original, normalizado, confianza, "alias_module_version")
@@ -512,9 +634,46 @@ def extraer_candidatos_texto(texto: str, imagen: dict, contexto: dict) -> list[d
             r"\b[A-Z0-9]{2,4}[ .\-]+\d{3}[ .\-]+\d{3}[ .\-]+[A-Z0-9]{1,3}\b", mayus):
         normalizado = normalizar_numero_parte(patron.group())
         if normalizado:
-            clave = ("dashboard_part_number" if re.search(r"DASH|INSTRUMENT|I-?TAFEL", mayus)
+            componente = componente_en(patron.start())
+            clave = ("dashboard_part_number" if componente == "tablero"
                      else "module_part_number")
-            agregar(clave, patron.group(), normalizado, confianza, "numero_parte")
+            agregar(clave, patron.group(), normalizado, confianza, "numero_parte",
+                    componente=componente)
+    for m in re.finditer(r"\b([A-Z0-9]{3})(\d{3})(\d{3})([A-Z]{1,3})?\b", mayus):
+        if componente_en(m.start()) == "tablero" and re.search(r"[A-Z]", m.group(1)):
+            normalizado = ".".join(valor for valor in m.groups() if valor)
+            agregar("dashboard_part_number", m.group(), normalizado, confianza,
+                    "numero_parte_compacto_tablero", componente="tablero")
+    # La guía identifica Autoliv en el módulo, no como lugar de prueba.
+    for m in re.finditer(r"\bAUTOLIV\b", mayus):
+        if componente_en(m.start()) == "bolsa_aire":
+            agregar("inflator_supplier", m.group(), "Autoliv", confianza,
+                    "proveedor_modulo_etiquetado", componente="bolsa_aire")
+    for m in re.finditer(r"(?<![A-Z0-9])\d{2}[SK](?![A-Z0-9])", mayus):
+        componente = componente_en(m.start())
+        if componente in {"bolsa_aire", "tablero"}:
+            clave = "dashboard_engineering_level" if componente == "tablero" else "engineering_level"
+            agregar(clave, m.group(), m.group(), confianza, "ingenieria_componente_visible",
+                    componente=componente)
+    for m in re.finditer(
+            r"\b(?:ENGINEERING\s+LEVEL|NIVEL\s+(?:DE\s+)?INGENIER[IÍ]A|ENTWICKLUNGSSTAND)"
+            r"\s*[:=]\s*([A-Z0-9][A-Z0-9._/-]{0,30})", mayus):
+        componente = componente_en(m.start())
+        if componente in {"bolsa_aire", "tablero"} and not re.fullmatch(r"\d{2}[SK]", m.group(1)):
+            clave = "dashboard_engineering_level" if componente == "tablero" else "engineering_level"
+            agregar(clave, m.group(1), m.group(1), confianza, "ingenieria_prototipo_no_catalogada",
+                    requiere_confirmacion_manual=True, componente=componente,
+                    observacion="Nomenclatura de ingeniería nueva: confirma antes de consolidar.")
+    for m in re.finditer(
+            r"\b(?:LASER\s+OPENING|APERTURA\s+L[AÁ]SER|LASER[ÖO]FFNUNG)"
+            r"\s*[:=]\s*([^\r\n]{1,40})", mayus):
+        if componente_en(m.start()) == "tablero":
+            agregar("laser_opening", m.group(1), m.group(1).strip(), confianza,
+                    "apertura_laser_tablero_explicita", requiere_confirmacion_manual=True,
+                    componente="tablero", observacion="Confirmar apertura láser; no equivale al tiempo de ruptura.")
+    for m in re.finditer(r"\b(?:DELAY|VERZÖGERUNG|RETARDO)\s*[:=]?\s*(\d+(?:[.,]\d+)?)\s*MS\b", mayus):
+        agregar("delay_ms", m.group(), m.group(1).replace(",", "."), confianza,
+                "delay_etiquetado")
     for clave, etiquetas in (
         ("opening_time_ms", r"OPENING|ÖFFNUNGSZEIT"),
         ("full_inflation_time_ms", r"FULL\s+INFLATION|AUFBLASZEIT"),
@@ -528,22 +687,34 @@ def extraer_candidatos_texto(texto: str, imagen: dict, contexto: dict) -> list[d
                     "tiempo_etiquetado",
                     requiere_confirmacion_manual=(clave == "opening_time_ms"))
     # Seriales sólo cuando existe una etiqueta contextual; se preservan asteriscos y ceros.
-    componente = _componente_contextual(mayus)
-    for m in re.finditer(r"(?:SERIAL|S/?N|SN|SERIENNUMMER|SERIE)\s*[:#-]?\s*([A-Z0-9*][A-Z0-9* ]{2,40})", mayus):
+    for m in re.finditer(r"(?:SERIAL|S/?N|SN|SERIENNUMMER|SERIE)\s*[:#-]?\s*([A-Z0-9*][A-Z0-9* /-]{2,40})", mayus):
+        componente = componente_en(m.start())
         original = m.group(1).strip()
         serial = normalizar_serial(original)
         if serial:
             clave = ("dashboard_serial_number" if componente == "tablero" else
                      "module_serial_number" if componente == "bolsa_aire" else "_serial_por_identificar")
-            agregar(clave, original, serial, confianza, "serial_etiquetado", valido=(clave != "_serial_por_identificar"))
+            agregar(clave, original, serial, confianza, "serial_etiquetado",
+                    valido=(clave != "_serial_por_identificar"), componente=componente)
+
+    # La guía apunta P/N ALV a Serie en una etiqueta de prototipo. No asumir que
+    # todos los números de parte del proveedor sean seriales: propone con aviso.
+    for m in re.finditer(r"\bP/?N\s+ALV\s*:\s*([A-Z0-9][A-Z0-9/-]{2,40})", mayus):
+        if componente_en(m.start()) == "bolsa_aire":
+            agregar("module_serial_number", m.group(1), m.group(1), confianza,
+                    "serie_prototipo_guia_pn_alv", requiere_confirmacion_manual=True,
+                    componente="bolsa_aire",
+                    observacion="P/N ALV indicado como Serie en la guía: corroborar antes de usar como serial.")
 
     # Fechas impresas: conservar siempre el original; sólo consolidar una interpretación segura.
-    patron_fecha = r"(\d{1,4}[./-]\d{1,2}[./-]\d{1,4})"
+    patron_fecha = r"\b(?:\d{1,4}[./-]\d{1,2}[./-]\d{1,4}|\d{1,2}\s+[A-Z]{3,4}\s+(?:20\d{2}|\d{2}))\b"
     for fm in re.finditer(patron_fecha, mayus):
-        info = interpretar_fecha_impresa(fm.group(1))
+        info = interpretar_fecha_impresa(fm.group(), formato=formato_fecha)
+        componente = componente_en(fm.start())
         if info["estado"] == "interpretada":
             antes = mayus[max(0, fm.start()-32):fm.start()]
-            if re.search(r"TEST\s*DATE|DATUM\s*(?:TEST)?|FECHA\s*(?:DE\s*)?PRUEBA", antes):
+            if (re.search(r"TEST\s*DATE|DATUM\s*(?:TEST)?|FECHA\s*(?:DE\s*)?PRUEBA", antes)
+                    or (laboratorio == "EDAG" and componente == "por_identificar")):
                 clave = "test_date"
             elif componente == "tablero":
                 clave = "dashboard_date"
@@ -552,7 +723,8 @@ def extraer_candidatos_texto(texto: str, imagen: dict, contexto: dict) -> list[d
             else:
                 clave = "_fecha_por_identificar"
             agregar(clave, info["original"], info["interpretacion"], confianza,
-                    f"fecha_impresa:{info.get('regla','segura')}", valido=not clave.startswith("_"))
+                    f"fecha_impresa:{info.get('regla','segura')}", valido=not clave.startswith("_"),
+                    componente=componente)
         elif info["estado"] == "ambigua":
             agregar("_fecha_ambigua", info["original"], info["original"], confianza,
                     "fecha_ambigua_pendiente", valido=False)
@@ -624,11 +796,13 @@ def consolidar_caso(caso: dict, evidencias: Iterable[dict],
             fuentes = {i.get("fuente") for i in coincidencias}
             estado = ("confirmado_multiples_imagenes" if len(imagenes) > 1 else
                       "extraido_manual" if "manual" in fuentes else
+                      "extraido_video" if "video" in fuentes else
                       "extraido_qr" if "qr" in fuentes else "extraido_ocr")
             campos[clave] = {"valor": valor, "estado": estado,
                              "confianza": round(min(0.99, confianza_base + 0.03 * (len(imagenes) - 1)), 4),
                              "inferido": False, "candidatos": coincidencias, "fuentes": imagenes,
                              "fuente_preferida": ("manual" if "manual" in fuentes else
+                                                   "video" if "video" in fuentes else
                                                    "qr" if "qr" in fuentes else "ocr")}
         elif len(por_valor) > 1:
             conflictos.append(clave)
@@ -636,10 +810,15 @@ def consolidar_caso(caso: dict, evidencias: Iterable[dict],
                              "requiere_revision": True, "candidatos": items,
                              "fuentes": sorted({i.get("imagen") for i in items if i.get("imagen")})}
         else:
+            pendientes = [e for e in todos if e.get("clave") == clave
+                          and e.get("requiere_confirmacion_manual")
+                          and not e.get("confirmacion_manual")]
             campos[clave] = {"valor": None,
                              "estado": "faltante_requerido" if clave in requeridos else "faltante",
                              "requerido": clave in requeridos,
-                             "requiere_revision": clave in requeridos}
+                             "requiere_revision": clave in requeridos or bool(pendientes),
+                             "pendiente_confirmacion_manual": bool(pendientes),
+                             "candidatos_pendientes": pendientes}
 
     for regla in reglas_confirmadas:
         clave = regla.get("campo")
@@ -655,13 +834,27 @@ def consolidar_caso(caso: dict, evidencias: Iterable[dict],
                              "regla_id": regla.get("id"), "requiere_revision": True}
 
     fecha_prueba = campos.get("test_date", {}).get("valor")
-    if fecha_prueba and not campos.get("week", {}).get("valor"):
+    if fecha_prueba:
         try:
-            semana = datetime.strptime(str(fecha_prueba), "%Y-%m-%d").date().isocalendar().week
-            campos["week"] = {"valor": semana, "estado": "derivado",
-                              "fuente": "test_date", "confianza":
-                              campos["test_date"].get("confianza"), "inferido": False,
-                              "requiere_revision": False}
+            fecha_iso = datetime.strptime(str(fecha_prueba), "%Y-%m-%d").date().isocalendar()
+            campo_semana = campos.get("week", {})
+            candidatos_edag = [e for e in campo_semana.get("candidatos", [])
+                               if e.get("regla_aplicada") == "semana_numero_edag"]
+            contradiccion = any(str(e.get("valor_normalizado")) != str(fecha_iso.week)
+                                or e.get("anio_prueba") != fecha_iso.year for e in candidatos_edag)
+            if contradiccion:
+                if "week" not in conflictos:
+                    conflictos.append("week")
+                campos["week"] = {**campo_semana, "valor": None, "estado": "conflicto",
+                                  "requiere_revision": True,
+                                  "semana_fecha_prueba": fecha_iso.week,
+                                  "anio_fecha_prueba": fecha_iso.year,
+                                  "observacion": "La semana/año EDAG no coincide con la fecha de prueba."}
+            elif not campo_semana.get("valor") and campo_semana.get("estado") != "conflicto":
+                campos["week"] = {"valor": fecha_iso.week, "estado": "derivado",
+                                  "fuente": "test_date", "confianza":
+                                  campos["test_date"].get("confianza"), "inferido": False,
+                                  "requiere_revision": False}
         except ValueError:
             pass
 

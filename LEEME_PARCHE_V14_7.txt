@@ -1,0 +1,9 @@
+PARCHE OCR V14.7 SOBRE V14.6
+
+1. Cierra completamente el dashboard OCR.
+2. Descomprime este parche sobre la raíz del proyecto V14.6.
+3. Acepta reemplazar los archivos existentes.
+4. NO borres .aprendizaje, .cache_ocr, checkpoints ni la cola de Excel.
+5. Inicia de nuevo el dashboard.
+
+V14.7 añade control manual de tipo esperado, umbral de congruencia, copia automática opcional y relectura real de un ángulo exacto con varios tratamientos visuales.

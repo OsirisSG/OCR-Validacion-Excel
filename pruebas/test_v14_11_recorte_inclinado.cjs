@@ -1,0 +1,13 @@
+const fs=require('fs'), path=require('path'), assert=require('assert');
+const root=path.resolve(__dirname,'..');
+const src=fs.readFileSync(path.join(root,'dashboard/frontend/app.js'),'utf8');
+const back=fs.readFileSync(path.join(root,'dashboard/backend/app.py'),'utf8');
+const css=fs.readFileSync(path.join(root,'dashboard/frontend/estilos.css'),'utf8');
+assert(src.includes('Inclinación del recorte'), 'Falta control de inclinación del recorte');
+assert(src.includes('Mover recorte'), 'Falta modo para mover la caja manual');
+assert(src.includes('poligonoRectanguloRotado'), 'Falta cálculo geométrico del polígono');
+assert(src.includes('poligono=${Math.abs(anguloRecorte)'), 'La herramienta OCR no recibe el polígono inclinado');
+assert(back.includes('_recortar_region_revisada'), 'Backend no rectifica el recorte inclinado');
+assert(back.includes('poligono: list[list[float]] | None'), 'Falta contrato de polígono opcional');
+assert(css.includes('.control-recorte-inclinado'), 'Faltan estilos del control inclinado');
+console.log('OK: V14.11 permite mover, inclinar y rectificar recortes manuales.');

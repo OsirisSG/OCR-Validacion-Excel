@@ -57,10 +57,15 @@ const editor=tree=>all(tree).find(n=>typeof n.type==='function'&&n.type.name==='
  confirmar=false;btn(t,'Siguiente →').props.onClick();t=render();assert.equal(editor(t).props.item.id,'a');
  confirmar=true;consultaOcupada=true;btn(t,'Siguiente →').props.onClick();t=render();assert.equal(editor(t).props.item.id,'a');
  consultaOcupada=false;
+ // V14.5: verificar nunca descarta un borrador silenciosamente.
+ await editor(t).props.onVerifyImage(detail.imagenes[0]);t=render();assert.equal(editor(t).props.item.id,'a');
+ assert(all(t).some(n=>n.type==='div'&&String(n.props.class).includes('mensaje-error')&&String(n.children).includes('Hay cambios sin guardar')));
+ // Cerrar corrección descarta el borrador visible y limpia el estado de navegación.
+ btn(t,'Cerrar corrección').props.onClick();t=render();
  await editor(t).props.onVerifyImage(detail.imagenes[0]);t=render();assert.equal(editor(t).props.item.id,'c');
  await editor(t).props.onVerifyImage(detail.imagenes[2]);t=render();assert(!editor(t));
- assert(all(t).some(n=>n.children.includes('Todas las imágenes están verificadas. Puedes mostrarlas nuevamente.')));
- btn(t,'Mostrar todas las imágenes').props.onClick();t=render();assert.equal(editor(t).props.item.id,'a');
+ assert(all(t).some(n=>n.children.includes('No hay imágenes que coincidan con los filtros actuales. Puedes volver a mostrarlas desde los botones de filtro.')));
+ btn(t,'Mostrar imágenes verificadas').props.onClick();t=render();assert.equal(editor(t).props.item.id,'a');
  console.log('OK: filtro, límites, navegación, borradores, bloqueo durante guardado, avance tras verificar, última imagen e historial plegado.');
   // V5: una región de origen dudosa no bloquea la caja exacta.
   detail.imagenes[0].resultado_ocr.lineas_texto[0].marco_region='region-a';

@@ -1,0 +1,13 @@
+PARCHE ACUMULATIVO V14.3 DESDE V14.1
+
+1. Cierra por completo el dashboard OCR.
+2. Copia el contenido de este ZIP sobre la carpeta principal del proyecto.
+3. Acepta reemplazar los archivos existentes.
+4. NO borres ni reemplaces .aprendizaje.
+5. NO borres ni reemplaces .cache_ocr.
+6. NO borres el checkpoint/avance guardado.
+7. Arranca de nuevo el dashboard.
+8. La cola Excel pendiente se reintentará automáticamente.
+9. Usa Reanudar avance guardado para continuar todos los casos no terminados.
+
+Este parche no contiene ninguna base SQLite del entorno de pruebas.

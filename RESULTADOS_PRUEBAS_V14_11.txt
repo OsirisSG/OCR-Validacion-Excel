@@ -1,0 +1,26 @@
+OCR V14.11 — resultados de validación
+Fecha: 2026-09-28
+
+Suite Python completa:
+- 227 aprobadas
+- 8 fallos históricos/preexistentes por fixtures externos no incluidos:
+  validacion_resultados.json y banco externo del dashboard.
+- 0 regresiones nuevas atribuibles a V14.11.
+
+Pruebas específicas V14.11:
+- 2/2 aprobadas.
+- Rectificación de un rectángulo inclinado mediante cuatro esquinas.
+- Persistencia de polígono + creación de muestra visual entrenable rectificada.
+
+Pruebas frontend Node/CJS:
+- 15/15 aprobadas.
+- Incluye control de inclinación, movimiento de recorte y contrato frontend/backend.
+
+Validación sintáctica:
+- Python py_compile: OK.
+- Node --check dashboard/frontend/app.js: OK.
+
+Limitación:
+- Este entorno no dispone de la RTX A3000/CUDA del equipo de producción. La
+  rectificación OpenCV y contratos se validaron localmente; el rendimiento y
+  calidad OCR finales deben comprobarse con imágenes reales en el equipo CUDA.

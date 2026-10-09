@@ -1,3 +1,90 @@
+## V15 — Videos de alta velocidad y tiempo de apertura de airbag (2026-10-05)
+
+- Integra fotografías y videos en una misma ejecución mediante `Fotos + videos`, `Solo fotos` o `Solo videos`.
+- Descubre `.avi/.mp4/.mov/.mkv/.wmv/.m4v` dentro de carpetas `VIDEO` o `VIDEOS`.
+- Detecta automáticamente el primer cambio visual compatible con el despliegue del airbag y conserva cuadro, FPS, tiempo, confianza y evidencia.
+- Lee overlays superior/inferior para aprovechar timestamps visibles y puede calibrar temporalmente cámaras sincronizadas.
+- Consolida el tiempo de apertura por consenso, con soporte nominal de 3 de 4 videos.
+- Añade revisión manual de video en el dashboard: cuadro anterior/siguiente, cuadro exacto, tiempo en ms, confirmar apertura o marcar sin evento.
+- Conserva resultados de fotos en `Solo videos` y resultados de video en `Solo fotos`, evitando borrar evidencia previa.
+- 1000 fps se reporta correctamente como 1.0 ms/cuadro: las décimas no se presentan como exactitud física de 0.1 ms salvo que el overlay o la tasa nativa la sustenten.
+- El consenso confirmado alimenta `opening_time_ms` y usa la cola Excel existente.
+
+Ver `LEEME_V15_VIDEO_AIRBAG.md`.
+
+## V14.15.1 — Hotfix i18n del listado (2026-09-28)
+
+- Traduce el placeholder del buscador en ES/EN/DE.
+- Traduce las métricas dinámicas de progreso (`con texto`, `descartadas`, `campos`, `faltantes`, `conflictos`).
+- Traduce estados internos visibles como `estructura_valida` y `con_conflictos`.
+- Aplica el mismo tratamiento al detalle del caso.
+- No modifica backend ni aprendizaje.
+
+Ver `LEEME_V14_15_1_I18N_LISTADO.md`.
+
+## V14.15 — Editor de bloque unificado e i18n reforzado (2026-09-28)
+
+- Unifica `Ajustar / dividir bloque` y `Mover bloque` en una sola herramienta: **Editar bloque**.
+- El editor unificado conserva movimiento, redimensionado, geometría de cuatro esquinas, inclinación, relectura y división.
+- No cambia el contrato de persistencia ni aprendizaje de V14.14: solo se aprende la geometría/texto final confirmados.
+- Refuerza traducciones ES/EN/DE de botones y etiquetas dinámicas que podían quedarse en español, incluyendo Completar, Quitar, Verde/Amarillo/Rojo, visibles, Actualizado y estados del listado.
+- El enlace dinámico `Abrir ES/EN/DE` usa traducción explícita.
+- Actualiza la versión de caché del frontend a `20260928-v14-15`.
+- Validación: 19/19 pruebas JavaScript; 238 pruebas Python aprobadas y los mismos 8 fallos históricos por fixtures externos ausentes.
+
+Ver `LEEME_V14_15_EDITOR_BLOQUE_I18N.md`.
+
+## V14.14 — Supervisión simple y aprendizaje automático (2026-09-28)
+
+- Reduce la supervisión positiva visible a **Aceptar lectura** y **Aplicar corrección**.
+- Ambas acciones crean muestra visual entrenable; también texto nuevo, uniones y geometría confirmada entrenan automáticamente.
+- Desglosa el aviso de cambios sin guardar indicando qué herramienta/borrador está pendiente.
+- Sustituye el tooltip frágil por ayuda visible `ⓘ` desplegable.
+- Refuerza Unir bloques con selección múltiple por clic y resaltado de los bloques seleccionados.
+- Mantiene compatibilidad con `.aprendizaje` y contratos históricos.
+
+
+## V14.13 — Geometría flexible y aprendizaje de ediciones (2026-09-28)
+
+- Añade edición mediante cuadriláteros de cuatro esquinas a Seleccionar texto, Mover recorte, Unir bloques, Ajustar/dividir bloque y Mover bloque.
+- Conserva la geometría final en las ediciones de zona y la reaplica al OCR.
+- Las uniones, ajustes, divisiones y movimientos confirmados pueden aportar muestras visuales rectificadas al entrenamiento.
+- Solo aprende el estado final confirmado; no registra como ejemplos los movimientos provisionales.
+- Mantiene compatibilidad con ediciones históricas basadas únicamente en `bbox`.
+
+## V14.11 — Recortes inclinados para supervisión (2026-09-28)
+
+- El recorte manual de texto omitido puede moverse y girarse entre -45° y +45°.
+- La caja inclinada se rectifica antes de releerla; deja de ser una simple rotación visual.
+- Las muestras visuales entrenables guardan las cuatro esquinas y usan `warpPerspective`, reduciendo contaminación de líneas vecinas.
+- Las anotaciones manuales persisten su polígono mediante una migración SQLite aditiva y compatible.
+- Las lecturas por orientación y la relectura manual aceptan el polígono exacto.
+- Las selecciones rectangulares históricas siguen funcionando sin cambios.
+
+Ver `LEEME_V14_11_RECORTES_INCLINADOS.md`.
+
+## V14.10 — Identidad OCR y persistencia más rápida (2026-09-25)
+
+- Integra el logo OCR original y variantes clara/nocturna derivadas para cabecera y favicon.
+- Agrupa checkpoints de progreso durante 350 ms, manteniendo escritura inmediata en estados críticos.
+- Serializa los JSON grandes en formato compacto sin cambiar su contenido.
+- La cola Excel usa debounce deslizante: responde rápido a una corrección aislada y agrupa correcciones consecutivas.
+- Añade caché segura de SHA-256 para no releer la misma imagen en cada corrección.
+- Añade índice reutilizable de rutas para acelerar la carga de vistas previas en lotes grandes.
+
+Ver `LEEME_V14_10_IDENTIDAD_RENDIMIENTO.md`.
+
+# V10 · ajuste angular regional (2026-09-21)
+
+- Mantiene las cuatro variantes 0°/90°/180°/270° del editor.
+- Añade ajuste fino automático por región hasta ±45° para etiquetas sesgadas o diagonales.
+- Muestra el ángulo efectivo (por ejemplo `0° → 7.2°`) y usa esa lectura como borrador.
+- No confirma ni entrena automáticamente.
+- Reproyecta las cajas a sus coordenadas originales.
+- Búsqueda adaptativa: una pasada fina adicional cuando la orientación cardinal es sólida; refina las cuatro sólo cuando la lectura es débil o en el editor cacheado.
+
+Ver `LEEME_V10_AJUSTE_ANGULAR.md`.
+
 # Integración de versiones y correcciones — 2026-09-16
 
 Este paquete es la versión consolidada que conviene conservar. Se construyó comparando los tres ZIP recibidos y conservando la base completa más las correcciones posteriores de interfaz, persistencia y edición de zonas.
@@ -151,3 +238,98 @@ Se mantiene V6 como base de corrección OCR y se añade el reporte BMG solicitad
 ## V8 · OCR Versuchsmatrix (2026-09-20)
 
 V8 conserva el editor V6 y agrega identidad portable de proyecto/etapa/caso, procedencia ampliada, consolidación idempotente 1ST/2ST, interfaz ES/EN/DE, exportación Excel ES/EN/DE desde una misma instantánea, matriz dinámica sin límite fijo de 50 casos, trazabilidad y escritura Excel atómica. `opening_time_ms` queda listo para captura manual y semáforo, sin inventar captura automática.
+
+## V9 · Estabilidad de interfaz, cola y edición (2026-09-21)
+
+- Traducción ES/EN/DE ampliada y actualización de textos dinámicos.
+- Correcciones de contraste en tema oscuro.
+- Notificaciones persistentes de procesamiento/Excel en esquina.
+- Protección contra respuestas tardías que devuelvan el editor a una selección anterior.
+- Línea base persistida para evitar falsos avisos al verificar una imagen ya guardada.
+- Ajustar/dividir bloques OCR puede convivir con anotaciones manuales superpuestas sin borrarlas.
+- Guardar y entrenar quedan separados; texto omitido solo se propone a entrenamiento mediante opt-in.
+- Descarte múltiple de detecciones OCR.
+- Caché acotada de variantes por orientación, refrescos secundarios no bloqueantes y agrupación de exportaciones Excel.
+- No se aplica todavía un filtro destructivo de “solo etiquetas/plásticos”; ver `LEEME_V9_ESTABILIDAD_UI.md`.
+
+## V11 · estabilidad de editor, filtros y consolidación
+
+- Ajustar/Dividir conserva el texto y separa giro base de ángulo efectivo.
+- Selector explícito Tomar ajuste fino / No tomar ajuste.
+- Acción Texto no necesario.
+- Filtros independientes para verificadas e imágenes sin texto.
+- Notificaciones flotantes plegables.
+- Consolidación por fecha de corrección de cada campo y detección de empates conflictivos.
+- Excel: 36 encabezados ES/EN/DE, cantidades esperadas/encontradas/procesadas y casos fuera de la matriz visibles en gris.
+
+Ver `LEEME_V11_ESTABILIDAD_EDITOR_EXCEL.md`.
+
+## V13 — 2026-09-22
+
+- Conserva la sincronización de revisión de V12.
+- Perfil CUDA agresivo/adaptativo para RTX A3000 6 GB (`batch_gpu: 8`, techo 12).
+- OOM CUDA reduce lote y reintenta en GPU antes de considerar fallback CPU.
+- `ejecucion_id` persistente en checkpoint para reanudación idempotente.
+- Estado `reanudando` evita doble clic/doble hilo sobre el mismo avance.
+- Observaciones OCR se guardan incrementalmente por imagen en SQLite.
+- Firma idempotente evita duplicar aprendizaje al reanudar la misma ejecución.
+
+## V14.6 — ajuste fino adaptativo y filtrado semántico (2026-09-24)
+
+- Ajuste fino normal limitado a ±15°.
+- Extensión hasta ±30° sólo con evidencia geométrica fuerte; se elimina ±45° como ajuste fino.
+- Micro-búsqueda ±2° alrededor del ángulo geométrico en la orientación recomendada.
+- Clasificación de candidatas: código, fecha, valor/medición, texto y ruido probable.
+- Penalización explícita a alfanuméricos con mezcla irregular de mayúsculas/minúsculas y a símbolos impropios de códigos.
+- Consenso entre variantes como evidencia secundaria.
+- Filtros visuales sin eliminar las cuatro orientaciones originales.
+- Si ninguna candidata es suficientemente congruente, no se sobrescribe automáticamente Texto correcto.
+- Ver `LEEME_V14_6_AJUSTE_FILTRO_INTELIGENTE.md`.
+
+## V14.7 — control manual del OCR regional (2026-09-25)
+
+- Añade selector del tipo de dato esperado: automático, código, fecha, número/medición o texto.
+- Añade umbral de congruencia configurable y control de copia automática al borrador.
+- Añade relectura OCR real a un ángulo exacto elegido por el revisor.
+- El ajuste manual cubre ±45°; el automático conserva límites seguros de V14.6.
+- Permite forzar Original, CLAHE, binarización adaptativa o relieve, o comparar los cuatro tratamientos.
+- Muestra confianza OCR y congruencia por separado y explica las razones de la candidata seleccionada.
+- Evita presentar como código lecturas con símbolos fuertes o mezcla sospechosa de mayúsculas/minúsculas aunque llegue una candidata cacheada de una versión previa.
+- Mantiene aprendizaje, caché, checkpoints, cola de Excel y flujo de supervisión existentes.
+
+## V14.8 — aprendizaje reforzado de estrategias OCR (2026-09-25)
+
+- Aprende orientación base, ajuste angular, tratamiento visual y tipo de dato únicamente de decisiones humanas finalmente confirmadas.
+- Una misma imagen/caja no puede inflar el soporte mediante clics repetidos.
+- 2 imágenes coherentes generan sugerencia; 4 imágenes distintas con >=75 % de dominancia habilitan preferencia automática.
+- El dashboard muestra soporte/dominancia y permite probar la estrategia aprendida antes de confirmarla.
+- El procesamiento normal puede ensayar patrones consolidados en regiones similares, pero los descarta si degradan la congruencia o producen ruido.
+- Generalización contextual por proyecto/fase/campo cuando existe contexto; en OCR inicial se limita a grupo estable de ruta y zona relativa.
+- Caché de estrategias por instancia para evitar consultas SQLite repetidas por región.
+- Las estrategias se incluyen en la exportación del dataset de aprendizaje.
+- Ver `LEEME_V14_8_APRENDIZAJE_ESTRATEGIAS.md`.
+
+## V14.9 — Aprendizaje inmediato por imagen
+- Una estrategia OCR confirmada puede ensayarse desde la siguiente imagen similar si coincide el grupo de ruta y la geometría normalizada de la zona.
+- La estrategia inmediata nunca sustituye una lectura mejor: se compara contra el OCR normal y se rechaza si produce ruido o degrada congruencia.
+- El entrenamiento visual deja de depender del botón: al verificar una imagen con nueva muestra entrenable se programa automáticamente cuando se cumplen los mínimos.
+- Si el pipeline OCR está usando la GPU, el entrenamiento visual queda diferido y se retoma al finalizar.
+- Los ajustes automáticos usan una época por actualización y un candidato sólo se activa automáticamente si mejora validación y prueba.
+- «Entrenar lote visual» queda disponible como «Forzar entrenamiento ahora», únicamente como control opcional.
+
+## V14.12 — Uniones de bloques entrenables (2026-09-28)
+
+- `Confirmar reemplazo de bloques` puede crear evidencia visual de EasyOCR y queda activado por defecto.
+- Las uniones multilínea se separan por línea cuando el número de líneas coincide con los bloques originales; las reconstrucciones de una sola cadena conservan un recorte unido.
+- Las muestras nuevas disparan el aprendizaje visual automático sin esperar al botón manual.
+- Al verificar una imagen se recuperan de forma oportunista las uniones antiguas de esa imagen para incorporarlas al dataset visual sin duplicados.
+- Si falla la creación del recorte entrenable, la edición humana y la actualización Excel se conservan.
+- Ver `LEEME_V14_12_UNIONES_ENTRENABLES.md`.
+
+## V14.12.1 — Etiqueta compacta para uniones entrenables (2026-09-28)
+
+- Simplifica el checkbox a `Usar unión para entrenar OCR`.
+- Sustituye la explicación larga visible por un icono `ⓘ` con ayuda contextual.
+- La ayuda aclara: una sola línea entrena la zona unida; varias líneas intentan separarse por línea.
+- No modifica la lógica de aprendizaje, persistencia, Excel ni entrenamiento de V14.12.
+- Actualiza la versión de caché del frontend para que el cambio aparezca al reiniciar.

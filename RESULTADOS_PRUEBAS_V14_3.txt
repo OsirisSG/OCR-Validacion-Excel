@@ -1,0 +1,29 @@
+OCR V14.3 — Resultados de verificación
+Fecha: 2026-09-23
+
+PRUEBAS DIRIGIDAS
+- Recuperación de 3 actualizaciones Excel pendientes después de TypeError + reinicio: OK
+- Cola reintenta automáticamente al iniciar, sin nueva corrección: OK
+- Cola termina con 0 pendientes y error limpio: OK
+- Registro incremental de aprendizaje con tokens=None / lineas_texto=None: OK
+- Registro completo de aprendizaje con colecciones OCR None: OK
+- Pruebas V14.2 de Excel NoneType y reanudación completa: OK
+
+Suite dirigida combinada durante el hotfix: 29/29 OK.
+
+SUITE GLOBAL
+- 201 pruebas aprobadas.
+- 8 fallos preexistentes por fixtures externos no incluidos en el paquete:
+  validacion_resultados.json y banco externo esperado por pruebas del dashboard.
+- No se detectaron regresiones nuevas.
+
+CUDA
+- Este hotfix no cambia la arquitectura CUDA de V14/V14.1.
+- El entorno de construcción no dispone de CUDA real; las afirmaciones de
+  rendimiento GPU deben verificarse en la RTX A3000 del usuario.
+
+PERSISTENCIA
+- El ZIP completo conserva únicamente `.gitkeep` en `.cache_ocr` y `.aprendizaje`.
+- El parche no contiene bases SQLite ni checkpoints del entorno de pruebas.
+- Al aplicarlo sobre la instalación real no deben borrarse `.cache_ocr`,
+  `.aprendizaje` ni el checkpoint existente.

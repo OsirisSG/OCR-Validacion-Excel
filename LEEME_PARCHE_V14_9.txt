@@ -1,0 +1,8 @@
+PARCHE V14.9 SOBRE V14.8
+
+1. Cierra completamente el dashboard.
+2. Copia el contenido del parche sobre la raíz del proyecto V14.8 y acepta reemplazar.
+3. No borres .aprendizaje, .cache_ocr, checkpoints ni la cola Excel.
+4. Inicia normalmente el dashboard.
+
+V14.9 añade aprendizaje inmediato desde la primera imagen confirmada y entrenamiento visual automático en segundo plano.

@@ -1,0 +1,37 @@
+OCR V14.2 — Resultados de verificación
+Fecha: 2026-09-23
+
+OBJETIVO DEL HOTFIX
+- Corregir TypeError: 'NoneType' object is not iterable durante actualización Excel.
+- Evitar que Reanudar omita casos solamente detectados/inventariados.
+- Reparar checkpoints ya afectados por el casos_omitidos de V14.1.
+
+VERIFICACIONES
+1) Compilación de módulos Python modificados: OK
+2) Sintaxis dashboard/frontend/app.js con node --check: OK
+3) pruebas/test_v14_2_excel_reanudacion.py: 6/6 OK
+4) Suite crítica combinada:
+   - test_v14_2_excel_reanudacion.py
+   - test_v14_sop_recuperacion.py
+   - test_v13_reanudar_idempotente_unittest.py
+   - test_cola_excel_unittest.py
+   - test_edicion_zonas_unittest.py
+   Resultado: 38/38 OK
+
+SUITE GLOBAL
+- Se mantienen 8 fallos históricos dependientes de fixtures externos no incluidos
+  (validacion_resultados.json / banco externo del dashboard).
+- Una prueba de prefetch puede variar bajo presión de CPU del entorno compartido,
+  debido a que el SOP rechaza intencionalmente nueva preparación cuando aplica
+  backpressure. La misma prueba pasa en la suite crítica dirigida.
+
+CUDA
+- Este hotfix no requiere cambiar la estrategia CUDA.
+- El entorno de construcción no dispone de CUDA real; no se afirma una medición
+  de rendimiento GPU a partir de estas pruebas.
+
+PERSISTENCIA
+- El parche NO contiene ni debe sustituir .cache_ocr/cola_excel.sqlite3 del usuario.
+- El parche NO contiene ni debe sustituir .aprendizaje/aprendizaje.sqlite3 del usuario.
+- Las actualizaciones Excel pendientes existentes deben conservarse y reintentarse
+  al iniciar con V14.2.

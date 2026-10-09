@@ -1,5 +1,6 @@
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -65,6 +66,27 @@ class PruebasColaExcel(unittest.TestCase):
         for hilo in hilos:
             hilo.join()
         self.assertEqual(cola.estado()['pendientes'], 12)
+
+    def test_debounce_deslizante_agrupa_correcciones_rapidas(self):
+        llamadas = []
+        cola = ColaExcel(
+            self.ruta, lambda: llamadas.append(time.monotonic()) or 'maestro.xlsx',
+            demora=0.08, latencia_maxima=0.30)
+        cola.iniciar()
+        try:
+            cola.solicitar()
+            time.sleep(0.03)
+            cola.solicitar()
+            time.sleep(0.03)
+            cola.solicitar()
+            limite = time.monotonic() + 2.0
+            while time.monotonic() < limite and cola.estado()['pendientes']:
+                time.sleep(0.02)
+            self.assertEqual(cola.estado()['pendientes'], 0)
+            self.assertEqual(len(llamadas), 1)
+        finally:
+            cola.detener()
+
 
 
 if __name__ == '__main__':

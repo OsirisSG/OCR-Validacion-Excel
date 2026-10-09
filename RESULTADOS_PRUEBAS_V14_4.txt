@@ -1,0 +1,21 @@
+OCR V14.4 — Resultados de verificación
+Fecha: 2026-09-24
+
+PRUEBAS NUEVAS
+- Código completo coherente vence a fragmento de mayor confianza: OK
+- Alfanumérico con mezcla irregular de mayúsculas/minúsculas se penaliza: OK
+- Ajuste fino no sustituye código completo por fragmento de mayor confianza: OK
+- El frontend expone y restaura el giro automático por congruencia: OK
+- El botón Usar giro automático aparece también en Ajustar / dividir bloque y en la rotación general de imagen: OK
+- Variantes heredadas de V14.3 se fuerzan a recalcular si no contienen recomendación V14.4: OK
+
+REGRESIÓN
+- Suite global: 204 pruebas aprobadas.
+- 8 fallos preexistentes por fixtures externos no incluidos en el paquete:
+  validacion_resultados.json y banco externo esperado por pruebas del dashboard.
+- No se detectaron regresiones nuevas.
+- Todos los tests .cjs del frontend: OK.
+- py_compile ocr_engine.py y dashboard/backend/app.py: OK.
+
+NOTA
+La selección automática se hace con la congruencia de las orientaciones cardinales antes del ajuste fino. El ajuste fino puede mejorar la lectura elegida, pero no puede convertir un fragmento de alta confianza en ganador sobre un código completo coherente.

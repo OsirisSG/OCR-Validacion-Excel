@@ -1,0 +1,14 @@
+const fs=require('fs'), path=require('path'), assert=require('assert');
+const root=path.resolve(__dirname,'..');
+const src=fs.readFileSync(path.join(root,'dashboard/frontend/app.js'),'utf8');
+const cfg=fs.readFileSync(path.join(root,'config.yaml'),'utf8');
+assert(src.includes('function categoriaLectura'), 'Falta clasificador visual de lecturas');
+assert(src.includes('function candidatoPasaFiltro'), 'Faltan filtros de lectura');
+assert(src.includes('Solo útiles') && src.includes('Códigos') && src.includes('Fechas / valores'), 'Faltan filtros visibles');
+assert(src.includes('Mejor opción automática'), 'Falta resumen de mejor candidata');
+assert(src.includes('no alcanza congruencia suficiente') || src.includes('ninguna alcanza congruencia suficiente'), 'El ruido todavía puede sobrescribir Texto correcto automáticamente');
+assert(src.includes('hasta ±30°') && src.includes('±15°'), 'Falta explicar el nuevo límite de ajuste fino');
+assert(cfg.includes('angulo_maximo: 15.0'), 'El ajuste fino normal no quedó limitado a 15°');
+assert(cfg.includes('angulo_maximo_extendido: 30.0'), 'Falta límite extendido a 30°');
+assert(!cfg.includes('angulo_maximo: 45.0'), 'Sigue activo el ajuste fino de ±45°');
+console.log('OK: V14.6 añade filtros semánticos y limita el ajuste fino adaptativo.');

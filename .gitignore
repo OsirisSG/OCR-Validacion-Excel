@@ -72,6 +72,8 @@ estructura_detectada.json
 validacion_resultados.json
 # Cualquier nombre de salida personalizado del pipeline también es regenerable.
 *.xlsx
+# Plantilla oficial de la aplicación; los Excel de resultados siguen ignorados.
+!plantillas/reporte_bmg_1st_2st.xlsx
 *_analisis_excel.json
 errores/*_dashboard_pipeline.md
 

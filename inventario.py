@@ -41,6 +41,7 @@ def crear_inventario(estructura: dict, ruta_salida: str | Path | None = None,
     """Materializa fotografías y metadatos de ruta sin cargar EasyOCR."""
     casos = []
     total_fotos = 0
+    total_videos = 0
     for original in estructura.get("casos_empresariales", []):
         caso = deepcopy(original)
         fotos = []
@@ -55,10 +56,24 @@ def crear_inventario(estructura: dict, ruta_salida: str | Path | None = None,
                 foto["error_inventario"] = f"{type(exc).__name__}: {exc}"
             fotos.append(foto)
         caso["fotos"] = fotos
+        videos = []
+        for video_original in caso.get("videos", []):
+            video = dict(video_original)
+            try:
+                video["firma_archivo"] = _firma_archivo(video["ruta"], calcular_hash)
+                video["estado_inventario"] = "inventariado"
+            except OSError as exc:
+                video["firma_archivo"] = None
+                video["estado_inventario"] = "error_lectura"
+                video["error_inventario"] = f"{type(exc).__name__}: {exc}"
+            videos.append(video)
+        caso["videos"] = videos
         caso["total_imagenes"] = len(fotos)
+        caso["total_videos"] = len(videos)
         caso["estado"] = ("inventariada" if caso.get("estructura_valida")
                           else "estructura_incompleta")
         total_fotos += len(fotos)
+        total_videos += len(videos)
         casos.append(caso)
         if al_caso:
             al_caso(deepcopy(caso))
@@ -75,7 +90,7 @@ def crear_inventario(estructura: dict, ruta_salida: str | Path | None = None,
         "casos_encontrados": len(casos),
         "casos_validos": sum(bool(c.get("estructura_valida")) for c in casos),
         "casos_incompletos": sum(not c.get("estructura_valida", False) for c in casos),
-        "fotografias": total_fotos,
+        "fotografias": total_fotos, "videos": total_videos,
         "configuracion": {"hash_completo": bool(calcular_hash)},
     }
     destino = Path(ruta_salida) if ruta_salida else RAIZ_PROYECTO / "inventario_proyecto.json"

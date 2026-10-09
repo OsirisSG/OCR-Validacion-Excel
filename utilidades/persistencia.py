@@ -56,7 +56,7 @@ def _avisar(destino: Path, exc: BaseException,
 def escribir_json_seguro(
         destino: str | Path, contenido: Any, *, intentos: int = 8,
         espera_inicial: float = 0.025, default: Callable[[Any], Any] | None = str,
-        lanzar: bool = False,
+        lanzar: bool = False, compacto: bool = False, fsync: bool = True,
         al_error: Callable[[str], None] | None = None) -> ResultadoPersistencia:
     """Escribe JSON sin exponer un archivo parcial ni reutilizar un ``.tmp`` fijo.
 
@@ -76,9 +76,17 @@ def escribir_json_seguro(
             ruta.parent.mkdir(parents=True, exist_ok=True)
             temporal = _temporal_unico(ruta)
             with open(temporal, "w", encoding="utf-8", newline="\n") as archivo:
-                json.dump(contenido, archivo, ensure_ascii=False, indent=2, default=default)
+                # Los resultados OCR pueden crecer a decenas de MB. El modo compacto
+                # conserva exactamente el mismo JSON pero reduce bytes escritos y tiempo
+                # de serialización. Para datos humanos/pequeños se mantiene el formato
+                # legible por compatibilidad.
+                if compacto:
+                    json.dump(contenido, archivo, ensure_ascii=False, separators=(",", ":"), default=default)
+                else:
+                    json.dump(contenido, archivo, ensure_ascii=False, indent=2, default=default)
                 archivo.flush()
-                os.fsync(archivo.fileno())
+                if fsync:
+                    os.fsync(archivo.fileno())
             for numero in range(1, total_intentos + 1):
                 try:
                     os.replace(temporal, ruta)

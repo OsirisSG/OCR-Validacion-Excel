@@ -1,0 +1,18 @@
+const fs=require('fs'), path=require('path'), assert=require('assert');
+const root=path.resolve(__dirname,'..');
+const src=fs.readFileSync(path.join(root,'dashboard/frontend/app.js'),'utf8');
+const back=fs.readFileSync(path.join(root,'dashboard/backend/app.py'),'utf8');
+const css=fs.readFileSync(path.join(root,'dashboard/frontend/estilos.css'),'utf8');
+assert(src.includes('Más control sobre OCR'), 'Falta acceso al control avanzado');
+assert(src.includes('Qué estás buscando'), 'Falta selector de tipo esperado');
+assert(src.includes('Congruencia mínima'), 'Falta umbral de congruencia editable');
+assert(src.includes('Copiar automáticamente la sugerencia'), 'Falta control de copia automática');
+assert(src.includes('Releer este ángulo'), 'Falta relectura angular manual');
+assert(src.includes('Comparar automáticamente') && src.includes('CLAHE / contraste') && src.includes('Relieve / grabado'), 'Faltan tratamientos visuales manuales');
+assert(src.includes('/api/aprendizaje/lectura-angulo-manual'), 'Frontend no llama la relectura manual');
+assert(back.includes('class SolicitudLecturaManual'), 'Falta contrato de relectura manual');
+assert(back.includes('@app.post("/api/aprendizaje/lectura-angulo-manual")'), 'Falta endpoint de relectura manual');
+assert(back.includes('ge=-45.0, le=45.0'), 'El ajuste manual no está acotado');
+assert(back.includes('tipo_esperado'), 'La relectura manual no respeta el tipo esperado');
+assert(css.includes('.panel-control-ocr-avanzado'), 'Faltan estilos del control avanzado');
+console.log('OK: V14.7 expone tipo esperado, umbral, copia automática y relectura manual exacta.');

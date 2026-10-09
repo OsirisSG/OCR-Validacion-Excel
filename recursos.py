@@ -27,6 +27,9 @@ def detectar_recursos(dispositivo_solicitado: str = "auto") -> dict:
         "motivo": "CPU disponible",
         "memoria_acelerador_gb": None,
         "batch_gpu_sugerido": 1,
+        "batch_gpu_max_seguro": 1,
+        "memoria_libre_acelerador_gb": None,
+        "perfil_gpu": "adaptativo",
         "warning": None,
     }
     try:
@@ -49,11 +52,29 @@ def detectar_recursos(dispositivo_solicitado: str = "auto") -> dict:
                 info["nombre_acelerador"] = torch.cuda.get_device_name(0)
                 memoria = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
                 info["memoria_acelerador_gb"] = round(memoria, 2)
-                info["batch_gpu_sugerido"] = 2 if memoria < 8 else 4 if memoria < 16 else 8
+                try:
+                    libre, _total = torch.cuda.mem_get_info(0)
+                    info["memoria_libre_acelerador_gb"] = round(libre / (1024 ** 3), 2)
+                except Exception:
+                    pass
+                # V14: techo inicial orientativo. El motor EasyOCR regula el batch
+                # con ventanas/histéresis y lo reduce ante presión real/OOM; estos
+                # valores no obligan a ocupar VRAM ni significan varias fotos a la vez.
+                info["batch_gpu_sugerido"] = 8 if memoria < 8 else 12 if memoria < 16 else 16
+                info["batch_gpu_max_seguro"] = 12 if memoria < 8 else 20 if memoria < 16 else 32
+                try:
+                    torch.backends.cudnn.benchmark = True
+                    torch.backends.cudnn.allow_tf32 = True
+                    torch.backends.cuda.matmul.allow_tf32 = True
+                    if hasattr(torch, "set_float32_matmul_precision"):
+                        torch.set_float32_matmul_precision("high")
+                except Exception:
+                    pass
             else:
                 torch.mps.synchronize()
                 info["nombre_acelerador"] = "Apple Metal (MPS)"
                 info["batch_gpu_sugerido"] = 2
+                info["batch_gpu_max_seguro"] = 4
             info["seleccionado"] = elegido
             info["acelerador_disponible"] = True
             info["motivo"] = "OCR neuronal en GPU; preprocesamiento y QR en CPU"

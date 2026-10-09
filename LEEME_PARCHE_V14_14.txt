@@ -1,0 +1,18 @@
+PARCHE OCR V14.14 SOBRE V14.13
+Fecha: 2026-09-28
+
+1. Cierra completamente el dashboard/servidor Python.
+2. Haz respaldo de .aprendizaje si deseas una copia adicional de seguridad.
+3. Copia el contenido de esta carpeta sobre la raíz de tu V14.13 y acepta reemplazar archivos.
+4. NO borres ni reemplaces .aprendizaje, .cache_ocr, checkpoints, resultados ni tu Excel.
+5. Inicia el programa otra vez.
+6. En el navegador usa Ctrl+F5 para descartar JavaScript/CSS antiguos.
+
+Cambios principales:
+- Solo Aceptar lectura / Aplicar corrección como decisiones positivas visibles.
+- Toda confirmación positiva alimenta el aprendizaje visual automáticamente.
+- Texto nuevo, uniones y geometría confirmada también alimentan aprendizaje.
+- Unión de múltiples bloques por clic restaurada.
+- Avisos de cambios sin guardar muestran el origen exacto.
+- Ayuda visible ⓘ.
+- Traducciones ES/EN/DE ampliadas para controles dinámicos, geometría y avisos.

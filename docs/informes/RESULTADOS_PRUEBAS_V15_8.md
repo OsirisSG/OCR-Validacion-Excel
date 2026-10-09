@@ -5,7 +5,7 @@ Fecha: 9 de octubre de 2026.
 Actualización posterior: a petición del usuario, el código validado también se
 aplicó a `/Users/osirissilvagarcia/proyecto_ocr`, manteniendo la rama
 `ocr-v8-versuchsmatrix` y sus datos locales. La sección siguiente describe la
-preparación inicial del ZIP; consulta `ACTUALIZACION_CARPETA_V15_8.md` para la
+preparación inicial del ZIP; consulta [ACTUALIZACION_CARPETA_V15_8.md](ACTUALIZACION_CARPETA_V15_8.md) para la
 aplicación al repositorio y su comprobación posterior. Sin commit ni push.
 
 ## Base correcta y conservación de datos
@@ -93,9 +93,9 @@ bloqueadas. Los límites de prueba 8/9 no se incluyen como datos en el paquete.
 Única advertencia de la suite: deprecación Starlette/httpx del entorno de
 pruebas. No se ocultó ni se modificaron dependencias para eliminarla.
 
-![Prueba aislada: máximo confirmado en cuadro 24](docs/v15_8_maximo_confirmado_prueba.jpg)
+![Prueba aislada: máximo confirmado en cuadro 24](../v15_8_maximo_confirmado_prueba.jpg)
 
-![Prueba aislada: límites elegidos y matriz actualizada](docs/v15_8_rangos_prueba.jpg)
+![Prueba aislada: límites elegidos y matriz actualizada](../v15_8_rangos_prueba.jpg)
 
 ## Correspondencia con las observaciones de la guía
 
@@ -138,7 +138,7 @@ Tests existentes ajustados en `pruebas/`: `test_dashboard.py`,
 `test_v14_15_1_i18n_restante.cjs`, `test_v14_15_editor_bloque_i18n.cjs`,
 `test_v15_video_ui.cjs`.
 
-Documentación nueva: este informe, `LEEME_V15_8_GUIA_RUPTURA_MAXIMO.md` y captura
+Documentación nueva: este informe, [LEEME_V15_8_GUIA_RUPTURA_MAXIMO.md](../guias/LEEME_V15_8_GUIA_RUPTURA_MAXIMO.md) y captura
 de las pruebas aisladas en `docs/v15_8_maximo_confirmado_prueba.jpg` y
 `docs/v15_8_rangos_prueba.jpg`.
 
@@ -162,4 +162,4 @@ de las pruebas aisladas en `docs/v15_8_maximo_confirmado_prueba.jpg` y
   seleccionar sus límites y aportar las combinaciones válidas si quiere
   automatizar esa homologación.
 
-Consulta `LEEME_V15_8_GUIA_RUPTURA_MAXIMO.md` antes de instalar/exportar.
+Consulta [LEEME_V15_8_GUIA_RUPTURA_MAXIMO.md](../guias/LEEME_V15_8_GUIA_RUPTURA_MAXIMO.md) antes de instalar/exportar.

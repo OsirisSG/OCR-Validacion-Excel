@@ -6,18 +6,32 @@ Aplicación local para recorrer lotes de fotografías, extraer nomenclaturas con
 OCR, comparar etiquetas contra imágenes de referencia, generar un Excel maestro
 y consultar los resultados desde un dashboard responsivo.
 
-> **Versión V15.8 · 2026-10-09.** Parte del ZIP completo proporcionado el 9 de octubre,
+> **Versión V15.8.1 · 2026-10-09.** Esta revisión organiza la documentación en `docs/`,
+> conserva las funciones de V15.8 y no cambia el procesamiento OCR ni los datos.
+> Parte del ZIP completo proporcionado el 9 de octubre,
 > con cambios V15.7.4, no de la copia V8 anterior. Añade extracción contextual según
 > la guía de etiquetas, indicios de ruptura a resolución nativa y confirmación del
 > máximo despliegue visible por separado. Conserva SOP, revisión, aprendizaje,
 > persistencia, cola Excel, 1ST/2ST y ES/EN/DE.
 > Incluye límites del semáforo elegidos por el usuario en Resumen y revisión
 > explícita de códigos de prototipo/apertura láser.
-> Consulta [la guía de esta actualización](LEEME_V15_8_GUIA_RUPTURA_MAXIMO.md) antes de instalar.
+> Consulta [la guía de esta actualización](docs/guias/LEEME_V15_8_GUIA_RUPTURA_MAXIMO.md) antes de instalar.
 
 El procesamiento no utiliza APIs de OCR ni servicios en la nube. EasyOCR es el
 motor de producción: se mantiene una sola instancia por ejecución y usa
 CUDA/MPS cuando están disponibles, con CPU como respaldo seguro.
+
+## Documentación organizada
+
+La raíz conserva este README, los lanzadores, la configuración y los archivos
+necesarios para instalar/ejecutar. Las notas y los informes están agrupados en
+[el índice de documentación](docs/README.md):
+
+- [Guías actuales](docs/guias/): instalación y funciones de V15.8.
+- [Informes y pruebas](docs/informes/): validación y aplicación de actualizaciones.
+- [Historial](docs/historial/): notas de versiones anteriores.
+- [Parches históricos](docs/historial/parches/): instrucciones antiguas conservadas
+  como referencia, no como pasos para aplicar a la versión actual.
 
 ## Funciones principales
 
@@ -495,7 +509,12 @@ OCR-Validacion-Excel/
 │   └── frontend/
 ├── datos_prueba/                 # Fixtures sintéticos publicables
 ├── pruebas/
-├── docs/                         # Documentación por fase
+├── docs/
+│   ├── README.md                 # Índice de documentación
+│   ├── guias/                    # Instalación y versión actual
+│   ├── informes/                 # Resultados de pruebas y actualizaciones
+│   ├── historial/                # Notas anteriores y parches archivados
+│   └── fase*.md                  # Documentación técnica por fase
 └── errores/                      # Bitácoras técnicas curadas
 ```
 
@@ -513,7 +532,7 @@ existe o requiere revisión. En el dashboard, las celdas de la matriz del
 Resumen llevan a la fila correspondiente de Listado; en el Excel generado,
 las celdas del resumen enlazan a la fila de `Versuchsmatrix`.
 
-Consulta `LEEME_MATRIZ_APERTURA_V7.md` para el detalle de reglas, capacidad y
+Consulta [LEEME_MATRIZ_APERTURA_V7.md](docs/historial/LEEME_MATRIZ_APERTURA_V7.md) para el detalle de reglas, capacidad y
 archivos modificados.
 
 ## Limitaciones actuales
@@ -532,6 +551,7 @@ archivos modificados.
 
 Antes de modificar una fase, consulta:
 
+- [Índice de documentación](docs/README.md)
 - `docs/fase0_autodescubrimiento.md`
 - `docs/fase1_ocr.md`
 - `docs/fase2_validacion.md`
@@ -610,4 +630,4 @@ artefactos locales y no deben copiarse como fuente de datos entre equipos.
 
 ### V9 · estabilidad del editor y experiencia de revisión
 
-V9 corrige traducciones dinámicas y contraste oscuro, agrega notificaciones flotantes de actividad, evita que una respuesta tardía devuelva el editor a una corrección anterior, corrige el falso aviso de borrador tras un guardado confirmado, permite ajustar/dividir bloques que se superponen con anotaciones manuales sin borrar esas anotaciones y añade descarte múltiple. Guardar una corrección no entrena el OCR por sí solo; el entrenamiento visual se propone explícitamente y se ejecuta por lote. También se añadieron caché de variantes de orientación y agrupación de actualizaciones de Excel. Consulta `LEEME_V9_ESTABILIDAD_UI.md`.
+V9 corrige traducciones dinámicas y contraste oscuro, agrega notificaciones flotantes de actividad, evita que una respuesta tardía devuelva el editor a una corrección anterior, corrige el falso aviso de borrador tras un guardado confirmado, permite ajustar/dividir bloques que se superponen con anotaciones manuales sin borrar esas anotaciones y añade descarte múltiple. Guardar una corrección no entrena el OCR por sí solo; el entrenamiento visual se propone explícitamente y se ejecuta por lote. También se añadieron caché de variantes de orientación y agrupación de actualizaciones de Excel. Consulta [LEEME_V9_ESTABILIDAD_UI.md](docs/historial/LEEME_V9_ESTABILIDAD_UI.md).

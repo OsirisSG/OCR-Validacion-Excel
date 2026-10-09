@@ -4,7 +4,7 @@ Base: `OCR-Validacion-Excel-ocr-gpu-produccion_COMPLETO_LIMPIO_20261009_121301.z
 Se conservan los cambios V15.7.4 del ZIP. Tras la preparación inicial separada,
 el usuario pidió aplicar el código también a `proyecto_ocr`; esa copia conserva
 sus datos locales y preferencias. No se hicieron commits o push. La actualización
-no añade dependencias. Consulta `ACTUALIZACION_CARPETA_V15_8.md` para el respaldo.
+no añade dependencias. Consulta [ACTUALIZACION_CARPETA_V15_8.md](../informes/ACTUALIZACION_CARPETA_V15_8.md) para el respaldo.
 
 ## Instalación segura
 

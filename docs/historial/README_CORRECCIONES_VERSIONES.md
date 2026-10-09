@@ -10,7 +10,7 @@
 - 1000 fps se reporta correctamente como 1.0 ms/cuadro: las décimas no se presentan como exactitud física de 0.1 ms salvo que el overlay o la tasa nativa la sustenten.
 - El consenso confirmado alimenta `opening_time_ms` y usa la cola Excel existente.
 
-Ver `LEEME_V15_VIDEO_AIRBAG.md`.
+Ver [LEEME_V15_VIDEO_AIRBAG.md](LEEME_V15_VIDEO_AIRBAG.md).
 
 ## V14.15.1 — Hotfix i18n del listado (2026-09-28)
 
@@ -20,7 +20,7 @@ Ver `LEEME_V15_VIDEO_AIRBAG.md`.
 - Aplica el mismo tratamiento al detalle del caso.
 - No modifica backend ni aprendizaje.
 
-Ver `LEEME_V14_15_1_I18N_LISTADO.md`.
+Ver [LEEME_V14_15_1_I18N_LISTADO.md](LEEME_V14_15_1_I18N_LISTADO.md).
 
 ## V14.15 — Editor de bloque unificado e i18n reforzado (2026-09-28)
 
@@ -32,7 +32,7 @@ Ver `LEEME_V14_15_1_I18N_LISTADO.md`.
 - Actualiza la versión de caché del frontend a `20260928-v14-15`.
 - Validación: 19/19 pruebas JavaScript; 238 pruebas Python aprobadas y los mismos 8 fallos históricos por fixtures externos ausentes.
 
-Ver `LEEME_V14_15_EDITOR_BLOQUE_I18N.md`.
+Ver [LEEME_V14_15_EDITOR_BLOQUE_I18N.md](LEEME_V14_15_EDITOR_BLOQUE_I18N.md).
 
 ## V14.14 — Supervisión simple y aprendizaje automático (2026-09-28)
 
@@ -61,7 +61,7 @@ Ver `LEEME_V14_15_EDITOR_BLOQUE_I18N.md`.
 - Las lecturas por orientación y la relectura manual aceptan el polígono exacto.
 - Las selecciones rectangulares históricas siguen funcionando sin cambios.
 
-Ver `LEEME_V14_11_RECORTES_INCLINADOS.md`.
+Ver [LEEME_V14_11_RECORTES_INCLINADOS.md](LEEME_V14_11_RECORTES_INCLINADOS.md).
 
 ## V14.10 — Identidad OCR y persistencia más rápida (2026-09-25)
 
@@ -72,7 +72,7 @@ Ver `LEEME_V14_11_RECORTES_INCLINADOS.md`.
 - Añade caché segura de SHA-256 para no releer la misma imagen en cada corrección.
 - Añade índice reutilizable de rutas para acelerar la carga de vistas previas en lotes grandes.
 
-Ver `LEEME_V14_10_IDENTIDAD_RENDIMIENTO.md`.
+Ver [LEEME_V14_10_IDENTIDAD_RENDIMIENTO.md](LEEME_V14_10_IDENTIDAD_RENDIMIENTO.md).
 
 # V10 · ajuste angular regional (2026-09-21)
 
@@ -83,7 +83,7 @@ Ver `LEEME_V14_10_IDENTIDAD_RENDIMIENTO.md`.
 - Reproyecta las cajas a sus coordenadas originales.
 - Búsqueda adaptativa: una pasada fina adicional cuando la orientación cardinal es sólida; refina las cuatro sólo cuando la lectura es débil o en el editor cacheado.
 
-Ver `LEEME_V10_AJUSTE_ANGULAR.md`.
+Ver [LEEME_V10_AJUSTE_ANGULAR.md](LEEME_V10_AJUSTE_ANGULAR.md).
 
 # Integración de versiones y correcciones — 2026-09-16
 
@@ -208,14 +208,14 @@ Para una instalación que ya usa la versión consolidada anterior basta con sust
 
 La V3 hacía una suposición demasiado fuerte: trataba la `bbox` de un renglón nacido de una región con orientación dudosa como si ya fuera definitiva. En V4, si el recorte regional sigue `orientacion_dudosa` y no `orientacion_confirmada`, primero se obliga a fijar el giro y reprocesar. La corrección textual queda temporalmente bloqueada tanto en frontend como en backend. Después del reproceso vuelve a estar disponible la sobrescritura normal.
 
-Consulta `LEEME_PATCH_ORIENTACION_SEGURA_V4.md` para el flujo exacto y el caso de las capturas de `IMG_5330` / `IMG_5329`.
+Consulta [LEEME_PATCH_ORIENTACION_SEGURA_V4.md](parches/LEEME_PATCH_ORIENTACION_SEGURA_V4.md) para el flujo exacto y el caso de las capturas de `IMG_5330` / `IMG_5329`.
 
 
 ## V5 — flujo simple, variantes automáticas y giro como borrador
 
 La V5 elimina la barrera obligatoria de orientación de V4. El editor vuelve a un flujo directo: una sola caja exacta, su imagen y las variantes OCR debajo. El botón “Comparar lecturas de esta zona” desaparece; las variantes se calculan automáticamente al abrir la corrección. Al girar o elegir una variante, su lectura se copia a **Texto correcto** sólo como borrador y no se guarda hasta pulsar **Aplicar supervisión**. También se elimina el panel regional duplicado dentro del formulario para evitar que parezca que una lectura grande va a sobrescribir un renglón individual.
 
-La protección contra sobrescrituras equivocadas queda en la identidad exacta de la unidad (`bbox` y `tipo_unidad`) y en el historial cronológico de correcciones, no en bloquear la edición del usuario. Consulta `LEEME_PATCH_FLUJO_SIMPLE_V5.md`.
+La protección contra sobrescrituras equivocadas queda en la identidad exacta de la unidad (`bbox` y `tipo_unidad`) y en el historial cronológico de correcciones, no en bloquear la edición del usuario. Consulta [LEEME_PATCH_FLUJO_SIMPLE_V5.md](parches/LEEME_PATCH_FLUJO_SIMPLE_V5.md).
 
 Validación V5: 6 pruebas JavaScript del editor pasaron y 123 pruebas Python independientes de los fixtures empresariales externos pasaron. También se verificó sintaxis con `node --check` y `python -m compileall`.
 
@@ -233,7 +233,7 @@ Validación V5: 6 pruebas JavaScript del editor pasaron y 123 pruebas Python ind
 
 ## V7 — Matriz de apertura y reporte BMG 1ST + 2ST
 
-Se mantiene V6 como base de corrección OCR y se añade el reporte BMG solicitado. El dashboard incorpora una matriz clicable 1ST/2ST basada en `opening_time_ms`: verde <=6 ms, amarillo >6 y <=7 ms, rojo >7 ms, gris sin valor fiable. El Excel utiliza el formato `Übersicht Standversuche` + `Versuchsmatrix`, combina ambas etapas en un único archivo y enlaza cada número del resumen con su fila detallada. Ver `LEEME_MATRIZ_APERTURA_V7.md`.
+Se mantiene V6 como base de corrección OCR y se añade el reporte BMG solicitado. El dashboard incorpora una matriz clicable 1ST/2ST basada en `opening_time_ms`: verde <=6 ms, amarillo >6 y <=7 ms, rojo >7 ms, gris sin valor fiable. El Excel utiliza el formato `Übersicht Standversuche` + `Versuchsmatrix`, combina ambas etapas en un único archivo y enlaza cada número del resumen con su fila detallada. Ver [LEEME_MATRIZ_APERTURA_V7.md](LEEME_MATRIZ_APERTURA_V7.md).
 
 ## V8 · OCR Versuchsmatrix (2026-09-20)
 
@@ -250,7 +250,7 @@ V8 conserva el editor V6 y agrega identidad portable de proyecto/etapa/caso, pro
 - Guardar y entrenar quedan separados; texto omitido solo se propone a entrenamiento mediante opt-in.
 - Descarte múltiple de detecciones OCR.
 - Caché acotada de variantes por orientación, refrescos secundarios no bloqueantes y agrupación de exportaciones Excel.
-- No se aplica todavía un filtro destructivo de “solo etiquetas/plásticos”; ver `LEEME_V9_ESTABILIDAD_UI.md`.
+- No se aplica todavía un filtro destructivo de “solo etiquetas/plásticos”; ver [LEEME_V9_ESTABILIDAD_UI.md](LEEME_V9_ESTABILIDAD_UI.md).
 
 ## V11 · estabilidad de editor, filtros y consolidación
 
@@ -262,7 +262,7 @@ V8 conserva el editor V6 y agrega identidad portable de proyecto/etapa/caso, pro
 - Consolidación por fecha de corrección de cada campo y detección de empates conflictivos.
 - Excel: 36 encabezados ES/EN/DE, cantidades esperadas/encontradas/procesadas y casos fuera de la matriz visibles en gris.
 
-Ver `LEEME_V11_ESTABILIDAD_EDITOR_EXCEL.md`.
+Ver [LEEME_V11_ESTABILIDAD_EDITOR_EXCEL.md](LEEME_V11_ESTABILIDAD_EDITOR_EXCEL.md).
 
 ## V13 — 2026-09-22
 
@@ -284,7 +284,7 @@ Ver `LEEME_V11_ESTABILIDAD_EDITOR_EXCEL.md`.
 - Consenso entre variantes como evidencia secundaria.
 - Filtros visuales sin eliminar las cuatro orientaciones originales.
 - Si ninguna candidata es suficientemente congruente, no se sobrescribe automáticamente Texto correcto.
-- Ver `LEEME_V14_6_AJUSTE_FILTRO_INTELIGENTE.md`.
+- Ver [LEEME_V14_6_AJUSTE_FILTRO_INTELIGENTE.md](LEEME_V14_6_AJUSTE_FILTRO_INTELIGENTE.md).
 
 ## V14.7 — control manual del OCR regional (2026-09-25)
 
@@ -307,7 +307,7 @@ Ver `LEEME_V11_ESTABILIDAD_EDITOR_EXCEL.md`.
 - Generalización contextual por proyecto/fase/campo cuando existe contexto; en OCR inicial se limita a grupo estable de ruta y zona relativa.
 - Caché de estrategias por instancia para evitar consultas SQLite repetidas por región.
 - Las estrategias se incluyen en la exportación del dataset de aprendizaje.
-- Ver `LEEME_V14_8_APRENDIZAJE_ESTRATEGIAS.md`.
+- Ver [LEEME_V14_8_APRENDIZAJE_ESTRATEGIAS.md](LEEME_V14_8_APRENDIZAJE_ESTRATEGIAS.md).
 
 ## V14.9 — Aprendizaje inmediato por imagen
 - Una estrategia OCR confirmada puede ensayarse desde la siguiente imagen similar si coincide el grupo de ruta y la geometría normalizada de la zona.
@@ -324,7 +324,7 @@ Ver `LEEME_V11_ESTABILIDAD_EDITOR_EXCEL.md`.
 - Las muestras nuevas disparan el aprendizaje visual automático sin esperar al botón manual.
 - Al verificar una imagen se recuperan de forma oportunista las uniones antiguas de esa imagen para incorporarlas al dataset visual sin duplicados.
 - Si falla la creación del recorte entrenable, la edición humana y la actualización Excel se conservan.
-- Ver `LEEME_V14_12_UNIONES_ENTRENABLES.md`.
+- Ver [LEEME_V14_12_UNIONES_ENTRENABLES.md](LEEME_V14_12_UNIONES_ENTRENABLES.md).
 
 ## V14.12.1 — Etiqueta compacta para uniones entrenables (2026-09-28)
 

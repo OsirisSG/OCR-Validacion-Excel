@@ -52,5 +52,5 @@ Para ver la nueva versión, inicia de nuevo el programa y recarga el navegador.
 No se inició un entrenamiento ni un análisis de tus fotos o vídeos para esta
 actualización. La validación Windows/RTX A3000 y con vídeos reales sigue pendiente.
 
-Consulta `RESULTADOS_PRUEBAS_V15_8.md` y `LEEME_V15_8_GUIA_RUPTURA_MAXIMO.md`
+Consulta [RESULTADOS_PRUEBAS_V15_8.md](RESULTADOS_PRUEBAS_V15_8.md) y [LEEME_V15_8_GUIA_RUPTURA_MAXIMO.md](../guias/LEEME_V15_8_GUIA_RUPTURA_MAXIMO.md)
 para las funciones, el flujo de máximo visible y los límites conocidos.

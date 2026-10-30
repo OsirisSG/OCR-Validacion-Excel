@@ -1,0 +1,16 @@
+const fs=require('fs'), assert=require('assert'), path=require('path');
+const source=fs.readFileSync(path.join(__dirname,'../dashboard/frontend/app.js'),'utf8');
+const css=fs.readFileSync(path.join(__dirname,'../dashboard/frontend/estilos.css'),'utf8');
+const i18n=fs.readFileSync(path.join(__dirname,'../dashboard/frontend/i18n.js'),'utf8');
+assert(source.includes('Ocultar imágenes sin texto'));
+assert(source.includes('Mostrar imágenes sin texto'));
+assert(source.includes('ocultarSinTexto'));
+assert(source.includes('imagenSinTexto'));
+assert(source.includes('Tomar ajuste fino'));
+assert(source.includes('No tomar ajuste'));
+assert(source.includes('Texto no necesario'));
+assert(source.includes('plegar-notificacion'));
+assert(css.includes('.notificacion-plegada'));
+assert(i18n.includes('Hide images marked no text'));
+assert(i18n.includes('Bilder ohne Text ausblenden'));
+console.log('OK: filtros sin texto, ajuste fino explícito, texto no necesario y notificaciones plegables presentes.');

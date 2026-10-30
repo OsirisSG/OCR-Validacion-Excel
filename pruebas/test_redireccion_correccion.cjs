@@ -1,0 +1,13 @@
+const fs = require('fs');
+const path = require('path');
+const assert = require('assert');
+const source = fs.readFileSync(path.join(__dirname, '../dashboard/frontend/app.js'), 'utf8');
+const start = source.indexOf('  function seleccionarUnidad(');
+const end = source.indexOf('  async function confirmarCorreccion', start);
+assert(start >= 0 && end > start, 'No se encontró seleccionarUnidad');
+const block = source.slice(start, end);
+assert(block.includes('setMostrarCorreccion(true)'), 'Seleccionar un texto debe abrir la corrección');
+assert(block.includes('getElementById("formulario-correccion-activa")'), 'Debe localizar el formulario activo');
+assert(block.includes('scrollIntoView'), 'Debe desplazar la página hasta el formulario');
+assert(block.includes('querySelector("textarea")?.focus'), 'Debe enfocar el texto correcto');
+console.log('OK: clic en lectura abre, desplaza y enfoca el formulario de corrección.');

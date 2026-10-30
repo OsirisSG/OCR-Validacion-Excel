@@ -1,0 +1,11 @@
+PARCHE OCR V14.11 SOBRE V14.10
+
+1. Cierra completamente el dashboard/OCR.
+2. Descomprime este parche sobre la raíz de tu instalación V14.10.
+3. Acepta reemplazar los archivos.
+4. NO borres .aprendizaje, .cache_ocr, checkpoints ni tu Excel.
+
+V14.11 añade recortes manuales inclinados/movibles y rectificación de perspectiva
+para que una muestra no arrastre texto vecino. La migración SQLite es aditiva.
+
+Consulta LEEME_V14_11_RECORTES_INCLINADOS.md.

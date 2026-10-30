@@ -1,0 +1,28 @@
+OCR V14.6 — Resultados de verificación
+Fecha: 2026-09-24
+
+PRUEBAS NUEVAS V14.6
+- Clasificación de código coherente vs. mezcla irregular: OK.
+- Fecha y valor numérico separados de código: OK.
+- Código completo gana a número corto con mayor confianza: OK.
+- Ajuste >15° rechazado sin evidencia geométrica: OK.
+- Ajuste extendido hasta 30° aceptado con evidencia fuerte: OK.
+- Ajuste de 36°/45° rechazado incluso si se solicita un máximo mayor: OK.
+- Micro-búsqueda ±2° alrededor del ángulo geométrico: OK.
+- Filtros frontend y límites 15°/30°: OK.
+
+REGRESIÓN PYTHON COMPLETA
+- 210 pruebas aprobadas.
+- 8 fallos preexistentes por fixtures externos no incluidos en el paquete:
+  - validacion_resultados.json
+  - banco externo esperado por pruebas del dashboard
+- No se detectaron regresiones nuevas.
+
+FRONTEND CJS
+- Todos los archivos de prueba .cjs incluidos pasan, incluido V14.6.
+
+VALIDACIÓN ADICIONAL
+- python -m py_compile: OK.
+- node --check dashboard/frontend/app.js: OK.
+- Prueba geométrica sintética: inclinaciones 20°, 24° y 28° obtienen evidencia fuerte;
+  36° queda fuera del rango extendido y no se usa como ajuste fino.

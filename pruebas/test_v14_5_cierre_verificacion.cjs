@@ -1,0 +1,13 @@
+const fs=require('fs'), path=require('path'), assert=require('assert');
+const root=path.resolve(__dirname,'..');
+const src=fs.readFileSync(path.join(root,'dashboard/frontend/app.js'),'utf8');
+assert(src.includes('function hayCambiosSinGuardar'), 'Falta centralizar detección de borradores');
+assert(src.includes('Dibujar/seleccionar una caja sin escribir ni generar una propuesta no es un cambio persistible.'), 'La selección vacía sigue tratándose como borrador');
+assert(src.includes('Hay cambios sin guardar. Guarda la corrección o cierra/descarta la herramienta activa antes de marcar la imagen como verificada.'), 'Imagen verificada no protege cambios reales');
+assert(src.includes('function cerrarHerramientasTransitorias'), 'Falta limpiar herramientas tras verificar');
+assert(src.includes('setRevisionEditor(v => v + 1)'), 'Falta desmontar estados internos de herramientas al verificar');
+assert(src.includes('function cerrarCorreccionActiva'), 'Falta cierre seguro de corrección');
+assert(src.includes('Cerrar herramienta'), 'Falta botón de cierre consistente');
+assert(src.includes('Hay texto sin guardar. ¿Descartarlo y cerrar esta selección?'), 'Cerrar texto omitido no descarta explícitamente el borrador');
+assert(!src.includes('Boolean(region) || estado.pendiente'), 'Una selección vacía todavía provoca aviso falso');
+console.log('OK: V14.5 limpia estados transitorios, protege borradores reales y añade cierre consistente.');

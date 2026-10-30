@@ -1,0 +1,22 @@
+PARCHE OCR V14.5 — ACUMULATIVO DESDE V14.3
+Fecha: 2026-09-24
+
+Este parche incluye V14.4 + V14.5.
+
+Aplicación:
+1. Cierra completamente el dashboard.
+2. Copia el contenido de este ZIP sobre la raíz de tu proyecto actual.
+3. Acepta reemplazar los archivos existentes.
+4. NO borres .aprendizaje, .cache_ocr ni checkpoints.
+5. Reinicia el dashboard.
+
+Incluye:
+- Giro automático reparado.
+- Selección de orientación por congruencia de código antes del ajuste fino.
+- Preferencia de códigos completos numéricos/alfanuméricos coherentes frente a fragmentos de alta confianza.
+- Botón “Usar giro automático”.
+- Cierre visible y consistente de herramientas de selección.
+- Corrección de borradores fantasma después de “Imagen verificada”.
+- Protección para no verificar una imagen mientras exista un cambio real sin guardar.
+
+El parche no contiene bases SQLite, aprendizaje ni caché del entorno de pruebas.

@@ -1,0 +1,6 @@
+V14.8
+
+Pruebas dirigidas: 18 aprobadas.
+Suite Python completa: 217 aprobadas / 8 fallos preexistentes por fixtures externos ausentes.
+Pruebas JavaScript: todas aprobadas.
+CUDA real no disponible en el entorno de construcción; la integración conserva la ruta CUDA existente.

@@ -1,0 +1,8 @@
+V14.9 — 2026-09-25
+
+Pruebas dirigidas de aprendizaje inmediato: 3/3 aprobadas.
+Suite completa Python: 219 aprobadas / 8 fallos preexistentes por fixtures externos ausentes.
+Todos los tests JavaScript incluidos en el repositorio: aprobados.
+
+Los 8 fallos no son regresiones V14.9: corresponden a validacion_resultados.json y al banco externo del dashboard, ausentes del paquete de distribución.
+CUDA real no está disponible en el entorno de construcción; el entrenamiento GPU debe verificarse en la RTX A3000 del usuario.

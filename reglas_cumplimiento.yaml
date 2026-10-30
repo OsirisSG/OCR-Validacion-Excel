@@ -23,3 +23,11 @@ criterios:
     verde: "coincidencia_total"
     amarillo: "coincidencia_parcial"
     rojo: "discrepancia,sin_referencia"
+
+
+  tiempo_apertura_ms:
+    # Tiempo de apertura de bolsa en milisegundos.
+    # 6.0 cae en verde porque el motor evalúa verde antes que amarillo.
+    verde: "<= 6"
+    amarillo: "6-7"
+    rojo: "> 7"

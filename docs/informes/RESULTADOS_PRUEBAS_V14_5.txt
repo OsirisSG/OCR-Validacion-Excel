@@ -1,0 +1,26 @@
+OCR V14.5 — Resultados de verificación
+Fecha: 2026-09-24
+
+PRUEBAS ESPECÍFICAS
+- V14.4 orientación por congruencia/código: 3/3 OK.
+- V14.4 frontend giro automático: OK.
+- V14.5 cierre/verificación/borradores: OK.
+- Navegación, filtros, bloqueo durante guardado y verificación: OK.
+- Corrección y sobrescritura de caja exacta: OK.
+- Sintaxis dashboard/frontend/app.js: OK.
+- Sintaxis dashboard/frontend/i18n.js: OK.
+
+FRONTEND CJS
+- 10/10 archivos de prueba .cjs: OK.
+
+REGRESIÓN PYTHON COMPLETA
+- 204 pruebas aprobadas.
+- 8 fallos preexistentes por fixtures externos no incluidos en el paquete:
+  - validacion_resultados.json
+  - banco externo esperado por pruebas del dashboard
+- No se detectaron regresiones nuevas.
+
+NOTA
+Las pruebas de V14.5 verifican que una selección vacía no provoque un aviso falso,
+que un borrador real no pueda descartarse silenciosamente mediante “Imagen verificada”,
+y que las herramientas transitorias se limpien al completar correctamente la verificación.

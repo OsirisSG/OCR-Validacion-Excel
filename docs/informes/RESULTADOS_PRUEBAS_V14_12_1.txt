@@ -1,0 +1,9 @@
+V14.12.1 — resultados de verificación
+Fecha: 2026-09-28
+
+- node --check dashboard/frontend/app.js: OK
+- node --check dashboard/frontend/i18n.js: OK
+- pruebas JavaScript .cjs: 16/16 aprobadas
+- pruebas/test_v14_12_uniones_entrenables.py: 3/3 aprobadas
+
+Alcance del parche: interfaz/claridad del control de uniones entrenables. La lógica backend de V14.12 no fue modificada.

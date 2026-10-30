@@ -1,0 +1,6 @@
+# Instalación funcional completa (PyTorch se selecciona antes con instalar.py).
+-r requirements.txt
+-r requirements-formats.txt
+-r requirements-quality.txt
+-r requirements-training.txt
+-r requirements-production.txt

@@ -1,0 +1,7 @@
+PARCHE V14.8 SOBRE V14.7
+
+1. Cierra completamente el dashboard.
+2. Copia el contenido del parche sobre la raíz de V14.7 y acepta reemplazar archivos.
+3. NO borres .aprendizaje, .cache_ocr, checkpoints ni la cola Excel.
+4. La tabla estrategias_ocr se crea automáticamente dentro de tu aprendizaje.sqlite3 existente.
+5. Las decisiones de giro/tratamiento sólo se convierten en evidencia cuando confirmas el bloque con Aplicar supervisión.

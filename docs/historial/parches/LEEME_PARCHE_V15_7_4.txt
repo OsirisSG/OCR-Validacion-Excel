@@ -1,0 +1,49 @@
+PARCHE OCR V15.7.4
+==================
+
+Parche acumulado sobre V15.7.3 para hacer más preciso el aprendizaje del nacimiento del airbag.
+
+INSTALACIÓN
+1. Cierra completamente el dashboard y cualquier proceso Python del proyecto.
+2. Descomprime este parche sobre la raíz del proyecto y acepta reemplazar.
+3. NO borres .aprendizaje, .cache_ocr, checkpoints ni tus Excel.
+4. Inicia el dashboard. app.js y estilos.css usan una versión nueva para evitar caché antiguo.
+
+NUEVO EN V15.7.4
+- La ROI grande y el nacimiento exacto ahora son conceptos diferentes:
+  * ROI general = zona suficientemente amplia donde el detector debe mirar.
+  * Microzona de nacimiento = rectángulo pequeño donde aparece el primer fragmento de la bolsa.
+- Al terminar de dibujar una ROI general, el sistema compara F-3..F-1 con el cuadro actual y F+1/F+2
+  para proponer automáticamente la microzona del nacimiento.
+- El zoom ya no se limita a ampliar toda la ROI: cuando encuentra el nacimiento, se acerca automáticamente
+  alrededor de esa microzona conservando un poco de contexto.
+- La microzona aparece resaltada también sobre el cuadro principal.
+- Botón “Afinar automáticamente” para volver a calcular la microzona en el cuadro actual.
+- Botón “Ajustar nacimiento a mano”: permite dibujar dentro del zoom el rectángulo exacto si la propuesta
+  automática no quedó donde comenzó a salir la bolsa.
+- Al confirmar la apertura, el backend guarda por separado ROI general y microzona exacta.
+- F-3…F+3 del dataset visual se recorta usando la microzona exacta, mientras las métricas que calibran el
+  detector siguen calculándose sobre la ROI general. Esto evita volver frágil el detector por una caja demasiado pequeña.
+- Si se confirma un cuadro sin dibujar la microzona, el backend intenta localizarla automáticamente antes de aprender.
+- La microzona confirmada se conserva al recalcular individualmente el video.
+- Se agregó el campo visual “Nacimiento preciso” para indicar si fue localizado automáticamente o ajustado por el usuario.
+
+CÓMO USARLO
+1. Ve al primer cuadro donde consideras que ya aparece la bolsa.
+2. Pulsa “Redibujar zona de interés” y marca una ROI GENERAL (no demasiado cerrada).
+3. Al soltar, espera a que aparezca la caja pequeña “Nacimiento detectado”.
+4. Si coincide con el primer fragmento visible, deja la propuesta.
+5. Si no coincide, pulsa “Ajustar nacimiento a mano” y dibuja un rectángulo pequeño directamente en el zoom.
+6. Pulsa “Esta zona + este cuadro = apertura”.
+
+IMPORTANTE
+La caja grande NO se sustituye por la caja pequeña. Esto es intencional:
+- la grande tolera pequeños movimientos de cámara y sirve para detectar;
+- la pequeña enseña exactamente cómo nace el airbag y mejora los recortes supervisados.
+
+VALIDACIÓN REALIZADA
+- app.js validado con node --check.
+- app.py y aprendizaje_video_airbag.py compilados con py_compile.
+- 9 pruebas estáticas específicas V15.7.3/V15.7.4 aprobadas.
+- El localizador se probó además con un AVI sintético: encontró el nacimiento dentro de una ROI amplia,
+  produjo una microzona mucho menor y centrada sobre el primer fragmento blanco.

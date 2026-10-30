@@ -15,31 +15,84 @@ fase0:
   archivo_salida: estructura_detectada.json
 
 fase1:
-  # EasyOCR es el motor portable instalado por defecto. PaddleOCR permanece
-  # disponible como alternativa opcional y debe instalarse por plataforma.
-  # Si el principal falla, ocr_engine prueba el secundario y reporta cuál usó.
+  # EasyOCR es el único motor requerido y soportado por la instalación actual.
+  # Su propia instancia cambia de CUDA/MPS a CPU si el acelerador falla.
   motor: easyocr
-  motor_fallback: paddle
+  motor_fallback: null
+  # auto selecciona CUDA, después MPS (Apple Silicon) y finalmente CPU.
+  dispositivo: auto
+  rendimiento:
+    hilos_cpu: null       # null = todos menos uno; el SOP regula el preprocesamiento aparte
+    perfil_sop: alto      # estable | alto | maximo. ALTO es el perfil predeterminado V14
+    perfil_gpu: adaptativo # compatibilidad: EasyOCR ajusta su batch con ventana e histéresis
+    batch_gpu: 4          # preferencia local conservada; EasyOCR lo aplica a regiones, no a fotografías
+    batch_gpu_max: 12     # techo para RTX A3000 6 GB; se respeta el límite real de VRAM
+    batch_cpu: 1
+    workers_easyocr: 0    # un Reader CUDA compartido; evita duplicar el modelo/VRAM en Windows
+    ventana_batch: 12     # éxitos consecutivos antes de considerar aumentar batch
+    reintentos_oom: 3     # evita ciclos infinitos
+    prefetch_cpu: true
+    workers_preparacion: auto  # usa 2/3/4 según perfil Estable/Alto/Máximo
+    cola_preparacion_max: auto # usa 4/8/12 según perfil y aplica backpressure
+    perfiles:
+      estable: {gpu_objetivo: [70, 85], vram_limite: 75, ram_limite: 65, cpu_objetivo: [60, 75], workers_cpu: 2, cola_max: 4}
+      alto: {gpu_objetivo: [85, 95], vram_limite: 85, ram_limite: 80, cpu_objetivo: [75, 90], workers_cpu: 3, cola_max: 8}
+      maximo: {gpu_objetivo: [90, 100], vram_limite: 90, ram_limite: 85, cpu_objetivo: [85, 95], workers_cpu: 4, cola_max: 12}
   lang: en                # el texto es nomenclatura alfanumérica, no lenguaje natural
+  # Restringe EasyOCR al dominio de códigos y reduce confusiones con símbolos.
+  caracteres_permitidos: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_/"
   umbral_confianza: 0.50  # tokens por debajo se descartan
-  umbral_confianza_segunda_pasada: 0.60  # dispara el respaldo de 180° si la media baja de aquí
+  # Para transcripción completa se conserva más texto; los códigos usados en
+  # decisiones mantienen el umbral estricto anterior.
+  umbral_confianza_texto_completo: 0.25
+  extraer_texto_completo: true
   umbral_espacio_px: 40   # PARÁMETRO ABIERTO (doc §10.3): separación mínima en px
                           # entre cajas para considerar tokens distintos en una fila.
   preprocesamiento:
     activar: true
     deskew: true                    # corrige rotación fina (±15°)
     angulo_minimo_correccion: 2.0   # grados; por debajo no rota (evita ruido)
-    # La inversión 180° la corrige el clasificador de orientación de documento
-    # del motor (0/90/180/270); este doble pase adaptativo es el respaldo.
-    detectar_invertida_180: true
+    ajuste_fino_regiones:
+      activar: true                 # permite etiquetas sesgadas/diagonales dentro de una misma foto
+      angulo_minimo: 1.25           # no gastar OCR en inclinaciones despreciables
+      angulo_maximo: 15.0           # ajuste fino normal: evita perseguir aristas/ruido
+      angulo_maximo_extendido: 30.0 # solo con evidencia geométrica fuerte; nunca ±45°
+      micro_ajuste_grados: 2.0      # prueba ±2° alrededor del ángulo estimado en la mejor orientación
+      todas_variantes_editor: true  # optimiza cada tarjeta; el resultado queda cacheado
+    variante_principal: original    # mejor para fotos reales; adaptativa queda como respaldo
     binarizacion_adaptativa: true
     binarizacion_blocksize: 51      # debe ser impar
     binarizacion_c: 15
+    # Realce para texto con poco contraste o grabado/moldeado sobre plástico.
+    clahe_clip_limit: 3.0
+    clahe_grid_size: 8
+    relieve_kernel: 9
+    regiones_texto:
+      activar: true
+      max_regiones: 6
+      umbral_confianza: 0.20
+      altura_objetivo_px: 220
+      escala_max: 3.0
+      agrupacion_horizontal_divisor: 25
+      agrupacion_vertical_divisor: 200
+      margen_horizontal_factor: 0.80
+      margen_vertical_factor: 0.80
+      bono_puntuacion: 0.35
+    busqueda_adaptativa:
+      # "adaptativo": una pasada normal; solo amplía la búsqueda cuando no
+      # encuentra un código alfanumérico con confianza suficiente.
+      # "exhaustivo": prueba todas las combinaciones (más lento).
+      modo: adaptativo
+      orientaciones: [0, 90, 180, 270]
+      variantes_respaldo: [adaptativa, clahe, relieve]
+      confianza_codigo_suficiente: 0.70
   qr:
-    # Detector de ancla: "cv2" (sin dependencias extra) o "pyzbar" (si está
-    # instalado junto a las DLL de zbar). Solo se usa para GEOMETRÍA (bbox),
-    # nunca se decodifica el contenido del QR.
+    # OpenCV detecta y decodifica localmente; una URL se conserva como texto y
+    # nunca se abre. Los alias opcionales sólo pueden apuntar a claves estables.
     detector: cv2
+    lado_maximo_deteccion: 1400
+    escala_respaldo: 2.0
+    aliases: {}
     # Validación de candidatos a QR: cuadratura y tamaño relativo a la imagen.
     ratio_cuadrado_min: 0.70
     ratio_cuadrado_max: 1.30
@@ -54,6 +107,7 @@ fase1:
     reintentar_imagen_completa: true  # texto tocando borde del ROI o ROI vacío → imagen completa
 
 fase2:
+  procesar_videos: false  # reservado para una fase futura; hoy solo se inventarían como ignorados
   # Densidad de texto (área de bboxes / área de imagen) mínima para que una
   # imagen sea considerada "candidato a imagen de referencia".
   # PARÁMETRO ABIERTO (doc §10.2): la heurística de densidad es la regla v1;
@@ -81,8 +135,139 @@ fase2:
 
 fase3:
   archivo_salida: resultado_maestro.xlsx
+  # Una ruta fija sigue siendo una anulación opcional para CLI. El dashboard
+  # detecta la plantilla por estructura y, si no encuentra una compatible, usa
+  # el generador integrado sin detener el procesamiento.
+  plantilla_empresarial: null
+  deteccion_plantillas:
+    activar: true
+    directorios: [plantillas]
+    estrategias:
+      - nombre: empresarial_1st_2st
+        perfiles: [empresarial]
+        tipos_st: [1ST, 2ST]
+        marcadores_ruta: []
+        patrones_archivo: ["*plantilla*.xlsx", "*captura*.xlsx", "*template*.xlsx"]
+  registro_plantillas:
+    directorio: .plantillas
   hoja_estructura: "Estructura completa"
   hoja_matriz: "Matriz de cumplimiento"
+  hoja_textos: "Textos por imagen"
+  hoja_revision: "Bandeja de revisión"
+  idiomas_exportacion_default: [es]
+  reporte_bmg:
+    activar: true
+    plantilla: plantillas/reporte_bmg_1st_2st.xlsx
+    combinar_1st_2st: true
+    hoja_resumen: "Übersicht Standversuche"
+    hoja_lista: "Versuchsmatrix"
+    idiomas_disponibles: [es, en, de]
+    idioma_predeterminado: es
+    exportacion_triple: false
+    hoja_trazabilidad: "Trazabilidad"
+
+# Flujo por ID para proyectos con <ID> <VERSION> <INFLADOR> <TEMPERATURA>.
+empresarial:
+  # Opcional. Si se deja vacío, se usa el nombre de la carpeta raíz como ID portable.
+  proyecto_id: null
+  # Opciones sólo con evidencia del perfil: laboratorio EDAG/VW,
+  # componente bolsa_aire/tablero y formato_fecha DMY. Vacío conserva ambigüedades.
+  perfil_extraccion: {}
+  archivo_cache: .cache_ocr/imagenes.sqlite3
+  archivo_cache_legacy: .cache_ocr/imagenes_legacy.sqlite3
+  archivo_avance_ids: .cache_ocr/avances_ids.json
+  base_conocimiento: base_conocimiento.json
+  reglas_minimo_ids: 3
+  reglas_consenso_minimo: 0.90
+
+ocr:
+  modo_recorte: auto       # auto | manual | completo
+  detectar_texto_antes_ocr: true
+  lado_maximo_deteccion: 1280
+  margen_recorte: 0.12
+  zoom_minimo: 1.0
+  zoom_maximo: 3.0
+  altura_objetivo_recorte: 160
+  corregir_perspectiva: true
+  rotacion_fallback: true
+  confianza_fallback: 0.45
+  roi_manual:
+    NACH: {x: 0.00, y: 0.50, ancho: 1.00, alto: 0.50}
+    VOR: {x: 0.00, y: 0.40, ancho: 1.00, alto: 0.60}
+
+normalizacion:
+  temperature_condition:
+    HT: {codigos: [HT], temperaturas_c: [85], tolerancia_c: 2}
+    RT: {codigos: [RT], temperaturas_c: [23], tolerancia_c: 2}
+    NT: {codigos: [NT], temperaturas_c: [-35], tolerancia_c: 2}
+  module_version:
+    RDW: {aliases: [RDW, RWD, ROW]}
+    NAR: {aliases: [NAR, N4R]}
+
+# Aprendizaje local y auditable. Las ejecuciones registran observaciones, pero
+# solo una corrección humana confirmada puede entrenar una versión candidata.
+aprendizaje:
+  activar: true
+  directorio: .aprendizaje
+  registrar_observaciones: true
+  aplicar_modelo: true
+  promocion_automatica: false
+  # Una lectura exacta debe corregirse igual en imágenes distintas al menos dos
+  # veces antes de convertirse en regla automática.
+  minimo_soporte_exacto: 2
+  minimo_soporte_caracter: 3
+  minimo_soporte_patron: 2
+  dominancia_minima: 0.80
+  estrategias_ocr:
+    # V14.8: aprende orientación, ajuste fino y tratamiento sólo de decisiones
+    # humanas que finalmente se confirman con “Aplicar supervisión”.
+    activar: true
+    # V14.9: una sola confirmación humana ya puede ensayarse inmediatamente
+    # en otra imagen del mismo contexto/posición. Siempre se compara contra OCR normal.
+    minimo_soporte_sugerencia: 1
+    minimo_soporte_automatico: 4
+    dominancia_minima: 0.75
+    tolerancia_ajuste_grados: 4
+    aplicar_inmediato_desde_primera_imagen: true
+    inmediato_exigir_mismo_grupo_ruta: true
+    inmediato_exigir_bbox_equivalente: true
+  # Desde este volumen se reserva automáticamente 20% de imágenes como holdout.
+  minimo_correcciones_validacion: 20
+  visual:
+    # Entrenamiento real del reconocedor CTC de EasyOCR. CRAFT no se modifica.
+    minimo_muestras: 100
+    minimo_ids: 15
+    proporcion_validacion: 0.20  # separación por ID, nunca por recorte aleatorio
+    epocas: 3
+    # V14.9: el ajuste visual automático se dispara sin botón. Usa una sola época
+    # por actualización para que varias verificaciones seguidas no congelen la revisión.
+    auto_entrenar: true
+    auto_entrenar_al_verificar: true
+    auto_activar_si_mejora: true
+    epocas_auto: 1
+    auto_debounce_segundos: 1.5
+    batch: 8
+    learning_rate: 0.00001
+    alto: 64
+    ancho: 320
+    max_longitud: 64
+
+# Banco local de imágenes difíciles. Se mantiene fuera de Git porque las
+# fuentes externas pueden no autorizar su redistribución.
+pruebas_externas:
+  directorio: .pruebas_externas/embossed-text-reader/images
+  archivo_resultados: .pruebas_externas/resultados.json
+
+# Persistencia V14.10: prioriza respuesta rápida sin sacrificar la escritura
+# atómica de correcciones confirmadas.
+persistencia:
+  # Los eventos visuales del pipeline se agrupan durante una fracción de segundo.
+  # Pausa, cancelación, error y finalización siguen escribiendo de inmediato.
+  checkpoint_debounce_segundos: 0.35
+  # Una corrección aislada dispara el Excel rápidamente; varias seguidas se
+  # agrupan para evitar regenerar el libro repetidas veces.
+  excel_debounce_segundos: 0.80
+  excel_latencia_max_segundos: 2.50
 
 # Paleta del semáforo: MISMO hex en Excel y dashboard (doc §6, requisito visual).
 # El backend la expone en GET /api/config para que el frontend no la duplique.
@@ -90,9 +275,25 @@ colores:
   verde: "#22c55e"
   amarillo: "#f59e0b"
   rojo: "#ef4444"
+  gris: "#9ca3af"
 
 dashboard:
   # Raíz permitida para servir imágenes originales en el detalle (seguridad:
   # el backend rechaza rutas fuera de esta raíz).
   raiz_datos_permitida: null   # null -> se toma del último pipeline ejecutado
   puerto: 8000
+
+# V15: análisis de videos de alta velocidad dentro de VIDEO/VIDEOS.
+video_airbag:
+  activar: true
+  leer_timestamp_overlay: true
+  max_ancho_analisis: 960
+  margen_vertical_deteccion: 0.12
+  fraccion_superior_overlay: 0.18
+  fraccion_inferior_overlay: 0.18
+  frames_baseline_min: 3
+  frames_baseline_max: 6
+  umbral_diff_min: 6.0
+  persistencia_frames: 2
+  tolerancia_consenso_ms: 0.15
+  min_videos_consenso: 3

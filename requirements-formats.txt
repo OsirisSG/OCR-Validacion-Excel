@@ -2,6 +2,5 @@
 Pillow>=10.3,<13
 pillow-heif>=0.16,<1       # Fotos HEIC/HEIF
 rawpy>=0.21,<1             # Imágenes RAW: CR2, NEF, ARW y DNG
-imageio>=2.34,<3           # Imágenes y secuencias
-imageio-ffmpeg>=0.5,<1     # Extracción de fotogramas de video
+imageio>=2.34,<3           # Imágenes y secuencias; el pipeline excluye videos
 pypdfium2>=4.28,<6         # Renderizado de PDF a imágenes para OCR

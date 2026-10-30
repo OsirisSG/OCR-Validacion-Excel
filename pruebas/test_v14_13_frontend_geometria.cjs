@@ -1,0 +1,16 @@
+const fs=require('fs'), path=require('path'), assert=require('assert');
+const root=path.resolve(__dirname,'..');
+const src=fs.readFileSync(path.join(root,'dashboard/frontend/app.js'),'utf8');
+const back=fs.readFileSync(path.join(root,'dashboard/backend/app.py'),'utf8');
+const css=fs.readFileSync(path.join(root,'dashboard/frontend/estilos.css'),'utf8');
+assert(src.includes('Editar 4 esquinas'), 'Falta activar geometría libre');
+assert(src.includes('Volver a rectángulo'), 'Falta regresar a geometría rectangular');
+assert(src.includes('tirador-poligono'), 'Faltan tiradores individuales del cuadrilátero');
+assert(src.includes('poligono=${poligonoSeleccion}'), 'La relectura no recibe la geometría flexible');
+assert(src.includes('Usar geometría final para entrenar OCR'), 'Ajustar/dividir no ofrece aprendizaje final');
+assert(src.includes('poligono:regiones[i].poligono || null'), 'Releer bloque no respeta cuadrilátero');
+assert(src.includes('proponer_entrenamiento:entrenarAjuste'), 'Guardar ajuste no envía aprendizaje');
+assert(back.includes('unidades_en_region'), 'Backend no filtra bloques usando geometría flexible');
+assert(back.includes('muestras_geometria'), 'Backend no registra aprendizaje de ajustes/divisiones');
+assert(css.includes('.poligono-seleccion-flexible'), 'Faltan estilos de la selección flexible');
+console.log('OK: V14.13 habilita geometría flexible y aprendizaje confirmado.');

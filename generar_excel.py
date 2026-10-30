@@ -21,6 +21,7 @@ Ningún rango está fijo en el código: cambiar el YAML cambia Excel y dashboard
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 
@@ -31,11 +32,15 @@ from openpyxl.utils import get_column_letter
 
 from configuracion import (RAIZ_PROYECTO, cargar_config, cargar_reglas,
                            clasificar, estructura_regla)
+from aprendizaje import GestorAprendizaje, hash_archivo
+from plantilla_empresarial import generar_desde_plantilla
 
 COLUMNAS = [
     ("Ruta", 46), ("Identificador", 18), ("Variante", 9),
-    ("Tipos de archivo", 30), ("Texto etiqueta (OCR)", 34),
+    ("Tipos de archivo", 30), ("Imágenes procesadas", 12),
+    ("Texto de todas las imágenes (OCR)", 52), ("Texto etiqueta (OCR)", 34),
     ("Texto referencia (OCR)", 34), ("Resultado comparación", 20),
+    ("Revisión", 15),
     ("Confianza OCR (%)", 12), ("QR detectado", 11),
     ("Anomalías Fase 0", 22), ("Observaciones", 34),
 ]
@@ -45,6 +50,50 @@ COLUMNAS_MATRIZ = [
     ("Coincidencia texto", 22), ("Semáforo global", 16),
 ]
 
+COLUMNAS_TEXTOS = [
+    ("Carpeta", 24), ("Ruta carpeta", 42), ("Imagen", 28), ("Rol", 20),
+    ("Origen", 16), ("Revisión", 15), ("Orden", 8), ("Texto", 60), ("Confianza (%)", 13),
+    ("X", 9), ("Y", 9), ("Ancho", 9), ("Alto", 9),
+]
+
+COLUMNAS_REVISION = [
+    ("Tipo", 16), ("Grupo", 24), ("Elemento", 30), ("Resultado", 24),
+    ("Revisión", 15), ("Quitado del listado", 18), ("Actualizado", 22),
+]
+
+ETIQUETAS_REVISION = {
+    "por_revisar": "Por revisar",
+    "parcial": "Revisión parcial",
+    "casi_listo": "Casi listo",
+    "completada": "Completada",
+}
+
+
+def _lista_opcional(mapa: dict | None, campo: str, contexto: str) -> list:
+    """Normaliza únicamente colecciones opcionales conocidas.
+
+    Un ``None`` en imágenes/tokens/observaciones significa que todavía no hay
+    elementos; otros tipos siguen siendo error y se reportan con el campo exacto.
+    Así evitamos el opaco ``'NoneType' object is not iterable`` sin esconder datos
+    estructuralmente inválidos.
+    """
+    if not isinstance(mapa, dict):
+        raise TypeError(f"{contexto} debe ser dict, no {type(mapa).__name__}")
+    valor = mapa.get(campo)
+    if valor is None:
+        return []
+    if not isinstance(valor, list):
+        raise TypeError(f"{contexto}.{campo} debe ser una lista o None, no {type(valor).__name__}")
+    return valor
+
+
+def _resultados_opcionales(documento: dict | None, contexto: str) -> list:
+    if documento is None:
+        return []
+    if not isinstance(documento, dict):
+        raise TypeError(f"{contexto} debe ser dict, no {type(documento).__name__}")
+    return _lista_opcional(documento, "resultados", contexto)
+
 
 def _hex_a_fill(hex_color: str) -> PatternFill:
     """'#22c55e' -> PatternFill aRGB sólido (openpyxl exige canal alfa)."""
@@ -52,20 +101,71 @@ def _hex_a_fill(hex_color: str) -> PatternFill:
                        end_color="FF" + hex_color.lstrip("#"), fill_type="solid")
 
 
-def _resumen_tipos(tipos: dict) -> str:
+def _resumen_tipos(tipos: dict | None) -> str:
+    if tipos is None:
+        return "—"
+    if not isinstance(tipos, dict):
+        raise TypeError(f"tipos_archivo debe ser dict o None, no {type(tipos).__name__}")
     partes = []
     for cat, archivos in sorted(tipos.items()):
-        partes.append(f"{len(archivos)} {cat}")
+        cantidad = len(archivos or []) if isinstance(archivos, (list, tuple, set)) or archivos is None else 1
+        partes.append(f"{cantidad} {cat}")
     return ", ".join(partes) if partes else "—"
 
 
-def _texto_fila(fila: dict) -> dict:
+def _id_carpeta(fila: dict) -> str:
+    return hashlib.sha256(
+        str(fila.get("ruta") or fila.get("nombre") or "").encode("utf-8")).hexdigest()[:16]
+
+
+def _estado_inicial_carpeta(fila: dict) -> str:
+    resultado = fila.get("comparacion", {}).get("resultado")
+    if resultado == "sin_procesar":
+        return "por_revisar"
+    return "casi_listo" if resultado == "coincidencia_total" else "parcial"
+
+
+def _estado_inicial_externa(fila: dict) -> str:
+    completa = (bool(fila.get("coincidencia_exacta")) if fila.get("tipo") == "codigo"
+                else float(fila.get("cobertura") or 0) >= 1.0)
+    if completa:
+        return "casi_listo"
+    return "parcial" if fila.get("tokens") or fila.get("lineas_texto") else "por_revisar"
+
+
+def _revision_texto(estado: str) -> str:
+    return ETIQUETAS_REVISION.get(estado, ETIQUETAS_REVISION["por_revisar"])
+
+
+def _texto_fila(fila: dict, anotaciones_por_ruta: dict | None = None,
+                revisiones: dict | None = None) -> dict:
     """Convierte una fila de validacion_resultados en valores de celda."""
     et = fila.get("etiqueta") or {}
     ref = fila.get("referencia") or {}
-    et_tokens = " | ".join(t["texto"] for t in (et.get("resultado_ocr") or {}).get("tokens", []))
-    ref_tokens = " | ".join(t["texto"] for t in (ref.get("resultado_ocr") or {}).get("tokens", []))
+    et_ocr = et.get("resultado_ocr") or {}
+    ref_ocr = ref.get("resultado_ocr") or {}
+    et_tokens = et_ocr.get("texto_completo") or " | ".join(
+        str(t.get("texto") or "") for t in _lista_opcional(et_ocr, "tokens", "etiqueta.resultado_ocr")
+        if isinstance(t, dict) and t.get("texto"))
+    ref_tokens = ref_ocr.get("texto_completo") or " | ".join(
+        str(t.get("texto") or "") for t in _lista_opcional(ref_ocr, "tokens", "referencia.resultado_ocr")
+        if isinstance(t, dict) and t.get("texto"))
+    imagenes = _lista_opcional(fila, "imagenes", "resultado")
+    anotaciones_por_ruta = anotaciones_por_ruta or {}
+    bloques_imagen = []
+    for item in imagenes:
+        ruta_item = str(item["ruta"])
+        texto = (item.get("resultado_ocr") or {}).get("texto_completo") or "—"
+        manuales = anotaciones_por_ruta.get(ruta_item, [])
+        if manuales:
+            texto += "\n" + "\n".join(
+                f"[REGIÓN MANUAL {a['bbox']}] {a['texto_correcto']}" for a in manuales)
+        bloques_imagen.append(
+            f"[{item.get('nombre') or Path(ruta_item).name} · {item.get('rol', 'imagen')}]\n{texto}")
+    texto_imagenes = "\n\n".join(bloques_imagen)
     comparacion = fila["comparacion"]["resultado"]
+    revision = (revisiones or {}).get(("carpeta", _id_carpeta(fila)))
+    revision_estado = (revision or {}).get("estado", _estado_inicial_carpeta(fila))
     return {
         "Ruta": fila["ruta"],
         "Identificador": (f"{fila.get('prefijo_numerico')}_{fila.get('nomenclatura')}"
@@ -73,29 +173,119 @@ def _texto_fila(fila: dict) -> dict:
                           else fila.get("identificador") or fila["nombre"]),
         "Variante": fila.get("variante") or "—",
         "Tipos de archivo": _resumen_tipos(fila.get("tipos_archivo", {})),
+        "Imágenes procesadas": len(imagenes) if imagenes else int(bool(et)) + int(bool(ref)),
+        "Texto de todas las imágenes (OCR)": texto_imagenes or et_tokens or ref_tokens or "—",
         "Texto etiqueta (OCR)": et_tokens or "—",
         "Texto referencia (OCR)": ref_tokens or "—",
         "Resultado comparación": comparacion,
+        "Revisión": _revision_texto(revision_estado),
         "Confianza OCR (%)": fila.get("confianza_ocr_pct"),
         "QR detectado": "Sí" if fila.get("qr_detectado") else "No",
         "Anomalías Fase 0": fila.get("anomalia_fase0") or "",
-        "Observaciones": "; ".join(fila.get("observaciones", [])),
+        "Observaciones": "; ".join(str(v) for v in _lista_opcional(fila, "observaciones", "resultado")),
     }
 
 
 def generar_excel(ruta_validacion: str | Path | None = None,
                   ruta_salida: str | Path | None = None,
                   config: dict | None = None,
-                  reglas: dict | None = None) -> Path:
-    """Genera resultado_maestro.xlsx. Retorna la ruta del archivo creado."""
+                  reglas: dict | None = None,
+                  ruta_plantilla: str | Path | None = None,
+                  datos_validacion: dict | None = None,
+                  idioma: str = "es",
+                  criterios_apertura: dict | None = None) -> Path:
+    """Genera resultado_maestro.xlsx. Retorna la ruta del archivo creado.
+
+    ``criterios_apertura`` (V15.9): instantánea ``{"verde_max", "amarillo_max",
+    "origen"}`` de la ejecución; el reporte BMG la usa para que el semáforo del
+    libro coincida con el mostrado durante esa ejecución.
+    """
     config = config or cargar_config()
     reglas = reglas or cargar_reglas()
+    if criterios_apertura is None and isinstance(datos_validacion, dict):
+        criterios_apertura = datos_validacion.get("criterios_apertura_ejecucion")
     f3 = config.get("fase3", {})
     ruta_validacion = Path(ruta_validacion) if ruta_validacion else RAIZ_PROYECTO / "validacion_resultados.json"
     ruta_salida = Path(ruta_salida) if ruta_salida else RAIZ_PROYECTO / f3.get("archivo_salida", "resultado_maestro.xlsx")
 
-    with open(ruta_validacion, "r", encoding="utf-8") as f:
-        datos = json.load(f)
+    if datos_validacion is None:
+        with open(ruta_validacion, "r", encoding="utf-8") as f:
+            datos = json.load(f)
+    else:
+        datos = datos_validacion
+
+    if not isinstance(datos, dict):
+        raise TypeError(f"datos_validacion debe ser dict, no {type(datos).__name__}")
+    if "resultados" not in datos:
+        raise ValueError("datos_validacion no contiene la clave obligatoria 'resultados'")
+    if datos.get("resultados") is None:
+        raise ValueError("datos_validacion['resultados'] es None; se esperaba una lista")
+    if not isinstance(datos.get("resultados"), list):
+        raise TypeError("datos_validacion['resultados'] debe ser una lista")
+
+    from copy import deepcopy
+    datos = deepcopy(datos)
+    gestor_filtro = GestorAprendizaje(config)
+    for fila in datos.get("resultados", []):
+        for item in [*_lista_opcional(fila, "imagenes", "resultado"), fila.get("etiqueta"), fila.get("referencia")]:
+            if item and item.get("ruta"):
+                item["resultado_ocr"] = gestor_filtro.filtrar_no_texto(
+                    item.get("resultado_ocr") or {}, item["ruta"])
+    plantilla_config = ruta_plantilla or f3.get("plantilla_empresarial")
+    if datos.get("perfil") == "empresarial" and plantilla_config:
+        plantilla = Path(str(plantilla_config).strip().strip('"\''))
+        if not plantilla.is_absolute():
+            plantilla = RAIZ_PROYECTO / plantilla
+        if not plantilla.is_file():
+            raise FileNotFoundError(f"No se encontró la plantilla Excel: {plantilla}")
+        # V15.9.2 (C7): la identidad autoritativa de la ejecución viaja con
+        # los datos validados; la plantilla sólo aporta el contrato de formato.
+        return generar_desde_plantilla(
+            plantilla, ruta_salida, datos.get("resultados", []),
+            identidad_proyecto=datos.get("proyecto_ejecucion"), idioma=idioma)
+
+    # Reporte BMG 1ST + 2ST: usa el libro de referencia sin alterar el
+    # generador empresarial genérico. Una plantilla explícita siempre tiene prioridad.
+    reporte_bmg = f3.get("reporte_bmg", {})
+    if datos.get("perfil") == "empresarial" and reporte_bmg.get("activar", False):
+        from reporte_bmg import generar_reporte_bmg
+        plantilla_bmg = Path(str(reporte_bmg.get("plantilla") or "").strip().strip('"\''))
+        if not plantilla_bmg.is_absolute():
+            plantilla_bmg = RAIZ_PROYECTO / plantilla_bmg
+        if plantilla_bmg.is_file():
+            return generar_reporte_bmg(
+                plantilla_bmg, ruta_salida, datos.get("resultados", []), config, reglas, idioma=idioma,
+                criterios_apertura=criterios_apertura,
+                identidad_proyecto=datos.get("proyecto_ejecucion"))
+
+    try:
+        from pruebas_externas import cargar as cargar_externas
+        datos_externos = cargar_externas(config)
+    except (FileNotFoundError, OSError, ValueError):
+        datos_externos = {"resultados": []}
+    resultados_externos = _resultados_opcionales(datos_externos, "pruebas_externas")
+
+    rutas_imagen = [str(item["ruta"])
+                    for fila in datos.get("resultados", [])
+                    for item in _lista_opcional(fila, "imagenes", "resultado")
+                    if isinstance(item, dict) and item.get("ruta")]
+    rutas_externas = [str(fila["ruta"])
+                      for fila in resultados_externos
+                      if fila.get("ruta") and Path(fila["ruta"]).is_file()]
+    rutas_consulta = [*rutas_imagen, *rutas_externas]
+    gestor = GestorAprendizaje(config)
+    anotaciones = gestor.listar_anotaciones(rutas_consulta)
+    revisiones = gestor.listar_revisiones()
+    anotaciones_por_hash: dict[str, list[dict]] = {}
+    for anotacion in anotaciones:
+        anotaciones_por_hash.setdefault(anotacion["imagen_hash"], []).append(anotacion)
+    anotaciones_por_ruta: dict[str, list[dict]] = {}
+    for ruta in rutas_consulta:
+        try:
+            if Path(ruta).is_file():
+                anotaciones_por_ruta[ruta] = anotaciones_por_hash.get(hash_archivo(ruta), [])
+        except OSError:
+            pass
 
     colores = config.get("colores", {})
     c_verde, c_amarillo, c_rojo = (colores.get("verde", "#22c55e"),
@@ -117,7 +307,11 @@ def generar_excel(ruta_validacion: str | Path | None = None,
         ws.column_dimensions[get_column_letter(col)].width = ancho
     ws.freeze_panes = "A2"
     for fila_datos in datos.get("resultados", []):
-        ws.append([_texto_fila(fila_datos)[t] for t, _ in COLUMNAS])
+        ws.append([_texto_fila(fila_datos, anotaciones_por_ruta, revisiones)[t]
+                   for t, _ in COLUMNAS])
+        ws.row_dimensions[ws.max_row].height = 60
+        for celda in ws[ws.max_row]:
+            celda.alignment = Alignment(vertical="top", wrap_text=True)
     ws.auto_filter.ref = f"A1:{get_column_letter(len(COLUMNAS))}{ws.max_row}"
 
     # ---------------------------------------------------------------- Hoja 2
@@ -138,7 +332,7 @@ def generar_excel(ruta_validacion: str | Path | None = None,
 
     fila_excel = 2
     for fila_datos in datos.get("resultados", []):
-        valores = _texto_fila(fila_datos)
+        valores = _texto_fila(fila_datos, anotaciones_por_ruta, revisiones)
         conf = valores["Confianza OCR (%)"]
         coinc = valores["Resultado comparación"]
         clasif = clasificar(conf, coinc, reglas)
@@ -182,6 +376,102 @@ def generar_excel(ruta_validacion: str | Path | None = None,
         for valor in estruct["valores"]:
             wm.conditional_formatting.add(rango_coinc, CellIsRule(
                 operator="equal", formula=[f'"{valor}"'], fill=_hex_a_fill(colores[color])))
+
+    # ------------------------------------------------ Hoja 3: carpeta → imagen → región
+    wt = wb.create_sheet(f3.get("hoja_textos", "Textos por imagen"))
+    for col, (titulo, ancho) in enumerate(COLUMNAS_TEXTOS, start=1):
+        celda = wt.cell(row=1, column=col, value=titulo)
+        celda.font = estilo_encabezado
+        celda.fill = fill_encabezado
+        wt.column_dimensions[get_column_letter(col)].width = ancho
+    wt.freeze_panes = "A2"
+    for fila_datos in datos.get("resultados", []):
+        inicio_grupo = wt.max_row + 1
+        revision = revisiones.get(("carpeta", _id_carpeta(fila_datos))) or {}
+        estado_revision = revision.get("estado", _estado_inicial_carpeta(fila_datos))
+        revision_texto = _revision_texto(estado_revision)
+        for item in _lista_opcional(fila_datos, "imagenes", "resultado"):
+            ruta_item = str(item["ruta"])
+            nombre_imagen = item.get("nombre") or Path(ruta_item).name
+            ocr = item.get("resultado_ocr") or {}
+            lineas = ocr.get("lineas_texto") or []
+            if not lineas and ocr.get("texto_completo"):
+                lineas = [{"texto": ocr["texto_completo"], "bbox": None,
+                           "confianza": ocr.get("confianza_media")}]
+            for orden, linea in enumerate(lineas, start=1):
+                bbox = linea.get("bbox") or [None] * 4
+                conf = linea.get("confianza")
+                wt.append([
+                    fila_datos.get("nombre"), fila_datos.get("ruta"), nombre_imagen,
+                    item.get("rol", "imagen"), "OCR", revision_texto, orden,
+                    linea.get("texto_original") or linea.get("texto"),
+                    round(conf * 100, 2) if conf is not None else None, *bbox,
+                ])
+            for orden, anotacion in enumerate(
+                    anotaciones_por_ruta.get(ruta_item, []), start=1):
+                wt.append([
+                    fila_datos.get("nombre"), fila_datos.get("ruta"), nombre_imagen,
+                    item.get("rol", "imagen"), "Manual", revision_texto, orden,
+                    anotacion["texto_correcto"], 100.0, *anotacion["bbox"],
+                ])
+        for numero_fila in range(inicio_grupo, wt.max_row + 1):
+            wt.row_dimensions[numero_fila].outlineLevel = 1
+            for celda in wt[numero_fila]:
+                celda.alignment = Alignment(vertical="top", wrap_text=True)
+    wt.sheet_properties.outlinePr.summaryBelow = True
+    wt.auto_filter.ref = f"A1:{get_column_letter(len(COLUMNAS_TEXTOS))}{max(wt.max_row, 1)}"
+
+    # Las pruebas complejas se agregan al mismo inventario de textos.
+    for externa in resultados_externos:
+        revision = revisiones.get(("externa", externa["id"])) or {}
+        estado_revision = revision.get("estado", _estado_inicial_externa(externa))
+        lineas = externa.get("lineas_texto") or ([{"texto": externa.get("texto_completo")}]
+                                                  if externa.get("texto_completo") else [])
+        for orden, linea in enumerate(lineas, start=1):
+            bbox = linea.get("bbox") or [None] * 4
+            conf = linea.get("confianza")
+            wt.append([
+                "Pruebas complejas", "Banco externo", externa.get("imagen"),
+                externa.get("tipo"), "OCR externo",
+                _revision_texto(estado_revision),
+                orden, linea.get("texto"),
+                round(conf * 100, 2) if conf is not None else None, *bbox,
+            ])
+        for orden, anotacion in enumerate(
+                anotaciones_por_ruta.get(str(externa.get("ruta") or ""), []), start=1):
+            wt.append([
+                "Pruebas complejas", "Banco externo", externa.get("imagen"),
+                externa.get("tipo"), "Manual externo",
+                _revision_texto(estado_revision), orden,
+                anotacion["texto_correcto"], 100.0, *anotacion["bbox"],
+            ])
+
+    # ---------------------------------------------- Hoja 4: bandeja unificada
+    wr = wb.create_sheet(f3.get("hoja_revision", "Bandeja de revisión"))
+    for col, (titulo, ancho) in enumerate(COLUMNAS_REVISION, start=1):
+        celda = wr.cell(row=1, column=col, value=titulo)
+        celda.font = estilo_encabezado
+        celda.fill = fill_encabezado
+        wr.column_dimensions[get_column_letter(col)].width = ancho
+    wr.freeze_panes = "A2"
+    for fila_datos in datos.get("resultados", []):
+        item_id = _id_carpeta(fila_datos)
+        revision = revisiones.get(("carpeta", item_id)) or {}
+        resultado = fila_datos["comparacion"]["resultado"]
+        estado_revision = revision.get("estado", _estado_inicial_carpeta(fila_datos))
+        wr.append(["Carpeta", fila_datos.get("nombre"),
+                   fila_datos.get("identificador") or fila_datos.get("nombre"), resultado,
+                   _revision_texto(estado_revision),
+                   "Sí" if revision.get("oculto") else "No", revision.get("actualizado_en")])
+    for externa in resultados_externos:
+        revision = revisiones.get(("externa", externa["id"])) or {}
+        estado_revision = revision.get("estado", _estado_inicial_externa(externa))
+        resultado = ("Código exacto" if externa.get("coincidencia_exacta") else
+                     f"Cobertura {round(float(externa.get('cobertura') or 0) * 100, 1)}%")
+        wr.append(["Prueba compleja", "Pruebas complejas", externa.get("imagen"), resultado,
+                   _revision_texto(estado_revision),
+                   "Sí" if revision.get("oculto") else "No", revision.get("actualizado_en")])
+    wr.auto_filter.ref = f"A1:{get_column_letter(len(COLUMNAS_REVISION))}{max(wr.max_row, 1)}"
 
     wb.save(ruta_salida)
     return ruta_salida

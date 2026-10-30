@@ -1,0 +1,29 @@
+const fs = require('fs');
+const vm = require('vm');
+const assert = require('assert');
+const path = require('path');
+const source = fs.readFileSync(path.join(__dirname, '../dashboard/frontend/app.js'), 'utf8');
+const from = source.indexOf('function unidadConfirmada(');
+const until = source.indexOf('/* ----------------------------- Componentes', from);
+assert(from >= 0 && until > from, 'No se encontró el bloque de helpers de supervisión en app.js');
+const ctx = vm.createContext({textoUnidad:u=>u?.texto_original || u?.texto || '', textoVisible:u=>u?.texto || u?.texto_original || ''});
+vm.runInContext(source.slice(from, until), ctx);
+const f = ctx.unidadConfirmada;
+assert.equal(f(null),false);
+assert.equal(f({texto:'ABC'}),false);
+assert.equal(f({texto:'ABC', confirmado_manualmente:true}),true);
+assert.equal(f({texto:'ABC', edicion_zona:1}),true);
+assert.equal(f({texto:'ABC', estado_supervision:'aceptado_provisional'}),false,
+  'Aceptar lectura es provisional y no debe equivaler a corrección humana definitiva');
+assert.equal(f({texto:'ABC', correccion_modelo:{tipo:'regla_automatica'}}),false);
+assert.equal(f({texto:'ABC', correccion_modelo:{tipo:'memoria_imagen_confirmada'}}),true);
+const u={texto:'10.04.25',texto_original:'100425',bbox:[1,2,3,4]};
+const c={texto_ocr:'100425',texto_correcto:'10.04.25',bbox:[1,2,3,4]};
+assert.equal(f(u,[c]),true);
+assert.equal(f(u,[{...c,fuente:'aceptar_ocr',accion:'aceptar',estado_supervision:'aceptado_provisional'}]),false,
+  'Una aceptación provisional persistida no debe transformarse en verificación humana');
+assert.equal(f(u,[{...c,bbox:[1,2,3,5]}]),false);
+assert.equal(f(u,[{...c,texto_correcto:'viejo'}]),false);
+assert.equal(f(u,[{...c,texto_ocr:'10.04.25'}]),false);
+assert.equal(f(u,null),false);
+console.log('OK: aceptación provisional separada de corrección humana confirmada.');

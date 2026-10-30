@@ -1,0 +1,14 @@
+V15 - Validación realizada en entorno local de desarrollo
+Fecha: 2026-10-05
+
+- Pruebas específicas video_airbag: 4/4 OK
+  * descubrimiento VIDEO/VIDEOS
+  * AVI sintético 1000 fps: cuadro 50 => 50.0 ms y resolución nativa 1.0 ms
+  * consenso 3 de 4
+  * calibración por timestamp overlay
+- Prueba frontend V15: OK
+- Suite JavaScript completa: 21 archivos OK
+- Suite Python completa: 242 aprobadas / 8 fallos históricos
+  Los 8 fallos dependen de fixtures empresariales externos ausentes y son los mismos de V14.15.1.
+
+Limitación: no se dispone aquí de la RTX A3000 ni de los videos empresariales reales. La precisión física y lectura de overlays deben validarse con los videos reales.

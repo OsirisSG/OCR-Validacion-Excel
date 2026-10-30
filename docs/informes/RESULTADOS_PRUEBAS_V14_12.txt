@@ -1,0 +1,22 @@
+OCR V14.12 — resultados de pruebas
+Fecha: 2026-09-28
+
+Pruebas específicas / regresión dirigida:
+- 24 pruebas Python aprobadas.
+- 16/16 pruebas JavaScript (.cjs) aprobadas.
+- Compilación Python de aprendizaje.py, dashboard/backend/app.py y utilidades/edicion_zonas.py correcta.
+- Sintaxis JavaScript de dashboard/frontend/app.js correcta.
+
+Suite completa:
+- 230 pruebas aprobadas.
+- 8 fallos restantes.
+- Los 8 fallos corresponden a fixtures externos ausentes que ya fallaban en la línea base: validacion_resultados.json y banco externo del dashboard/Excel. No se introdujeron fallos nuevos por V14.12.
+
+Cobertura nueva V14.12:
+1. Unión de varios fragmentos en una sola línea -> muestra visual entrenable.
+2. Unión multilínea con correspondencia 1:1 entre líneas y bloques -> muestras separadas por línea.
+3. Migración oportunista de una unión histórica al verificar la imagen, sin duplicarla al verificar nuevamente.
+4. Frontend: casilla entrenable activada por defecto y payload explícito al backend.
+
+Limitación de entorno:
+- No se ejecutó entrenamiento CUDA real de EasyOCR en este entorno. La activación real del entrenamiento visual debe comprobarse en la RTX A3000 del equipo de producción.

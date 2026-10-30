@@ -32,7 +32,7 @@ RUTA_REGLAS = RAIZ_PROYECTO / "reglas_cumplimiento.yaml"
 # ejecutarse con valores sensatos y avisar, no morir por un YAML faltante.
 _CONFIG_DEFECTO: dict = {
     "fase0": {"min_carpetas_para_patron": 2},
-    "fase1": {"motor": "paddle", "motor_fallback": "easyocr", "lang": "en",
+    "fase1": {"motor": "easyocr", "motor_fallback": None, "lang": "en",
               "umbral_confianza": 0.5, "umbral_espacio_px": 40},
     "colores": {"verde": "#22c55e", "amarillo": "#f59e0b", "rojo": "#ef4444"},
 }
@@ -56,7 +56,18 @@ def cargar_reglas(ruta: str | Path | None = None) -> dict:
     """Carga reglas_cumplimiento.yaml (criterios del semáforo)."""
     ruta = Path(ruta) if ruta else RUTA_REGLAS
     with open(ruta, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
+        reglas = yaml.safe_load(f) or {}
+    # Una configuración alternativa explícita sigue siendo autocontenida.
+    if ruta.resolve() == RUTA_REGLAS.resolve():
+        from criterios_usuario import cargar_criterios_usuario, reglas_apertura
+        try:
+            actual = cargar_criterios_usuario()
+            if actual:
+                reglas.setdefault("criterios", {})["tiempo_apertura_ms"] = reglas_apertura(actual)
+        except (OSError, ValueError, TypeError) as exc:
+            import warnings
+            warnings.warn(f"No se pudieron leer los umbrales del usuario; se usan los del YAML: {exc}")
+    return reglas
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,31 @@
+OCR V14.13 - Resultados de validación
+Fecha: 2026-09-28
+Base: V14.12.1
+
+Pruebas dirigidas de geometría/edición/aprendizaje:
+- 25 aprobadas / 25 ejecutadas.
+
+Pruebas JavaScript (.cjs):
+- Todas aprobadas.
+
+Suite Python completa:
+- 234 aprobadas.
+- 8 fallos.
+
+Los 8 fallos restantes corresponden a pruebas históricas que requieren datos/fixtures externos ausentes del paquete de desarrollo:
+- 6 pruebas del dashboard que esperan un banco externo/validación cargados.
+- 2 pruebas de Excel que requieren validacion_resultados.json.
+
+No se detectaron regresiones funcionales nuevas asociadas a V14.13.
+
+Cobertura nueva V14.13:
+- Polígono flexible de cuatro esquinas.
+- Intersección poligonal que evita arrastrar texto vecino contenido solo en la envolvente rectangular.
+- Persistencia de polígono en uniones.
+- Persistencia de polígono en ajuste/división/movimiento.
+- Rectificación del cuadrilátero final para muestras de entrenamiento.
+- Controles frontend de edición de cuatro esquinas.
+- Envío de la geometría final al backend.
+
+Limitación:
+- La validación real de CUDA/GPU debe ejecutarse en el equipo Windows con RTX A3000; V14.13 no cambia la arquitectura CUDA existente.

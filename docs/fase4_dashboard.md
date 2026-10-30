@@ -3,13 +3,18 @@
 ## Propósito
 
 Esta fase presenta los resultados de las Fases 0–3 sin obligar al usuario a abrir
-el Excel maestro. El dashboard es local y tiene cuatro vistas:
+el Excel maestro. El dashboard es local y tiene tres vistas principales:
 
 1. **Resumen:** KPIs, dona del semáforo y distribución apilada por lote.
-2. **Listado:** búsqueda, filtro por estado, paginación y navegación por teclado.
-3. **Detalle:** evidencia visual, tokens OCR y comparación etiqueta/referencia.
+2. **Listado:** bandeja unificada de carpetas y pruebas complejas, búsqueda,
+   cuatro estados de revisión, paginación y navegación por teclado.
+3. **Detalle:** todas las imágenes, texto completo, líneas OCR y comparación;
+   permite corregir cualquier línea o bloque o dibujar una región omitida.
 4. **Procesar carpeta:** valida una ruta local, ejecuta las Fases 0–3 en segundo
    plano y muestra estado, fase actual, errores y finalización.
+
+El banco complejo está unificado en el Listado. Cada fila externa abre un
+detalle con métricas para código o texto natural y corrección supervisada.
 
 La Fase 4b trabaja por dirección local: no sube ni duplica los archivos del lote.
 Esta decisión evita copiar hasta 8 GB al navegador y conserva el procesamiento
@@ -29,10 +34,58 @@ completamente local.
   y la barra apilada actuales no justifican otra dependencia.
 - Los resultados se cachean por `mtime`; al terminar una nueva ejecución del
   pipeline, el backend relee el JSON automáticamente.
+- El detalle permite confirmar una corrección de token, línea o bloque
+  multilinea. FastAPI valida que el texto y la imagen pertenezcan al resultado
+  antes de registrar la evidencia supervisada.
+- Las unidades repetidas conservan su `bbox`; la UI y la API usan texto + caja
+  para no corregir por accidente otra aparición igual. Un clic en la lectura o
+  en su caja la carga en el editor. Una corrección confirmada se pinta en verde.
+- Cada imagen tiene giro manual de ángulo libre. El visor muestra el giro en
+  tiempo real mientras se mueve el control; `Aplicar giro` guarda la decisión y
+  entonces alinea cajas OCR y regiones. La preferencia queda asociada al hash y
+  se usa al comenzar el OCR siguiente. Incluso 0° puede ser una decisión manual;
+  `Usar automático` la elimina. El detalle también informa la rotación automática
+  y el ajuste fino aplicados.
+- El texto omitido aparece en la misma lista de aprendizaje supervisado que las
+  correcciones OCR, agrupado por la imagen y carpeta actuales.
+- La edición solo se habilita durante la revisión y queda bloqueada en
+  `completada`; reabrir devuelve el elemento a `parcial`.
 - Solo puede ejecutarse un pipeline a la vez. Se rechazan rutas inexistentes y
   la raíz completa del sistema; la tarea corre en un hilo para no bloquear la UI.
+- La pausa es cooperativa y segura: termina la inferencia de la imagen actual y
+  espera antes de comenzar la siguiente. En ese límite genera un Excel parcial
+  descargable sin descartar `avances_ids.json`. Continuar reutiliza el modelo cargado.
+- Cancelar abre tres decisiones: continuar, cancelar conservando el avance o
+  detener al terminar la carpeta/ID. El checkpoint `.cache_ocr/estado_pipeline.json`,
+  los JSON parciales y la caché por hash permiten reanudar sin repetir imágenes
+  cuya imagen, configuración y modelo no cambiaron.
+- `estado_pipeline.json`, `avances_ids.json` y los demás JSON atómicos comparten
+  un escritor con temporal único, `fsync`, `RLock` y reintentos ante
+  `PermissionError`. Un fallo de caché queda como advertencia y no cambia el
+  estado del OCR a `error`.
+- Un clic en cualquier imagen de la lista inferior la abre, centra el visor y
+  activa la edición sin esconder las demás. Cada tarjeta muestra su miniatura y
+  todos los visores permanecen desplegados, uno debajo de otro. El visor tiene rueda, botones `+`/`−`, ajuste a pantalla, 100 %, arrastre y
+  doble clic. El zoom visual no altera el OCR; una ROI manual sí recorta los
+  píxeles que se vuelven a reconocer y queda como evidencia supervisada.
+- El formulario de corrección muestra una miniatura ampliable con rueda,
+  botones, paneo y restablecimiento. Imagen, cajas, OCR original y texto de
+  referencia se actualizan como una sola selección.
+- `Imagen sin datos de texto` guarda una revisión humana con motivo opcional;
+  no incrementa los fallos del sistema ni obliga a reprocesar esa imagen.
+- La ETA usa una ventana de duraciones recientes y excluye el calentamiento de
+  la primera imagen. La pantalla actualiza el reloj cada 250 ms y el backend
+  publica avance por imagen.
+- La ruta de entrada acepta comillas simples/dobles envolventes. El nombre de
+  salida es opcional, se restringe a un nombre de archivo y agrega `.xlsx`.
+- Las diez rutas usadas más recientemente se guardan en `localStorage`, junto
+  con el nombre de Excel asociado. El usuario puede recuperarlas o quitarlas;
+  no se envían a ningún servicio externo.
 - Antes de habilitar el botón, `/api/pipeline/capacidad` comprueba OpenCV,
-  NumPy, openpyxl, PyYAML y al menos un motor PaddleOCR/EasyOCR.
+  NumPy, openpyxl, PyYAML y EasyOCR.
+- La biblioteca `.plantillas/` registra contratos XLSX independientes. Tipo de
+  proyecto y marcadores de ruta permiten seleccionarlos automáticamente; una
+  selección explícita resuelve casos ambiguos sin mezclar catálogos.
 - Los fallos iniciados desde la UI crean automáticamente una bitácora Markdown
   en `errores/`, además de mostrarse en el panel de estado.
 - Cada fila recibe un id SHA-256 corto derivado de su ruta. Así dos lotes pueden
@@ -47,6 +100,11 @@ completamente local.
 
 ## Instalación y ejecución
 
+La instalación completa recomendada es `python instalar.py --perfil completo`;
+selecciona CUDA, MPS o CPU, crea un entorno aislado cuando corresponde y verifica
+PyTorch con una operación real. Los detalles están en
+`docs/instalacion_multiplataforma.md`.
+
 Desde la raíz del proyecto:
 
 ```bash
@@ -55,6 +113,10 @@ source .venv_dashboard/bin/activate          # Windows: .venv_dashboard\Scripts\
 python -m pip install -r dashboard/requirements.txt
 python dashboard/backend/app.py
 ```
+
+El lanzador recomendado y portable es `python iniciar.py`. En macOS/Linux puede
+usarse `./iniciar.command` y en Windows `iniciar.bat`; el lanzador elige el
+Python local disponible, diagnostica CUDA/MPS/CPU y abre el navegador.
 
 Para utilizar **Procesar carpeta**, el dashboard debe iniciarse desde el mismo
 entorno Python funcional usado por el pipeline OCR; `dashboard/requirements.txt`
@@ -74,6 +136,13 @@ dashboard:
   puerto: 8000
 ```
 
+La vista de carga permite sobrescribir expresamente un Excel ya existente. Si
+la casilla queda desactivada, el backend conserva el archivo y genera una salida
+versionada. Las advertencias muestran su motivo al posar el puntero y pueden
+marcarse como atendidas; esa decisión persiste en la base de aprendizaje. Las
+correcciones confirmadas se reflejan de inmediato en el texto visible y en
+verde, sin volver a listar por separado un renglón y sus tokens internos.
+
 ## Contrato de la API
 
 | Método y ruta | Propósito |
@@ -85,8 +154,24 @@ dashboard:
 | `GET /api/pruebas/{id}` | Detalle OCR de una carpeta por id estable. |
 | `GET /api/imagen?ruta=...` | Sirve solo una imagen registrada y dentro de la raíz permitida. |
 | `GET /api/pipeline/capacidad` | Informa si el entorno contiene las dependencias OCR. |
-| `GET /api/pipeline/estado` | Estado, fase, mensaje, ruta y resultado de la ejecución. |
+| `GET /api/pipeline/estado` | Avance, porcentaje, ETA y resultados parciales de la ejecución. |
 | `POST /api/pipeline` | Valida una ruta local e inicia las Fases 0–3 en segundo plano. |
+| `POST /api/pipeline/pausar` | Solicita una pausa segura tras la imagen actual. |
+| `POST /api/pipeline/reanudar` | Continúa el hilo pausado o recupera el checkpoint persistido. |
+| `POST /api/pipeline/cancelar` | Conserva avance ahora o detiene al terminar el ID actual. |
+| `GET/POST /api/plantillas` | Lista o registra contratos Excel reutilizables. |
+| `GET /api/aprendizaje` | Estado, correcciones y versión activa del modelo local. |
+| `POST /api/aprendizaje/correcciones` | Registra verdad humana y su recorte en la cola auditable. |
+| `POST /api/aprendizaje/entrenar-visual` | Entrena y evalúa un lote visual separado por ID. |
+| `POST /api/aprendizaje/rotaciones` | Memoriza la orientación manual de una imagen. |
+| `GET /api/imagen/orientada` | Sirve una vista rotada/enderezada de una imagen autorizada. |
+| `POST /api/aprendizaje/rollback` | Reactiva una versión histórica. |
+| `GET /api/externas` | Métricas y casos del banco local de imágenes difíciles. |
+| `POST /api/externas/evaluar` | Vuelve a ejecutar OCR sobre el banco externo. |
+| `GET /api/externas/imagen/{nombre}` | Sirve únicamente una imagen externa permitida. |
+| `POST /api/externas/correcciones` | Registra una corrección confirmada del banco externo. |
+| `POST /api/externas/regiones` | Guarda una región y texto omitido de una prueba compleja. |
+| `POST /api/imagenes/sin-datos` | Registra una imagen revisada sin datos útiles. |
 
 Ejemplo abreviado de salida de `GET /api/pruebas?estado=rojo`:
 
@@ -125,9 +210,9 @@ La tabla admite `Tab`, `↑`, `↓` y `Enter`; los controles tienen etiquetas AR
 foco visible. Se respeta `prefers-reduced-motion`. En móvil, la tabla deja de ser
 horizontal y cada fila se convierte en tarjeta etiquetada.
 
-## Verificación realizada (2026-08-23)
+## Verificación realizada (2026-08-30)
 
-- Contrato automatizado: `5 passed` en `pruebas/test_dashboard.py`.
+- Contrato automatizado: `25 passed` en la suite completa.
 - Sintaxis: `python -m py_compile dashboard/backend/app.py` y
   `node --check dashboard/frontend/app.js` sin errores.
 - Escritorio: KPIs, dona, barra por lote, búsqueda `04_B7`, filtro y detalle.
@@ -137,6 +222,16 @@ horizontal y cada fila se convierte en tarjeta etiquetada.
 - Móvil `390 × 844`: cinco KPIs apilados, tabla convertida a tarjetas,
   `scrollWidth = 390` y sin desbordamiento horizontal.
 - Consola del navegador: sin errores ni advertencias después del ajuste final.
+- Progreso: reloj visual actualizado cada 250 ms, porcentaje por imagen,
+  carpetas e imágenes totales/procesadas/restantes, ETA recalculado y tabla que
+  recibe cada carpeta terminada antes del cierre del pipeline.
+- Detalle: las 13 imágenes del lote de prueba quedaron disponibles, incluidas
+  las tres de `01_A1_variante2`, con espacios y saltos de línea editables.
+- Revisión: carpetas y banco externo conviven en el listado. Cada registro puede
+  completarse, reabrirse, quitarse o restaurarse sin borrar evidencia original.
+- Banco complejo: ocho fotografías externas visibles, acceso restringido por
+  nombre, cobertura de texto completo y correcciones conectadas al modelo
+  supervisado.
 
 Para repetir las pruebas del backend (requiere `pytest` y `httpx` en el entorno):
 
@@ -149,8 +244,8 @@ python -m pytest -q pruebas/test_dashboard.py
 - No hay autenticación: el servidor está diseñado para uso local y enlaza solo
   a loopback. Si se publica en una red interna, se debe agregar autenticación,
   HTTPS y política explícita de orígenes.
-- Las vistas de resultados son de solo lectura; la confirmación humana todavía
-  no se persiste. La vista Fase 4b sí genera/actualiza los artefactos del pipeline.
+- Las correcciones se almacenan localmente; todavía no existe autenticación ni
+  flujo de aprobación para múltiples revisores.
 - La ejecución en segundo plano no tiene cancelación en esta versión. Solo se
   admite una carpeta simultánea para proteger RAM/VRAM y los archivos maestros.
 - Los rangos del semáforo siguen parametrizados en `reglas_cumplimiento.yaml` y
@@ -160,10 +255,11 @@ python -m pytest -q pruebas/test_dashboard.py
 
 ## Resumen de cierre de fase (§11)
 
-- **Implementado:** backend FastAPI, frontend React sin build, cuatro vistas,
+- **Implementado:** backend FastAPI, frontend React sin build, cinco vistas,
   temas, responsive, estados de carga/vacío/error, filtros, paginación, acceso
-  seguro a imágenes, paleta unificada con Excel y Fase 4b por ruta local con
-  comprobación de dependencias y progreso.
+  seguro a imágenes, corrección supervisada, paleta unificada con Excel y Fase
+  4b por ruta local con comprobación de dependencias, progreso granular y banco
+  local de pruebas OCR complejas.
 - **Markdown generado:** este archivo `docs/fase4_dashboard.md`.
 - **Pendiente/parametrizado:** autenticación si se publica en red, cancelación
-  del pipeline, persistencia de revisión humana y calibración con datos reales.
+  del pipeline, revisión multiusuario y calibración con datos reales.

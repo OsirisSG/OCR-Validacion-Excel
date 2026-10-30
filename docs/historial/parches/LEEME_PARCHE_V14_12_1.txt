@@ -1,0 +1,11 @@
+PARCHE OCR V14.12.1 SOBRE V14.12
+
+Cambio únicamente de interfaz/claridad en el control de uniones entrenables.
+No altera la lógica de aprendizaje de V14.12.
+
+Instalación:
+1. Cierra el dashboard.
+2. Copia el contenido del parche sobre la raíz de V14.12.
+3. Acepta reemplazar archivos.
+4. No borres .aprendizaje, .cache_ocr, checkpoints ni cola Excel.
+5. Reinicia y pulsa Ctrl+F5 en el navegador si fuese necesario.

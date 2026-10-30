@@ -1,0 +1,13 @@
+const fs = require('fs');
+const assert = require('assert');
+const app = fs.readFileSync('dashboard/frontend/app.js','utf8');
+const i18n = fs.readFileSync('dashboard/frontend/i18n.js','utf8');
+assert(app.includes('Contenido a procesar'));
+assert(app.includes('Fotos + videos (recomendado)'));
+assert(app.includes('Análisis de apertura del airbag'));
+assert(app.includes('Confirmar apertura aquí'));
+assert(app.includes('/api/video/revision'));
+assert(app.includes('/api/video/frame'));
+assert(i18n.includes('Content to process'));
+assert(i18n.includes('Analyse der Airbag-Öffnung'));
+console.log('V15 frontend video: OK');

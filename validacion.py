@@ -23,17 +23,31 @@ cambia el costo del pipeline.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
+import statistics
+import time
+from collections import defaultdict, deque
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
+from typing import Callable
 
 import cv2
 import numpy as np
 
+from aprendizaje import GestorAprendizaje
 from configuracion import RAIZ_PROYECTO, cargar_config
 from estructura import carpetas_hoja
-from ocr_engine import cargar_imagen, extraer_texto
+from flujo_empresarial import (BaseConocimiento, CAMPOS_REQUERIDOS_DEFAULT,
+                               CLAVES_PLANTILLA,
+                               CacheOCR, EXTENSIONES_IMAGEN, ahora,
+                               consolidar_caso, evidencias_desde_qr,
+                               extraer_candidatos_texto)
+from ocr_engine import cargar_imagen, extraer_texto, extraer_texto_empresarial
+from utilidades.persistencia import escribir_json_seguro
+from utilidades.persistencia_documento import persistir_documento_completo
 
 _RE_TOKEN_CODIGO = re.compile(r"^([A-Za-z]+)(\d+)$")
 
@@ -195,13 +209,21 @@ def _parsear_identificador(nombre: str, patron_dominante: str | None) -> dict:
 
 def validar_lote(ruta_estructura: str | Path | None = None,
                  config: dict | None = None,
-                 archivo_salida: str | Path | None = None) -> dict:
+                 archivo_salida: str | Path | None = None,
+                 al_resultado: Callable[[int, int, dict, float | None], None] | None = None,
+                 al_imagen: Callable[[int, int, str, float | None], None] | None = None,
+                 control: Callable[[], None] | None = None,
+                 casos_omitidos: set[str] | None = None,
+                 ejecucion_id_aprendizaje: str | None = None) -> dict:
     """
     Recorre las carpetas hoja de la estructura detectada, valida cada una y
     serializa validacion_resultados.json. Retorna la estructura completa
     (no imprime; el CLI se encarga de eso).
     """
     config = config or cargar_config()
+    contenido = str(contenido or "todo").lower()
+    if contenido not in {"todo", "fotos", "videos"}:
+        raise ValueError("Contenido inválido: usa todo, fotos o videos.")
     f2 = config.get("fase2", {})
     ruta_estructura = Path(ruta_estructura) if ruta_estructura else \
         RAIZ_PROYECTO / config.get("fase0", {}).get("archivo_salida", "estructura_detectada.json")
@@ -210,31 +232,866 @@ def validar_lote(ruta_estructura: str | Path | None = None,
 
     patron_dominante = estructura.get("patron_dominante")
     cache_ocr: dict[str, dict] = {}
-    resultados = []
+    cache_persistente = CacheOCR(
+        RAIZ_PROYECTO / config.get("empresarial", {}).get(
+            "archivo_cache_legacy", ".cache_ocr/imagenes_legacy.sqlite3"),
+        {"fase1": config.get("fase1", {}),
+         "normalizacion": config.get("normalizacion", {})})
+    gestor_aprendizaje = GestorAprendizaje(config)
+    resultados_existentes = []
+    destino = Path(archivo_salida) if archivo_salida else RAIZ_PROYECTO / "validacion_resultados.json"
+    if casos_omitidos and destino.is_file():
+        try:
+            resultados_existentes = json.loads(
+                destino.read_text(encoding="utf-8")).get("resultados") or []
+        except (OSError, json.JSONDecodeError):
+            resultados_existentes = []
+    resultados = [fila for fila in resultados_existentes
+                  if str(fila.get("case_key") or fila.get("ruta")) in casos_omitidos]
+    advertencias_persistencia: list[str] = []
+    hojas = carpetas_hoja(estructura)
+    if casos_omitidos:
+        hojas = [carpeta for carpeta in hojas
+                 if str(carpeta.get("case_key") or carpeta.get("ruta")) not in casos_omitidos]
+    inicio = time.monotonic()
+    total_imagenes = sum(len(c.get("archivos", {}).get("imagenes", [])) for c in hojas)
+    imagenes_procesadas = 0
+    ultimo_evento = inicio
+    duraciones: deque[float] = deque(maxlen=8)
 
-    for carpeta in carpetas_hoja(estructura):
-        fila = _validar_carpeta(carpeta, config, f2, cache_ocr, patron_dominante)
+    def imagen_lista(ruta_imagen: str) -> None:
+        nonlocal imagenes_procesadas, ultimo_evento
+        ahora = time.monotonic()
+        duraciones.append(max(0.01, ahora - ultimo_evento))
+        ultimo_evento = ahora
+        imagenes_procesadas += 1
+        if al_imagen:
+            muestras = list(duraciones)[1:] if imagenes_procesadas > 1 else []
+            eta = (statistics.median(muestras) * (total_imagenes - imagenes_procesadas)
+                   if muestras else None)
+            al_imagen(imagenes_procesadas, total_imagenes, ruta_imagen,
+                      round(eta, 1) if eta is not None else None)
+
+    def persistir_legacy(parcial: bool) -> None:
+        salida_parcial = {
+            "raiz": estructura["raiz"],
+            "generado_en": datetime.now().isoformat(timespec="seconds"),
+            "estructura_usada": str(ruta_estructura), "perfil": "legacy",
+            "parcial": parcial, "carpetas_procesadas": len(resultados),
+            "resultados": resultados,
+        }
+        # R15.2 (CRÍTICO-02): escritura del documento sólo por la autoridad
+        # compartida (lock con backend + revisión monotónica + escritura
+        # verificada); el avance por IDs vive en ruta_avances y no aplica.
+        persistir_documento_completo(
+            destino, salida_parcial,
+            al_error=lambda mensaje: advertencias_persistencia.append(mensaje))
+
+    for indice, carpeta in enumerate(hojas, start=1):
+        fila = _validar_carpeta(
+            carpeta, config, f2, cache_ocr, patron_dominante, imagen_lista, control,
+            cache_persistente, gestor_aprendizaje, ejecucion_id_aprendizaje,
+            estructura.get("raiz"))
         resultados.append(fila)
+        persistir_legacy(parcial=True)
+        if al_resultado:
+            transcurrido = time.monotonic() - inicio
+            eta = (transcurrido / indice) * (len(hojas) - indice) if indice else None
+            al_resultado(indice, len(hojas), fila,
+                         round(eta, 1) if eta is not None else None)
+
+    aprendizaje = None
+    if config.get("aprendizaje", {}).get("activar", True):
+        try:
+            from aprendizaje import GestorAprendizaje
+            gestor_final = GestorAprendizaje(config)
+            aprendizaje = (gestor_final.finalizar_ejecucion_incremental(
+                ejecucion_id_aprendizaje) if ejecucion_id_aprendizaje else
+                gestor_final.registrar_ejecucion(
+                    list(cache_ocr.values()), raiz=estructura.get("raiz")))
+        except Exception as exc:
+            # El registro de aprendizaje nunca debe invalidar un lote ya
+            # procesado; el error queda explícito en el artefacto de salida.
+            aprendizaje = {"registrada": False, "error": f"{type(exc).__name__}: {exc}"}
 
     salida = {
         "raiz": estructura["raiz"],
         "generado_en": datetime.now().isoformat(timespec="seconds"),
         "estructura_usada": str(ruta_estructura),
         "carpetas_procesadas": len(resultados),
+        "aprendizaje": aprendizaje,
         "resultados": resultados,
     }
-    destino = Path(archivo_salida) if archivo_salida else RAIZ_PROYECTO / "validacion_resultados.json"
-    with open(destino, "w", encoding="utf-8") as f:
-        json.dump(salida, f, ensure_ascii=False, indent=2)
+    if advertencias_persistencia:
+        salida["advertencias_persistencia"] = list(dict.fromkeys(advertencias_persistencia))
+    guardado_final = persistir_documento_completo(
+        destino, salida,
+        al_error=lambda mensaje: advertencias_persistencia.append(mensaje))
+    if not guardado_final:
+        salida["advertencias_persistencia"] = list(dict.fromkeys(advertencias_persistencia))
     salida["archivo_salida"] = str(destino)
     return salida
 
 
+def _imagenes_legacy_caso(caso: dict) -> list[dict]:
+    """Fallback acotado al caso incompleto; nunca degrada los demás casos."""
+    raiz = Path(caso["ruta"])
+    return [{"ruta": str(p), "ruta_relativa": p.relative_to(raiz).as_posix(),
+             "fase": "LEGACY", "tor": None}
+            for p in sorted(raiz.rglob("*"))
+            if p.is_file() and p.suffix.lower() in EXTENSIONES_IMAGEN]
+
+
+def _fila_empresarial_parcial(caso: dict, evidencias: list[dict],
+                              imagenes: list[dict], trazabilidad: list[dict],
+                              progreso: dict, cfg_emp: dict,
+                              conocimiento: BaseConocimiento) -> dict:
+    """Construye una fila provisional utilizable por el Excel durante una pausa."""
+    consolidado = consolidar_caso(
+        caso, evidencias,
+        requeridos=set(cfg_emp.get("campos_requeridos") or CAMPOS_REQUERIDOS_DEFAULT),
+        reglas_confirmadas=conocimiento.confirmadas(),
+        claves=cfg_emp.get("claves_plantilla") or CLAVES_PLANTILLA)
+    confianza = [t["confianza_ocr"] for t in trazabilidad
+                 if t.get("confianza_ocr") is not None]
+    return {
+        "case_key": caso["case_key"],
+        "id": hashlib.sha256(caso["case_key"].encode()).hexdigest()[:16],
+        "ruta": caso["ruta"], "ruta_relativa": caso.get("ruta_relativa"),
+        "nombre": caso["nombre"],
+        "identificador": consolidado["test_number"] or caso["nombre"],
+        "test_number": consolidado["test_number"], "tipo_st": caso.get("tipo_st"),
+        "project_id": caso.get("project_id"),
+        **caso.get("metadata_ruta", {}), "perfil": "empresarial",
+        "estado": "procesando", "parcial": True, "progreso": deepcopy(progreso),
+        "imagenes": deepcopy(imagenes), "trazabilidad": deepcopy(trazabilidad),
+        "consolidado": consolidado, "campos": consolidado["campos"],
+        "campos_faltantes": consolidado["campos_faltantes"],
+        "conflictos": consolidado["conflictos"],
+        "requiere_revision": True,
+        "tipos_archivo": {"fotografia": [i["nombre"] for i in imagenes]},
+        "comparacion": {"resultado": "coincidencia_parcial", "ratio": None,
+                        "coincidentes": [], "faltantes": []},
+        "confianza_ocr_pct": (round(statistics.mean(confianza) * 100, 2)
+                               if confianza else None),
+        "qr_detectado": any(i.get("resultado_ocr", {}).get("qrs") for i in imagenes),
+        "observaciones": ["Resultado parcial exportado durante una pausa"],
+    }
+
+
+def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = None,
+                             archivo_salida: str | Path | None = None,
+                             al_resultado: Callable[[int, int, dict, float | None], None] | None = None,
+                             al_imagen: Callable[[int, int, str, float | None], None] | None = None,
+                             control: Callable[[], None] | None = None,
+                             casos_filtrados: set[str] | None = None,
+                             casos_omitidos: set[str] | None = None,
+                             imagenes_filtradas: set[str] | None = None,
+                             solo_errores: bool = False,
+                             modo_recorte: str | None = None,
+                             roi_manual: dict[str, float] | None = None,
+                             zoom_forzado: float | None = None,
+                             al_caso: Callable[[dict], None] | None = None,
+                             ejecucion_id_aprendizaje: str | None = None,
+                             contenido: str = "todo") -> dict:
+    """Procesa todos los casos empresariales y consolida una sola salida por ID."""
+    config = config or cargar_config()
+    if roi_manual:
+        config = deepcopy(config)
+        config.setdefault("ocr", {}).setdefault("roi_manual", {})
+        config["ocr"]["roi_manual"].update({"NACH": roi_manual, "VOR": roi_manual})
+    with open(ruta_estructura, encoding="utf-8") as archivo:
+        estructura = json.load(archivo)
+    casos = estructura.get("casos_empresariales", [])
+    if casos_filtrados:
+        casos = [c for c in casos if c["case_key"] in casos_filtrados]
+    if casos_omitidos:
+        casos = [c for c in casos if c["case_key"] not in casos_omitidos]
+    cfg_emp = config.get("empresarial", {})
+    control_original = control
+    revision_conocimiento = getattr(control_original, "revision_conocimiento", 0)
+    gestor_aprendizaje = GestorAprendizaje(config)
+    estado_modelos = gestor_aprendizaje.estado()
+    cache = CacheOCR(
+        RAIZ_PROYECTO / cfg_emp.get("archivo_cache", ".cache_ocr/imagenes.json"),
+        {"fase1": config.get("fase1", {}), "ocr": config.get("ocr", {}),
+         "normalizacion": config.get("normalizacion", {}),
+         "modelo_correccion": (estado_modelos.get("modelo_activo") or {}).get("version"),
+         "modelo_visual": (estado_modelos.get("modelo_visual_activo") or {}).get("version")})
+    conocimiento = BaseConocimiento(
+        RAIZ_PROYECTO / cfg_emp.get("base_conocimiento", "base_conocimiento.json"),
+        cfg_emp.get("reglas_minimo_ids", 3), cfg_emp.get("reglas_consenso_minimo", 0.90))
+    todas_las_fotos = [f for c in casos for f in (
+        c.get("fotos", []) if c.get("estructura_valida") else _imagenes_legacy_caso(c))]
+    anotaciones_por_ruta: dict[str, list[dict]] = defaultdict(list)
+    for anotacion in gestor_aprendizaje.listar_anotaciones(
+            [f["ruta"] for f in todas_las_fotos]):
+        if anotacion.get("ruta_imagen"):
+            anotaciones_por_ruta[str(anotacion["ruta_imagen"])].append(anotacion)
+    muestras_por_ruta: dict[str, list[dict]] = defaultdict(list)
+    for muestra in gestor_aprendizaje.listar_muestras_visuales(
+            [f["ruta"] for f in todas_las_fotos]):
+        muestras_por_ruta[str(muestra.get("ruta_imagen"))].append(muestra)
+    destino = Path(archivo_salida) if archivo_salida else RAIZ_PROYECTO / "validacion_resultados.json"
+    resultados: list[dict] = []
+    resultados_previos: list[dict] = []
+    resultados_existentes: list[dict] = []
+    avances_ids: dict[str, dict] = {}
+    advertencias_persistencia: list[str] = []
+    ruta_avances = RAIZ_PROYECTO / cfg_emp.get(
+        "archivo_avance_ids", ".cache_ocr/avances_ids.json")
+    if ruta_avances.is_file():
+        try:
+            documento_avances = json.loads(ruta_avances.read_text(encoding="utf-8"))
+            if str(documento_avances.get("raiz") or estructura["raiz"]) == str(estructura["raiz"]):
+                avances_ids = dict(documento_avances.get("avances_ids") or {})
+        except (OSError, ValueError, json.JSONDecodeError):
+            avances_ids = {}
+    if destino.is_file():
+        try:
+            resultados_existentes = json.loads(
+                destino.read_text(encoding="utf-8")).get("resultados") or []
+        except (OSError, json.JSONDecodeError):
+            resultados_existentes = []
+    if casos_filtrados or casos_omitidos:
+        resultados_previos = resultados_existentes
+    def refrescar_conocimiento() -> None:
+        """Recarga supervisión al reanudar; no entrena ni cambia resultados terminados."""
+        nonlocal gestor_aprendizaje, conocimiento, estado_modelos
+        nonlocal anotaciones_por_ruta, muestras_por_ruta, resultados_existentes, resultados_previos
+        gestor_nuevo = GestorAprendizaje(config)
+        modelos_nuevos = gestor_nuevo.estado()
+        rutas_fotos = [f["ruta"] for f in todas_las_fotos]
+        anotaciones_nuevas = defaultdict(list)
+        for anotacion in gestor_nuevo.listar_anotaciones(rutas_fotos):
+            if anotacion.get("ruta_imagen"):
+                anotaciones_nuevas[str(anotacion["ruta_imagen"])].append(anotacion)
+        muestras_nuevas = defaultdict(list)
+        for muestra in gestor_nuevo.listar_muestras_visuales(rutas_fotos):
+            muestras_nuevas[str(muestra.get("ruta_imagen"))].append(muestra)
+        conocimiento_nuevo = BaseConocimiento(
+            RAIZ_PROYECTO / cfg_emp.get("base_conocimiento", "base_conocimiento.json"),
+            cfg_emp.get("reglas_minimo_ids", 3), cfg_emp.get("reglas_consenso_minimo", 0.90))
+        existentes_nuevos = resultados_existentes
+        if destino.is_file():
+            existentes_nuevos = json.loads(destino.read_text(encoding="utf-8")).get("resultados") or []
+        firma_supervision = {
+            "anterior": cache.config_version,
+            "modelos": modelos_nuevos,
+            "correcciones": gestor_nuevo.listar_correcciones_texto(rutas_fotos),
+            "anotaciones": anotaciones_nuevas,
+        }
+        nueva_version_cache = hashlib.sha256(json.dumps(
+            firma_supervision, sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()[:16]
+        # Mantener el objeto de caché y sus escrituras pendientes intactos.
+        # Las imágenes siguientes se vuelven a leer con la supervisión actual,
+        # sin reiniciar los bucles ni repetir las ya terminadas en este hilo.
+        gestor_aprendizaje = gestor_nuevo
+        estado_modelos = modelos_nuevos
+        conocimiento = conocimiento_nuevo
+        anotaciones_por_ruta = anotaciones_nuevas
+        muestras_por_ruta = muestras_nuevas
+        resultados_existentes = existentes_nuevos
+        cache.config_version = nueva_version_cache
+        if casos_filtrados or casos_omitidos:
+            resultados_previos = existentes_nuevos
+        por_clave = {r.get("case_key") or r.get("ruta"): r for r in existentes_nuevos}
+        resultados[:] = [por_clave.get(r.get("case_key") or r.get("ruta"), r)
+                        for r in resultados]
+
+    conocimiento_actualizado = False
+    def control_actualizado() -> None:
+        nonlocal revision_conocimiento, conocimiento_actualizado
+        if control_original:
+            control_original()
+        revision = getattr(control_original, "revision_conocimiento", 0)
+        if revision != revision_conocimiento:
+            refrescar_conocimiento()
+            revision_conocimiento = revision
+            conocimiento_actualizado = True
+    control = control_actualizado
+    inicio = time.monotonic()
+    total_imagenes = 0
+    for c in casos:
+        if contenido != "videos":
+            total_imagenes += (len(c.get("fotos", [])) if c.get("estructura_valida")
+                               else len(_imagenes_legacy_caso(c)))
+        if contenido != "fotos":
+            total_imagenes += len(c.get("videos") or [])
+    procesadas = 0
+    duraciones: deque[float] = deque(maxlen=12)
+    anterior = inicio
+
+    def persistir(parcial: bool) -> dict:
+        inicio_persistencia = time.monotonic()
+        combinados = {r.get("case_key") or r.get("ruta"): r for r in resultados_previos}
+        combinados.update({r.get("case_key") or r.get("ruta"): r for r in resultados})
+        salida_parcial = {
+            "raiz": estructura["raiz"], "generado_en": datetime.now().isoformat(timespec="seconds"),
+            "ejecucion_id": ejecucion_id_aprendizaje,
+            "estructura_usada": str(ruta_estructura), "perfil": "empresarial",
+            "tipo_st": estructura.get("tipo_st"), "tipos_st": estructura.get("tipos_st", []),
+            "parcial": parcial, "carpetas_procesadas": len(combinados),
+            "casos_encontrados": len(combinados), "resultados": list(combinados.values()),
+        }
+        # R15.2 (CRÍTICO-02): escritura del documento sólo por la autoridad
+        # compartida (lock con backend + revisión monotónica + escritura
+        # verificada); el avance por IDs vive en ruta_avances y no aplica.
+        persistir_documento_completo(
+            destino, salida_parcial,
+            al_error=lambda mensaje: advertencias_persistencia.append(mensaje))
+        if gestor_recursos:
+            gestor_recursos.registrar_etapa(
+                "persistencia_validacion", time.monotonic() - inicio_persistencia)
+        return salida_parcial
+
+    def persistir_avance_id() -> None:
+        """Guarda sólo el ID activo; evita reescribir todo el lote por imagen."""
+        inicio_persistencia = time.monotonic()
+        escribir_json_seguro(
+            ruta_avances,
+            {"raiz": estructura["raiz"], "actualizado_en": ahora(),
+             "ejecucion_id": ejecucion_id_aprendizaje, "avances_ids": avances_ids},
+            al_error=lambda mensaje: advertencias_persistencia.append(mensaje))
+        if gestor_recursos:
+            gestor_recursos.registrar_etapa(
+                "persistencia_checkpoint", time.monotonic() - inicio_persistencia)
+
+    rendimiento = config.get("fase1", {}).get("rendimiento", {})
+    preparador = None
+    gestor_recursos = None
+    if rendimiento.get("prefetch_cpu", False):
+        from gestor_recursos import obtener_gestor_recursos
+        from orquestador_ocr import PreparadorImagenes
+        gestor_recursos = obtener_gestor_recursos(rendimiento.get("perfil_sop", "alto"))
+        limites = gestor_recursos.limites
+        workers_cfg = rendimiento.get("workers_preparacion")
+        cola_cfg = rendimiento.get("cola_preparacion_max")
+        workers_preparacion = max(1, int(
+            limites.get("workers_cpu", 2) if workers_cfg in {None, "auto"} else workers_cfg))
+        cola_preparacion = max(workers_preparacion, int(
+            limites.get("cola_max", 4) if cola_cfg in {None, "auto"} else cola_cfg))
+        preparador = PreparadorImagenes(
+            cargar_imagen, workers=workers_preparacion, max_pendientes=cola_preparacion)
+
+    cache_anticipada: dict[str, tuple[dict | None, dict | None, bool]] = {}
+
+    def resolver_preexistente(ruta: str) -> tuple[dict | None, dict | None, bool]:
+        """Resuelve revisión/caché antes de gastar CPU en decodificar una imagen."""
+        revision_sin_datos = gestor_aprendizaje.imagen_sin_datos(ruta)
+        if revision_sin_datos:
+            return ({"imagen": ruta, "tokens": [], "lineas_texto": [],
+                     "texto_completo": "", "estado_imagen": "revisada_sin_datos",
+                     "motivo_sin_datos": revision_sin_datos.get("motivo"),
+                     "modo_recorte": "revision_manual"}, revision_sin_datos, True)
+        resultado = None
+        if not conocimiento_actualizado:
+            try:
+                resultado = cache.obtener(ruta)
+                if (resultado and
+                        resultado.get("orientaciones_regionales_usadas", {}) !=
+                        gestor_aprendizaje.orientaciones_regionales(ruta)):
+                    resultado = None
+            except OSError:
+                resultado = None
+        desde_cache = resultado is not None
+        if imagenes_filtradas and ruta in imagenes_filtradas:
+            resultado = None
+            desde_cache = False
+        if (solo_errores and desde_cache and
+                (resultado.get("error") or str(resultado.get("estado_imagen", "")).startswith("error"))):
+            resultado = None
+            desde_cache = False
+        return resultado, None, desde_cache
+
+    for indice, caso in enumerate(casos, start=1):
+        if control:
+            control()
+        caso = dict(caso)
+        if modo_recorte:
+            caso["modo_recorte"] = modo_recorte
+        caso["estado"] = "procesando"
+        if al_caso:
+            al_caso(deepcopy(caso))
+        previo = next((r for r in resultados_existentes
+                       if r.get("case_key") == caso.get("case_key")), {})
+        fotos_base = caso.get("fotos", []) if caso.get("estructura_valida") else _imagenes_legacy_caso(caso)
+        fotos = [] if contenido == "videos" else fotos_base
+        videos = [] if contenido == "fotos" else list(caso.get("videos") or [])
+        trazabilidad, evidencias, imagenes_salida, alertas = [], [], [], []
+        videos_salida = []
+        video_consenso = {"estado": "no_procesado", "tiempo_ms": None, "soporte": 0,
+                          "total_validos": 0, "requiere_revision": contenido != "fotos"}
+        # Los modos selectivos nunca borran lo ya obtenido por la otra fuente.
+        if contenido == "videos" and previo:
+            imagenes_salida = deepcopy(previo.get("imagenes") or [])
+            trazabilidad = deepcopy(previo.get("trazabilidad") or [])
+            evidencias = [deepcopy(e) for e in (previo.get("candidatos") or [])
+                          if e.get("fuente") not in {"ruta_carpeta", "video"}]
+        elif contenido == "fotos" and previo:
+            videos_salida = deepcopy(previo.get("videos") or [])
+            video_consenso = deepcopy(previo.get("video_apertura") or video_consenso)
+            from video_airbag import consenso_valido
+            if consenso_valido(video_consenso):
+                from video_airbag import evidencia_apertura_desde_consenso
+                ev_previa = evidencia_apertura_desde_consenso(caso, video_consenso)
+                if ev_previa:
+                    evidencias.append(ev_previa)
+        if contenido != "videos" and not fotos:
+            alertas.append({"codigo": "SIN_IMAGENES", "nivel": "warning",
+                            "mensaje": "El ID no contiene fotografías NACH/VOR procesables."})
+        if contenido != "fotos" and not videos:
+            alertas.append({"codigo": "SIN_VIDEOS", "nivel": "info",
+                            "mensaje": "El ID no contiene videos en VIDEO/VIDEOS."})
+        con_texto = sin_texto = errores = 0
+        if contenido == "videos" and previo:
+            con_texto = int((previo.get("progreso") or {}).get("con_texto") or 0)
+            sin_texto = int((previo.get("progreso") or {}).get("sin_texto") or 0)
+            errores = int((previo.get("progreso") or {}).get("errores") or 0)
+        for posicion_foto, foto in enumerate(fotos):
+            if control:
+                control()
+            ruta = foto["ruta"]
+            # Si la revisión/aprendizaje cambió desde que se anticipó esta ruta,
+            # se invalida la decisión de caché; la imagen decodificada sigue siendo reutilizable.
+            if ruta in cache_anticipada and not conocimiento_actualizado:
+                resultado, revision_sin_datos, desde_cache = cache_anticipada.pop(ruta)
+            else:
+                cache_anticipada.pop(ruta, None)
+                resultado, revision_sin_datos, desde_cache = resolver_preexistente(ruta)
+            estado_cache = "revision_manual" if revision_sin_datos else (
+                "leida" if desde_cache else "omitida")
+            if resultado is None:
+                if preparador:
+                    # Puede venir preparado desde la imagen anterior. Para la primera
+                    # imagen (o si hubo backpressure), se solicita aquí y se espera.
+                    preparador.preparar(ruta)
+                    imagen_preparada = preparador.obtener(ruta)
+                    # Antes de lanzar CUDA se llenan huecos con trabajo que realmente
+                    # necesita OCR; los aciertos de caché no se decodifican por prefetch.
+                    admitidas = 0
+                    inspeccionadas = 0
+                    max_inspeccion = max(cola_preparacion, workers_preparacion * 4)
+                    for siguiente in fotos[posicion_foto + 1:]:
+                        if admitidas >= workers_preparacion or inspeccionadas >= max_inspeccion:
+                            break
+                        inspeccionadas += 1
+                        ruta_siguiente = siguiente["ruta"]
+                        if ruta_siguiente not in cache_anticipada:
+                            cache_anticipada[ruta_siguiente] = resolver_preexistente(ruta_siguiente)
+                        resultado_siguiente, _, _ = cache_anticipada[ruta_siguiente]
+                        if resultado_siguiente is None:
+                            if preparador.preparar(ruta_siguiente):
+                                admitidas += 1
+                            else:
+                                # Backpressure real: no seguir recorriendo/cargando el lote.
+                                break
+                else:
+                    imagen_preparada = None
+                try:
+                    if caso.get("estructura_valida"):
+                        preferencia_roi = gestor_aprendizaje.roi_preferida(
+                            str(estructura.get("raiz") or "proyecto"),
+                            str(foto.get("fase") or "VOR"), Path(ruta).name)
+                        roi_foto = roi_manual or ((preferencia_roi or {}).get("roi"))
+                        modo_foto = caso.get("modo_recorte")
+                        if preferencia_roi and modo_recorte is None:
+                            modo_foto = "manual"
+                        resultado = extraer_texto_empresarial(
+                            ruta, config, fase=foto.get("fase", "VOR"),
+                            modo_recorte=modo_foto, roi_manual=roi_foto,
+                            zoom_forzado=(zoom_forzado if zoom_forzado is not None else
+                                          (preferencia_roi or {}).get("zoom")),
+                            imagen_preparada=imagen_preparada)
+                    else:
+                        try:
+                            resultado = extraer_texto(ruta, config, imagen_preparada=imagen_preparada)
+                        except TypeError as exc:
+                            if "imagen_preparada" not in str(exc):
+                                raise
+                            resultado = extraer_texto(ruta, config)
+                        resultado.update({"estado_imagen": "procesada_con_texto" if
+                                          resultado.get("tokens") or resultado.get("lineas_texto")
+                                          else "descartada_sin_texto",
+                                          "modo_recorte": "completo", "tiempo_deteccion_seg": None,
+                                          "tiempo_ocr_seg": None, "numero_regiones": None,
+                                          "zoom_aplicado": 1.0})
+                    estado_cache = cache.guardar(ruta, resultado).get("estado", "desconocida")
+                except Exception as exc:
+                    resultado = {"imagen": ruta, "tokens": [], "lineas_texto": [],
+                                 "texto_completo": "", "estado_imagen": "error_ocr",
+                                 "error": f"{type(exc).__name__}: {exc}", "modo_recorte":
+                                 "auto" if caso.get("estructura_valida") else "completo"}
+                    try:
+                        estado_cache = cache.guardar(ruta, resultado).get("estado", "desconocida")
+                    except OSError as cache_exc:
+                        estado_cache = "error_cache"
+                        alertas.append({"codigo": "ERROR_CACHE", "nivel": "warning",
+                                        "imagen": Path(ruta).name,
+                                        "mensaje": f"OCR conservado en memoria: {cache_exc}"})
+            if desde_cache and preparador:
+                preparador.descartar(ruta)
+            if estado_cache == "error_cache":
+                alertas.append({"codigo": "ERROR_CACHE", "nivel": "warning",
+                                "imagen": Path(ruta).name,
+                                "mensaje": "No se pudo confirmar la escritura del caché; se reintentará."})
+            resultado = gestor_aprendizaje.filtrar_no_texto(resultado, ruta)
+            inicio_validacion_post = time.monotonic()
+            if gestor_recursos and not desde_cache:
+                td = resultado.get("tiempo_deteccion_seg")
+                tocr = resultado.get("tiempo_ocr_seg")
+                if isinstance(td, (int, float)):
+                    gestor_recursos.registrar_etapa("preprocesamiento_deteccion", float(td))
+                if isinstance(tocr, (int, float)):
+                    gestor_recursos.registrar_etapa("ocr_total_imagen", float(tocr))
+            # V13: cada imagen terminada se confirma en aprendizaje antes de
+            # avanzar. Pausar, detener o cerrar ya no deja observaciones sólo
+            # en memoria/caché. La firma evita duplicados al reanudar.
+            if ejecucion_id_aprendizaje:
+                try:
+                    gestor_aprendizaje.registrar_observacion_incremental(
+                        resultado, raiz=estructura.get("raiz"),
+                        ejecucion_id=ejecucion_id_aprendizaje)
+                except Exception as exc:
+                    alertas.append({"codigo": "ERROR_APRENDIZAJE", "nivel": "warning",
+                                    "imagen": Path(ruta).name,
+                                    "mensaje": f"Observación OCR no persistida: {type(exc).__name__}: {exc}"})
+            if any(r.get("orientacion_dudosa") for r in resultado.get("recortes", []) or []):
+                alertas.append({"codigo": "ORIENTACION_DUDOSA", "nivel": "warning",
+                    "imagen": Path(ruta).name,
+                    "mensaje": "Hay regiones cuya orientación requiere confirmación humana."})
+            estado_imagen = resultado.get("estado_imagen", "procesada_con_texto")
+            if estado_imagen in {"procesada_con_texto", "procesada_con_qr"}:
+                con_texto += 1
+            elif estado_imagen in {"descartada_sin_texto", "revisada_sin_datos"}:
+                sin_texto += 1
+            else:
+                errores += 1
+                es_corrupta = "ValueError" in str(resultado.get("error", "")) and \
+                    "decodificar" in str(resultado.get("error", "")).lower()
+                alertas.append({"codigo": "IMAGEN_CORRUPTA" if es_corrupta else "ERROR_OCR",
+                                "nivel": "error",
+                                "imagen": Path(ruta).name,
+                                "mensaje": resultado.get("error", "No se pudo leer la imagen.")})
+            confianza = resultado.get("confianza_media") or 0.0
+            foto_contexto = {**foto, "confianza_ocr": confianza}
+            contexto_caso = {**(caso.get("metadata_ruta", {}) or {}),
+                            "project_id": caso.get("project_id"),
+                            "tipo_st": caso.get("tipo_st"),
+                            "case_key": caso.get("case_key"),
+                            "perfil_extraccion": cfg_emp.get("perfil_extraccion") or {},
+                            "version_procesamiento": "v8"}
+            evidencias.extend(extraer_candidatos_texto(
+                resultado.get("texto_completo", ""), foto_contexto, contexto_caso))
+            evidencias.extend(evidencias_desde_qr(
+                resultado.get("qrs", []), foto_contexto,
+                config.get("fase1", {}).get("qr", {}).get("aliases")))
+            for qr in (resultado.get("qrs") or []):
+                interpretacion = qr.get("interpretacion", {})
+                qr.update({
+                    "qr_detectado": True, "payload_original": qr.get("payload", ""),
+                    "formato": interpretacion.get("formato", "desconocido"),
+                    "imagen": foto.get("ruta_relativa") or ruta,
+                    "fase": foto.get("fase"), "tor": foto.get("tor"),
+                    "valido_esquema": bool(interpretacion.get("campos")),
+                    "campos_extraidos": interpretacion.get("campos", {}),
+                })
+            for anotacion in anotaciones_por_ruta.get(str(ruta), []):
+                evidencias.extend(extraer_candidatos_texto(
+                    anotacion.get("texto_correcto", ""),
+                    {**foto_contexto, "fuente": "manual", "confianza_ocr": 1.0},
+                    contexto_caso))
+            qrs_foto = resultado.get("qrs", [])
+            evidencias_foto = [e for e in evidencias
+                               if e.get("imagen") == foto.get("ruta_relativa")]
+            trazabilidad.append({
+                "test_number": caso.get("metadata_ruta", {}).get("test_number"),
+                "tipo_st": caso.get("tipo_st"),
+                "temperature_condition": caso.get("metadata_ruta", {}).get("temperature_condition"),
+                "module_version": caso.get("metadata_ruta", {}).get("module_version"),
+                "inflator_type": caso.get("metadata_ruta", {}).get("inflator_type"),
+                "fase": foto.get("fase"), "tor": foto.get("tor"),
+                "ruta_absoluta": ruta, "ruta_relativa": foto.get("ruta_relativa"),
+                "estado_imagen": estado_imagen,
+                "texto_crudo": resultado.get("texto_completo", ""),
+                "confianza_ocr": resultado.get("confianza_media"),
+                "coordenadas_roi": resultado.get("roi_usado"),
+                "zoom_aplicado": resultado.get("zoom_aplicado"),
+                "modo_recorte": resultado.get("modo_recorte"),
+                "dispositivo": resultado.get("dispositivo"),
+                "tiempo_deteccion": resultado.get("tiempo_deteccion_seg"),
+                "tiempo_ocr": resultado.get("tiempo_ocr_seg"),
+                "campos_detectados": sorted({e["clave"] for e in evidencias
+                                             if e.get("imagen") == foto.get("ruta_relativa")}),
+                "requiere_revision": bool(resultado.get("error")),
+                "mensaje_error": resultado.get("error"), "desde_cache": desde_cache,
+                "revision_sin_datos": revision_sin_datos,
+                "estado_cache": estado_cache,
+                "qr_payloads": [q.get("payload") for q in (resultado.get("qrs") or [])
+                                if q.get("payload")],
+                "qr_detectado": bool(qrs_foto),
+                "payload_qr": [q.get("payload_original") or q.get("payload") for q in qrs_foto],
+                "poligono_qr": [q.get("poligono") for q in qrs_foto],
+                "fuente_campo": sorted({f"{e.get('clave')}:{e.get('fuente')}"
+                                         for e in evidencias_foto}),
+                "modelo_ocr": resultado.get("modelo_visual_version") or resultado.get("motor"),
+                "correccion_confirmada": bool(anotaciones_por_ruta.get(str(ruta))),
+                "dataset_entrenamiento": [m.get("ruta_recorte")
+                                           for m in muestras_por_ruta.get(str(ruta), [])],
+            })
+            imagenes_salida.append({"id": hashlib.sha256(ruta.encode()).hexdigest()[:16],
+                                    "nombre": Path(ruta).name, "ruta": ruta,
+                                    "ruta_relativa": foto.get("ruta_relativa"),
+                                    "fase": foto.get("fase"), "tor": foto.get("tor"),
+                                    "rol": "foto_empresarial", "estado_imagen": estado_imagen,
+                                    "resultado_ocr": _compacto(resultado)})
+            if gestor_recursos:
+                gestor_recursos.registrar_etapa(
+                    "validacion_post_ocr", time.monotonic() - inicio_validacion_post)
+            procesadas += 1
+            if gestor_recursos:
+                gestor_recursos.registrar_completada()
+            caso["progreso"] = {
+                "total_imagenes": len(fotos), "revisadas": len(trazabilidad),
+                "con_texto": con_texto, "sin_texto": sin_texto, "errores": errores,
+                "porcentaje": round(100 * len(trazabilidad) / len(fotos), 2) if fotos else 100.0,
+            }
+            if al_caso:
+                al_caso(deepcopy(caso))
+            avances_ids[caso["case_key"]] = {
+                "case_key": caso["case_key"], "nombre": caso.get("nombre"),
+                "estado": "procesando",
+                "progreso": deepcopy(caso["progreso"]),
+                "imagenes": deepcopy(imagenes_salida),
+                "trazabilidad": deepcopy(trazabilidad),
+                "evidencias": deepcopy(evidencias),
+                "fila_parcial": _fila_empresarial_parcial(
+                    caso, evidencias, imagenes_salida, trazabilidad,
+                    caso["progreso"], cfg_emp, conocimiento),
+                "actualizado_en": ahora(),
+            }
+            persistir_avance_id()
+            ahora_monotonic = time.monotonic()
+            duraciones.append(max(0.001, ahora_monotonic - anterior))
+            anterior = ahora_monotonic
+            if al_imagen:
+                eta = statistics.median(duraciones) * max(total_imagenes - procesadas, 0)
+                al_imagen(procesadas, total_imagenes, ruta, round(eta, 1))
+
+        if videos:
+            from video_airbag import analizar_video, consenso_videos, evidencia_apertura_desde_consenso
+            for video in videos:
+                if control:
+                    control()
+                try:
+                    analisis_video = analizar_video(video["ruta"], config)
+                except Exception as exc:
+                    analisis_video = {
+                        "ruta": video.get("ruta"), "nombre": Path(video.get("ruta", "video")).name,
+                        "estado": "error", "error": f"{type(exc).__name__}: {exc}",
+                    }
+                analisis_video = {**video, **analisis_video}
+                analisis_video["id"] = hashlib.sha256(str(video.get("ruta") or "").encode()).hexdigest()[:16]
+                videos_salida.append(analisis_video)
+                procesadas += 1
+                if gestor_recursos:
+                    gestor_recursos.registrar_completada()
+                if al_imagen:
+                    ahora_monotonic = time.monotonic()
+                    duraciones.append(max(0.001, ahora_monotonic - anterior))
+                    anterior = ahora_monotonic
+                    eta = statistics.median(duraciones) * max(total_imagenes - procesadas, 0)
+                    al_imagen(procesadas, total_imagenes, str(video.get("ruta") or ""), round(eta, 1))
+            video_consenso = consenso_videos(videos_salida, config)
+            evidencia_video = evidencia_apertura_desde_consenso(caso, video_consenso)
+            if evidencia_video:
+                evidencias.append(evidencia_video)
+            if video_consenso.get("requiere_revision"):
+                alertas.append({
+                    "codigo": "VIDEO_APERTURA_REQUIERE_REVISION", "nivel": "warning",
+                    "mensaje": (f"Breakout/color pueden estimarse con un video físicamente defendible, "
+                                f"pero no hay consenso multicámara suficiente para publicación reforzada; "
+                                f"soporte actual {video_consenso.get('soporte', 0)}/"
+                                f"{video_consenso.get('total_validos', 0)}."),
+                })
+
+        recuperacion_cache = cache.recuperar_pendientes()
+        fallos_cache = [item for item in recuperacion_cache
+                        if item.get("estado") == "error_cache"]
+        if fallos_cache:
+            alertas.append({"codigo": "ERROR_CACHE", "nivel": "warning",
+                            "mensaje": (f"Persisten {len(fallos_cache)} escrituras OCR en memoria; "
+                                        "se reintentará en la siguiente ejecución.")})
+
+        consolidado = consolidar_caso(
+            caso, evidencias,
+            requeridos=set(cfg_emp.get("campos_requeridos") or CAMPOS_REQUERIDOS_DEFAULT),
+            reglas_confirmadas=conocimiento.confirmadas(),
+            claves=cfg_emp.get("claves_plantilla") or CLAVES_PLANTILLA)
+        correcciones_manual_campos = deepcopy(previo.get("correcciones_manual_campos", {}))
+        for clave, correccion in correcciones_manual_campos.items():
+            if clave not in consolidado["campos"] or not correccion.get("valor"):
+                continue
+            original_ruta = caso.get("metadata_ruta", {}).get(clave)
+            conflicto_ruta = original_ruta not in {None, "", correccion["valor"]}
+            consolidado["campos"][clave] = {
+                "valor": correccion["valor"], "valor_original": correccion["valor"],
+                "estado": "pendiente_revision" if conflicto_ruta else "confirmado_manual",
+                "fuente": "correccion_manual_confirmada", "confianza": 1.0,
+                "inferido": False, "requiere_revision": conflicto_ruta,
+                "valor_seguro_ruta": original_ruta if conflicto_ruta else None,
+                "corregido_en": correccion.get("corregido_en"),
+                "corregido_por": correccion.get("corregido_por"),
+            }
+            consolidado["campos_faltantes"] = [
+                campo for campo in consolidado["campos_faltantes"] if campo != clave]
+            if conflicto_ruta and clave not in consolidado["conflictos"]:
+                consolidado["conflictos"].append(clave)
+            elif not conflicto_ruta:
+                consolidado["conflictos"] = [
+                    campo for campo in consolidado["conflictos"] if campo != clave]
+        consolidado["requiere_revision"] = bool(
+            any(a.get("codigo") == "ORIENTACION_DUDOSA" for a in alertas) or
+            consolidado["conflictos"] or any(
+                dato.get("requiere_revision") for dato in consolidado["campos"].values()))
+        total_fotos_progreso = len(fotos) if contenido != "videos" else int((previo.get("progreso") or {}).get("total_imagenes") or len(imagenes_salida))
+        progreso = {"total_imagenes": total_fotos_progreso, "revisadas": len(trazabilidad),
+                    "con_texto": con_texto, "sin_texto": sin_texto,
+                    "errores": errores, "total_videos": len(videos),
+                    "videos_analizados": len(videos_salida),
+                    "porcentaje": round(100 * len(trazabilidad) / total_fotos_progreso, 2) if total_fotos_progreso else 100.0}
+        alertas_agrupadas: dict[tuple[str, str], dict] = {}
+        for alerta in alertas:
+            clave_alerta = (alerta.get("codigo", "ADVERTENCIA"), alerta.get("mensaje", ""))
+            grupo = alertas_agrupadas.setdefault(clave_alerta, {
+                **alerta, "imagenes": [], "cantidad": 0})
+            grupo["cantidad"] += 1
+            if alerta.get("imagen") and alerta["imagen"] not in grupo["imagenes"]:
+                grupo["imagenes"].append(alerta["imagen"])
+        alertas = list(alertas_agrupadas.values())
+        estado = ("con_conflictos" if consolidado["conflictos"] else
+                  "procesada_con_advertencias" if consolidado["campos_faltantes"] or errores or
+                    any(a.get("codigo") == "ORIENTACION_DUDOSA" for a in alertas) else
+                  "procesada")
+        fila = {
+            "project_id": caso.get("project_id"),
+            "case_key": caso["case_key"], "id": hashlib.sha256(caso["case_key"].encode()).hexdigest()[:16],
+            "ruta": caso["ruta"], "ruta_relativa": caso["ruta_relativa"], "nombre": caso["nombre"],
+            "identificador": consolidado["test_number"] or caso["nombre"],
+            "test_number": consolidado["test_number"], "tipo_st": caso.get("tipo_st"),
+            **caso.get("metadata_ruta", {}), "perfil": "empresarial",
+            "modo_procesamiento": caso["modo_procesamiento"],
+            "estructura_valida": caso["estructura_valida"], "validaciones": caso["validaciones"],
+            "estado": estado, "progreso": progreso, "total_imagenes": total_fotos_progreso,
+            "total_videos": len(videos),
+            "imagenes_nach": caso.get("imagenes_nach", 0), "imagenes_vor": caso.get("imagenes_vor", 0),
+            "carpetas_tor": caso.get("carpetas_tor", []),
+            "imagenes_omitidas_fuera_photos": caso.get("imagenes_omitidas_fuera_photos", 0),
+            "imagenes": imagenes_salida, "videos": videos_salida,
+            "video_apertura": video_consenso, "trazabilidad": trazabilidad,
+            "consolidado": consolidado, "campos": consolidado["campos"],
+            "correcciones_manual_campos": correcciones_manual_campos,
+            "campos_faltantes": consolidado["campos_faltantes"],
+            "conflictos": consolidado["conflictos"],
+            "candidatos": consolidado["candidatos"],
+            "requiere_revision": consolidado["requiere_revision"] or bool(errores),
+            "ultima_ejecucion": ahora(), "alertas": alertas,
+            # Compatibilidad con Excel/dashboard anteriores.
+            "tipos_archivo": {"fotografia": [i["nombre"] for i in imagenes_salida],
+                              "video": [i.get("nombre") for i in videos_salida]},
+            "etiqueta": ({"ruta": imagenes_salida[0]["ruta"],
+                           "resultado_ocr": imagenes_salida[0]["resultado_ocr"]}
+                          if imagenes_salida else None),
+            "referencia": None, "comparacion": {
+                "resultado": "coincidencia_total" if not consolidado["conflictos"] and
+                not consolidado["campos_faltantes"] else
+                "discrepancia" if consolidado["conflictos"] else "coincidencia_parcial",
+                "ratio": None, "coincidentes": [], "faltantes": []},
+            "confianza_ocr_pct": (round(statistics.mean(
+                [t["confianza_ocr"] for t in trazabilidad if t.get("confianza_ocr") is not None]) * 100, 2)
+                if any(t.get("confianza_ocr") is not None for t in trazabilidad) else None),
+            "qr_detectado": any(i.get("resultado_ocr", {}).get("qrs") for i in imagenes_salida),
+            "observaciones": (["procesado por fallback legacy del caso"]
+                                                       if not caso["estructura_valida"] else []),
+            "historial_ejecuciones": [*(previo.get("historial_ejecuciones") or []), {
+                "iniciado_en": datetime.fromtimestamp(
+                    datetime.now().timestamp() - (time.monotonic() - inicio)
+                ).isoformat(timespec="seconds"),
+                "finalizado_en": ahora(), "estado": estado,
+                "modo_recorte": caso.get("modo_recorte") or
+                                config.get("ocr", {}).get("modo_recorte", "auto"),
+                "imagenes_revisadas": len(trazabilidad), "con_texto": con_texto,
+                "sin_texto": sin_texto, "errores": errores,
+                "reproceso_selectivo": bool(casos_filtrados),
+            }],
+            "historial_acciones": deepcopy(previo.get("historial_acciones") or []),
+        }
+        from maximos_video import incorporar_maximos
+        incorporar_maximos(fila)
+        resultados.append(fila)
+        avances_ids[caso["case_key"]] = {
+            "case_key": caso["case_key"], "nombre": caso.get("nombre"),
+            "estado": "completado", "progreso": deepcopy(progreso),
+            "resultado_id": fila["id"], "actualizado_en": ahora(),
+        }
+        persistir_avance_id()
+        persistir(parcial=True)
+        if al_resultado:
+            transcurrido = time.monotonic() - inicio
+            eta = transcurrido / indice * (len(casos) - indice)
+            al_resultado(indice, len(casos), fila, round(eta, 1))
+
+    if preparador:
+        preparador.cerrar(cancelar=False)
+    propuestas = conocimiento.proponer([*resultados_previos, *resultados])
+    salida = persistir(parcial=False)
+    salida.update({
+        "archivo_salida": str(destino), "base_conocimiento": str(conocimiento.ruta),
+        "reglas_propuestas": propuestas,
+        "resumen_empresarial": {
+            "estructura": "Empresarial", "tipos_st": estructura.get("tipos_st", []),
+            "casos_encontrados": len(casos),
+            "casos_validos": sum(c.get("estructura_valida", False) for c in casos),
+            "casos_legacy": sum(not c.get("estructura_valida", False) for c in casos),
+            "fotos_revisadas": sum(r["progreso"]["revisadas"] for r in resultados),
+            "fotos_con_texto": sum(r["progreso"]["con_texto"] for r in resultados),
+            "fotos_descartadas_sin_texto": sum(r["progreso"]["sin_texto"] for r in resultados),
+            "imagenes_omitidas_fuera_photos": sum(r["imagenes_omitidas_fuera_photos"] for r in resultados),
+            "ids_completos": sum(not r["campos_faltantes"] and not r["conflictos"] for r in resultados),
+            "ids_con_informacion_faltante": sum(bool(r["campos_faltantes"]) for r in resultados),
+            "ids_con_conflictos": sum(bool(r["conflictos"]) for r in resultados),
+            "reglas_propuestas": len(propuestas),
+        },
+    })
+    if ejecucion_id_aprendizaje:
+        try:
+            salida["aprendizaje"] = gestor_aprendizaje.finalizar_ejecucion_incremental(
+                ejecucion_id_aprendizaje)
+        except Exception as exc:
+            salida["aprendizaje"] = {"registrada": False,
+                                     "error": f"{type(exc).__name__}: {exc}"}
+    if advertencias_persistencia:
+        salida["advertencias_persistencia"] = list(dict.fromkeys(advertencias_persistencia))
+    guardado_final = persistir_documento_completo(
+        destino, salida,
+        al_error=lambda mensaje: advertencias_persistencia.append(mensaje))
+    if not guardado_final:
+        salida["advertencias_persistencia"] = list(dict.fromkeys(advertencias_persistencia))
+    return salida
+
+
 def _validar_carpeta(carpeta: dict, config: dict, f2: dict,
-                     cache_ocr: dict, patron_dominante: str | None) -> dict:
+                     cache_ocr: dict, patron_dominante: str | None,
+                     al_imagen: Callable[[str], None] | None = None,
+                     control: Callable[[], None] | None = None,
+                     cache_persistente: CacheOCR | None = None,
+                     gestor_aprendizaje: GestorAprendizaje | None = None,
+                     ejecucion_id_aprendizaje: str | None = None,
+                     raiz_aprendizaje: str | None = None) -> dict:
     """Procesa una carpeta hoja completa (clasificación + OCR + comparación)."""
     ruta = Path(carpeta["ruta"])
     observaciones: list[str] = []
+    alertas: list[dict] = []
     if not carpeta["conforme"]:
         observaciones.append(f"anomalía de Fase 0: {carpeta['motivo_anomalia']}")
 
@@ -244,53 +1101,119 @@ def _validar_carpeta(carpeta: dict, config: dict, f2: dict,
                    + carpeta["archivos"]["videos"]):
         cat = clasificar_archivo(str(ruta / nombre), config)
         categorias.setdefault(cat, []).append(nombre)
+    if categorias.get("video"):
+        alertas.append({
+            "codigo": "VIDEOS_IGNORADOS", "nivel": "info",
+            "mensaje": (f"Se ignoraron {len(categorias['video'])} video(s). "
+                        "Esta versión procesa únicamente fotografías."),
+        })
 
     imagenes = [ruta / n for n in carpeta["archivos"]["imagenes"]]
     ocr_por_imagen = []
     for img in imagenes:
+        if control:
+            control()
         clave = str(img)
         if clave not in cache_ocr:
             try:
-                cache_ocr[clave] = extraer_texto(clave, config)
+                sin_datos = (gestor_aprendizaje.imagen_sin_datos(clave)
+                             if gestor_aprendizaje else None)
+                cache_ocr[clave] = ({"imagen": clave, "tokens": [], "lineas_texto": [],
+                                     "texto_completo": "",
+                                     "estado_imagen": "revisada_sin_datos",
+                                     "motivo_sin_datos": sin_datos.get("motivo")}
+                                    if sin_datos else
+                                    (cache_persistente.obtener(clave)
+                                     if cache_persistente else None))
+                if cache_ocr[clave] is None:
+                    cache_ocr[clave] = extraer_texto(clave, config)
+                    if cache_persistente:
+                        cache_persistente.guardar(clave, cache_ocr[clave])
             except Exception as exc:
                 cache_ocr[clave] = {"imagen": clave, "tokens": [], "qr_bbox": None,
                                     "orientacion_corregida_grados": 0.0,
                                     "confianza_media": None, "num_lineas_ocr": 0,
                                     "error": str(exc)}
+                if cache_persistente:
+                    try:
+                        cache_persistente.guardar(clave, cache_ocr[clave])
+                    except OSError:
+                        pass
+                alertas.append({
+                    "codigo": ("IMAGEN_CORRUPTA" if isinstance(exc, ValueError)
+                               else "ERROR_LECTURA_IMAGEN"),
+                    "nivel": "error", "imagen": img.name,
+                    "mensaje": f"No se pudo procesar {img.name}: {exc}",
+                })
+        resultado_actual = cache_ocr[clave]
+        if (resultado_actual.get("estado_imagen") != "revisada_sin_datos" and
+                not resultado_actual.get("error") and
+                not resultado_actual.get("tokens") and
+                not resultado_actual.get("lineas_texto")):
+            alertas.append({
+                "codigo": "SIN_TEXTO_DETECTADO", "nivel": "warning",
+                "imagen": img.name,
+                "mensaje": f"No se encontró texto legible en {img.name}; requiere revisión manual.",
+            })
+        for warning_motor in (resultado_actual.get("advertencias_motor") or []):
+            alerta = {"codigo": "FALLBACK_ACELERADOR", "nivel": "warning",
+                      "imagen": img.name, "mensaje": warning_motor}
+            if alerta not in alertas:
+                alertas.append(alerta)
+        if gestor_aprendizaje and ejecucion_id_aprendizaje:
+            try:
+                gestor_aprendizaje.registrar_observacion_incremental(
+                    resultado_actual, raiz=raiz_aprendizaje,
+                    ejecucion_id=ejecucion_id_aprendizaje)
+            except Exception as exc:
+                alertas.append({
+                    "codigo": "ERROR_APRENDIZAJE", "nivel": "warning",
+                    "imagen": img.name,
+                    "mensaje": f"Observación OCR no persistida: {type(exc).__name__}: {exc}",
+                })
         ocr_por_imagen.append({"ruta": clave, "resultado_ocr": cache_ocr[clave]})
+        if al_imagen:
+            al_imagen(clave)
 
     if not imagenes:
+        alertas.append({
+            "codigo": "SIN_IMAGENES", "nivel": "warning",
+            "mensaje": "La carpeta no contiene fotografías compatibles; no se ejecutó OCR.",
+        })
         return {
             "ruta": str(ruta), "nombre": carpeta["nombre"],
             **_parsear_identificador(carpeta["nombre"], patron_dominante),
             "es_conforme": carpeta["conforme"],
             "anomalia_fase0": carpeta["motivo_anomalia"],
             "tipos_archivo": categorias,
-            "etiqueta": None, "referencia": None,
+            "etiqueta": None, "referencia": None, "imagenes": [],
             "comparacion": {"resultado": "sin_procesar", "ratio": None,
                             "coincidentes": [], "faltantes": []},
             "confianza_ocr_pct": None, "qr_detectado": False,
             "observaciones": observaciones + ["carpeta sin imágenes"],
+            "alertas": alertas,
         }
 
     # 2. Referencia: pista de nombre primero; si no, heurística de densidad.
-    candidatos_nombre = [c for c in (categorias.get("candidato_referencia", []))]
-    referencia = None
+    candidatos_nombre = [c for c in categorias.get("candidato_referencia", [])]
+    referencias: set[str] = set()
     if candidatos_nombre:
-        referencia = str(ruta / sorted(candidatos_nombre)[0])
+        referencias = {str(ruta / nombre) for nombre in candidatos_nombre}
     else:
-        referencia = identificar_referencia(
+        detectada = identificar_referencia(
             ocr_por_imagen,
             umbral=float(f2.get("umbral_densidad_texto", 0.01)),
             ventaja_minima=float(f2.get("ventaja_minima_referencia", 1.5)))
-        if referencia is not None:
+        if detectada is not None:
+            referencias.add(detectada)
             observaciones.append("referencia detectada por densidad de texto")
 
-    ref_ocr = next((x["resultado_ocr"] for x in ocr_por_imagen
-                    if x["ruta"] == referencia), None) if referencia else None
+    referencia = sorted(referencias)[0] if referencias else None
+    items_referencia = [x for x in ocr_por_imagen if x["ruta"] in referencias]
+    ref_ocr = items_referencia[0]["resultado_ocr"] if items_referencia else None
 
     # 3. Etiqueta: la mejor fotografía (o la primera, según estrategia).
-    fotos = [x for x in ocr_por_imagen if x["ruta"] != referencia]
+    fotos = [x for x in ocr_por_imagen if x["ruta"] not in referencias]
     estrategia = f2.get("estrategia_etiqueta", "mejor_confianza")
     if estrategia == "mejor_confianza" and fotos:
         etiqueta_item = max(fotos, key=lambda x: (x["resultado_ocr"].get("confianza_media") or 0.0))
@@ -298,32 +1221,52 @@ def _validar_carpeta(carpeta: dict, config: dict, f2: dict,
         etiqueta_item = sorted(fotos, key=lambda x: x["ruta"])[0] if fotos else None
 
     if etiqueta_item is None:  # solo había imagen(es) de referencia
+        imagenes_salida = [_imagen_salida(x, "referencia") for x in items_referencia]
         return {
             "ruta": str(ruta), "nombre": carpeta["nombre"],
             **_parsear_identificador(carpeta["nombre"], patron_dominante),
             "es_conforme": carpeta["conforme"],
             "anomalia_fase0": carpeta["motivo_anomalia"],
             "tipos_archivo": categorias,
-            "etiqueta": None, "referencia": {"ruta": referencia, "resultado_ocr": _compacto(ref_ocr)},
+            "etiqueta": None,
+            "referencia": {"ruta": referencia, "resultado_ocr": _compacto(ref_ocr)},
+            "imagenes": imagenes_salida,
             "comparacion": {"resultado": "sin_procesar", "ratio": None,
                             "coincidentes": [], "faltantes": []},
             "confianza_ocr_pct": None, "qr_detectado": False,
             "observaciones": observaciones + ["sin fotografías de etiqueta"],
+            "alertas": alertas,
         }
 
     et_ocr = etiqueta_item["resultado_ocr"]
+    tokens_etiqueta = [t["texto"] for foto in fotos
+                       for t in (foto["resultado_ocr"].get("tokens") or [])]
+    tokens_referencia = [t["texto"] for item in items_referencia
+                         for t in (item["resultado_ocr"].get("tokens") or [])]
     comparacion = comparar_tokens(
-        [t["texto"] for t in et_ocr.get("tokens", [])],
-        [t["texto"] for t in (ref_ocr or {}).get("tokens", [])],
+        tokens_etiqueta,
+        tokens_referencia,
         umbral_total=float(f2.get("umbral_coincidencia_total", 1.0)),
         solo_tokens_codigo=bool(f2.get("comparar_solo_tokens_codigo", True)),
     )
     if referencia is None:
         observaciones.append("sin imagen de referencia en la carpeta")
-    if et_ocr.get("error"):
-        observaciones.append(f"error OCR etiqueta: {et_ocr['error']}")
+    for foto in fotos:
+        if foto["resultado_ocr"].get("error"):
+            observaciones.append(
+                f"error OCR {Path(foto['ruta']).name}: {foto['resultado_ocr']['error']}")
 
     conf_pct = round(et_ocr["confianza_media"] * 100, 2) if et_ocr.get("confianza_media") is not None else None
+
+    imagenes_salida = []
+    for item in ocr_por_imagen:
+        if item["ruta"] in referencias:
+            rol = "referencia"
+        elif item["ruta"] == etiqueta_item["ruta"]:
+            rol = "etiqueta_principal"
+        else:
+            rol = "etiqueta_adicional"
+        imagenes_salida.append(_imagen_salida(item, rol))
 
     return {
         "ruta": str(ruta),
@@ -335,20 +1278,50 @@ def _validar_carpeta(carpeta: dict, config: dict, f2: dict,
         "etiqueta": {"ruta": etiqueta_item["ruta"], "resultado_ocr": _compacto(et_ocr)},
         "referencia": ({"ruta": referencia, "resultado_ocr": _compacto(ref_ocr)}
                        if referencia else None),
+        "imagenes": imagenes_salida,
         "comparacion": comparacion,
         "confianza_ocr_pct": conf_pct,
-        "qr_detectado": et_ocr.get("qr_bbox") is not None,
+        "qr_detectado": any(f["resultado_ocr"].get("qr_bbox") is not None for f in fotos),
         "observaciones": observaciones,
+        "alertas": alertas,
     }
 
 
 def _compacto(resultado_ocr: dict | None) -> dict | None:
+    if resultado_ocr and resultado_ocr.get("_ocr_bruto"):
+        resultado_ocr = resultado_ocr["_ocr_bruto"]
     """Versión ligera del resultado OCR para el JSON (sin campos voluminosos)."""
     if resultado_ocr is None:
         return None
     return {k: resultado_ocr.get(k) for k in (
-        "tokens", "qr_bbox", "confianza_media", "num_lineas_ocr",
-        "orientacion_corregida_grados", "motor", "dimensiones", "error")}
+        "tokens", "lineas_texto", "texto_completo", "codigos_detectados",
+        "reglas_codigo", "qr_bbox",
+        "confianza_media", "num_lineas_ocr",
+        "rotacion_manual_aplicada_grados", "orientacion_manual_prioritaria",
+        "orientacion_automatica_preservada_grados",
+        "deskew_automatico_preservado_grados", "geometria_automatica_preservada",
+        "orientacion_base_grados",
+        "deskew_aplicado_grados", "orientacion_corregida_grados",
+        "orientacion_texto_base_grados", "deskew_texto_aplicado_grados",
+        "orientacion_texto_grados", "variante_preprocesamiento",
+        "variante_texto_completo", "dimensiones_originales",
+        "intentos_ocr", "motor", "dispositivo", "advertencias_motor",
+        "dimensiones", "estado_imagen", "modo_recorte", "tiempo_deteccion_seg",
+        "tiempo_ocr_seg", "numero_regiones", "zoom_aplicado", "roi_usado", "error",
+        "qrs", "recortes", "modelo_visual_version", "huella_imagen",
+        "orientaciones_regionales_usadas")}
+
+
+def _imagen_salida(item: dict, rol: str) -> dict:
+    """Serializa cada imagen de la carpeta sin descartar tomas adicionales."""
+    ruta = str(item["ruta"])
+    return {
+        "id": hashlib.sha256(ruta.encode("utf-8")).hexdigest()[:16],
+        "nombre": Path(ruta).name,
+        "ruta": ruta,
+        "rol": rol,
+        "resultado_ocr": _compacto(item["resultado_ocr"]),
+    }
 
 
 if __name__ == "__main__":

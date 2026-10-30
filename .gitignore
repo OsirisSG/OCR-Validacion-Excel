@@ -3,6 +3,7 @@
 # -----------------------------------------------------------------------------
 .venv/
 .venv_dashboard/
+.venv_ocr/
 venv/
 env/
 ENV/
@@ -44,6 +45,11 @@ models/
 checkpoints/
 runs/
 wandb/
+.aprendizaje/
+.plantillas/
+.pruebas_externas/
+.cache_ocr/
+base_conocimiento.json
 *.pth
 *.pt
 *.onnx
@@ -64,7 +70,11 @@ uploads/
 # -----------------------------------------------------------------------------
 estructura_detectada.json
 validacion_resultados.json
-resultado_maestro.xlsx
+# Cualquier nombre de salida personalizado del pipeline también es regenerable.
+*.xlsx
+# Plantilla oficial de la aplicación; los Excel de resultados siguen ignorados.
+!plantillas/reporte_bmg_1st_2st.xlsx
+*_analisis_excel.json
 errores/*_dashboard_pipeline.md
 
 # Temporales y logs

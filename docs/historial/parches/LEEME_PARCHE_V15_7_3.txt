@@ -1,0 +1,36 @@
+PARCHE OCR V15.7.3
+==================
+
+Parche acumulado sobre V15.7.2 para mejorar la revisión y el aprendizaje de video.
+
+INSTALACIÓN
+1. Cierra completamente el dashboard y cualquier proceso Python del proyecto.
+2. Descomprime este parche sobre la raíz del proyecto y acepta reemplazar.
+3. NO borres .aprendizaje, .cache_ocr, checkpoints ni tus Excel.
+4. Inicia el dashboard. El frontend usa una versión nueva para evitar caché antiguo.
+
+NUEVO EN V15.7.3
+- Zoom automático al dibujar una zona de interés sobre un cuadro del video.
+- La zona seleccionada se resalta y el resto del cuadro se oscurece mientras se supervisa.
+- Nuevo botón “Esta zona + este cuadro = apertura”. Guarda dos datos distintos:
+  a) dónde debe mirar el detector;
+  b) cuál es el primer cuadro donde ya aparece el airbag.
+- Esa confirmación conserva F-3…F+3 dentro de la ROI para el dataset de aprendizaje supervisado.
+- Botón “Recalcular este video” en cada tarjeta. No vuelve a procesar fotos ni los otros videos.
+- Se mantiene “Recalcular todos” para volver a analizar todos los videos del ID.
+- Se reemplazó el menú desplegable “Vista de videos” por un botón directo Ocultar/Mostrar videos.
+  Ya no queda un submenú flotante abierto.
+- Se actualiza el consenso del ID después del recálculo individual.
+
+NOTA SOBRE APRENDIZAJE
+La supervisión de video no es un reentrenamiento neuronal completo en cada clic. El sistema
+guarda regiones, secuencias confirmadas y métricas del nacimiento del airbag para reutilizarlas
+y calibrar la detección por cámara/toma. Esto evita aprender una región incorrecta como si toda
+ella fuera el evento.
+
+VALIDACIÓN
+- Sintaxis JavaScript validada con node --check.
+- Backend compilado con py_compile.
+- 4 pruebas específicas V15.7.3 aprobadas.
+- Las pruebas históricas que requieren el proyecto completo no pueden ejecutarse dentro del ZIP
+  aislado porque ese parche no incluye configuracion.py ni el resto de la instalación base.

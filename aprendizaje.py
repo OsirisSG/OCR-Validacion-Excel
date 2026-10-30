@@ -496,6 +496,147 @@ class GestorAprendizaje:
                             "zoom": fila["zoom"], "actualizado_en": fila["actualizado_en"]}
         return None
 
+    # R15.4 (HIGH-01): transacción compensable entre almacenes. Las rutas de
+    # mutación que combinan efectos SQLite con commit del documento toman un
+    # snapshot de las filas ligadas a la imagen ANTES de los efectos; si el
+    # commit final falla, ``restaurar_evidencias_imagen`` devuelve el almacén
+    # a su estado exacto previo (una sola transacción). La petición fallida
+    # no deja efectos persistentes en NINGÚN almacén.
+    _TABLAS_EVIDENCIA_IMAGEN = (
+        "correcciones_texto", "correcciones", "muestras_visuales",
+        "estrategias_ocr", "imagenes_sin_datos", "ediciones_zona",
+        # R15.5 (HIGH-02): la rotación guardada es parte de la misma
+        # transacción compensable que evidencias y documento.
+        "rotaciones_imagen",
+        # R15.6 (MEDIO-06): marcas no-texto, anotaciones de región y
+        # orientaciones regionales entran en el snapshot común para que
+        # TODOS los efectos humanos por imagen sean compensables.
+        "regiones_no_texto", "anotaciones_regiones", "orientaciones_region",
+    )
+
+    @staticmethod
+    def _tabla_existe(con: sqlite3.Connection, nombre: str) -> bool:
+        return con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (nombre,)).fetchone() is not None
+
+    def snapshot_evidencias_imagen(self, ruta_imagen: str | Path,
+                                   caso_id: str | None = None,
+                                   tipo_revision: str = "carpeta") -> dict:
+        """Estado previo de las evidencias SQLite de una imagen (+ revisión).
+
+        ``tipo_revision`` (R15.5): fila de ``revisiones`` capturada/restaurada
+        junto al snapshot; ``carpeta`` o ``externa`` según el documento bajo
+        el que se revisa la imagen.
+        """
+        ruta = Path(ruta_imagen)
+        imagen_hash = hash_archivo(ruta) if ruta.is_file() else None
+        snap = {"imagen_hash": imagen_hash, "caso_id": None if caso_id is None
+                else str(caso_id), "tablas": {}, "revision": None,
+                "tipo_revision": tipo_revision}
+        if imagen_hash is None or not self.db.exists():
+            return snap
+        with self._conectar() as con:
+            for tabla in self._TABLAS_EVIDENCIA_IMAGEN:
+                if not self._tabla_existe(con, tabla):
+                    continue
+                filas = [dict(f) for f in con.execute(
+                    f"SELECT * FROM {tabla} WHERE imagen_hash=?",
+                    (imagen_hash,)).fetchall()]
+                snap["tablas"][tabla] = filas
+                if tabla == "ediciones_zona" and filas:
+                    ids = [f["id"] for f in filas]
+                    marcas = ",".join("?" * len(ids))
+                    if self._tabla_existe(con, "ediciones_zona_detalle"):
+                        # R15.6: la PK de ediciones_zona_detalle es
+                        # ``edicion_id`` (no ``id``): con la columna equivocada
+                        # el snapshot/restauración de zonas editadas fallaba.
+                        snap["tablas"]["ediciones_zona_detalle"] = [
+                            dict(f) for f in con.execute(
+                                f"SELECT * FROM ediciones_zona_detalle "
+                                f"WHERE edicion_id IN ({marcas})", ids).fetchall()]
+            if snap["caso_id"] is not None and self._tabla_existe(con, "revisiones"):
+                fila = con.execute(
+                    "SELECT * FROM revisiones WHERE tipo=? AND item_id=?",
+                    (snap.get("tipo_revision") or "carpeta",
+                     snap["caso_id"])).fetchone()
+                snap["revision"] = dict(fila) if fila else None
+        return snap
+
+    def restaurar_evidencias_imagen(self, snap: dict) -> bool:
+        """Restaura fielmente el snapshot; True si el almacén quedó consistente.
+
+        Best-effort con los recortes de muestras nuevas (archivos derivados):
+        se eliminan los que no existían en el snapshot; si no se puede, las
+        filas SQLite (la fuente autoritativa) sí quedan restauradas.
+        """
+        if not isinstance(snap, dict) or not snap.get("imagen_hash"):
+            return False
+        imagen_hash = snap["imagen_hash"]
+        tablas_previas = snap.get("tablas") or {}
+        try:
+            con = self._conectar()
+        except sqlite3.Error:
+            return False
+        try:
+            recortes_previos = {f.get("id") for f in
+                                tablas_previas.get("muestras_visuales", [])}
+            recortes_nuevos = []
+            if self._tabla_existe(con, "muestras_visuales"):
+                recortes_nuevos = [
+                    (f["id"], f["ruta_recorte"]) for f in con.execute(
+                        "SELECT id, ruta_recorte FROM muestras_visuales "
+                        "WHERE imagen_hash=?", (imagen_hash,)).fetchall()
+                    if f["id"] not in recortes_previos]
+            with con:  # una sola transacción
+                for tabla in self._TABLAS_EVIDENCIA_IMAGEN:
+                    if not self._tabla_existe(con, tabla):
+                        continue
+                    if tabla == "ediciones_zona":
+                        ids = [f["id"] for f in con.execute(
+                            "SELECT id FROM ediciones_zona WHERE imagen_hash=?",
+                            (imagen_hash,)).fetchall()]
+                        if ids and self._tabla_existe(con, "ediciones_zona_detalle"):
+                            marcas = ",".join("?" * len(ids))
+                            con.execute(
+                                f"DELETE FROM ediciones_zona_detalle WHERE edicion_id IN ({marcas})",
+                                ids)
+                    con.execute(f"DELETE FROM {tabla} WHERE imagen_hash=?",
+                                (imagen_hash,))
+                for tabla, filas in tablas_previas.items():
+                    if not self._tabla_existe(con, tabla):
+                        continue
+                    for fila in filas:
+                        columnas = ",".join(fila.keys())
+                        marcas = ",".join("?" * len(fila))
+                        con.execute(
+                            f"INSERT OR REPLACE INTO {tabla} ({columnas}) "
+                            f"VALUES ({marcas})", tuple(fila.values()))
+                if snap.get("caso_id") is not None and self._tabla_existe(con, "revisiones"):
+                    tipo_rev = snap.get("tipo_revision") or "carpeta"
+                    if snap.get("revision") is None:
+                        con.execute(
+                            "DELETE FROM revisiones WHERE tipo=? AND item_id=?",
+                            (tipo_rev, snap["caso_id"]))
+                    else:
+                        fila = snap["revision"]
+                        columnas = ",".join(fila.keys())
+                        marcas = ",".join("?" * len(fila))
+                        con.execute(
+                            f"INSERT OR REPLACE INTO revisiones ({columnas}) "
+                            f"VALUES ({marcas})", tuple(fila.values()))
+            for _id, recorte in recortes_nuevos:
+                if recorte:
+                    try:
+                        Path(str(recorte)).unlink(missing_ok=True)
+                    except OSError:
+                        pass
+            return True
+        except sqlite3.Error:
+            return False
+        finally:
+            con.close()
+
     def registrar_muestra_visual(self, ruta_imagen: str | Path, caso_id: str,
                                  texto_ocr: str, texto_correcto: str, bbox=None,
                                  accion: str = "corregir",

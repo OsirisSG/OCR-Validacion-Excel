@@ -9,15 +9,61 @@
 
 const { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } = React;
 const html = htm.bind(React.createElement);
+
+// R15.2 (MEDIO-05): la insignia «NO CONFIRMADO» se construye como elemento
+// REAL (html`` anidado). Interpolar la cadena "<strong>…</strong>" dentro de
+// un template la renderiza como texto literal: el usuario veía las etiquetas.
+function maximoNoConfirmadoBadge(estadoMaxInflado, t) {
+  if (!estadoMaxInflado || estadoMaxInflado === "maximo_inflado_estimado") return null;
+  const detalleEstado = estadoMaxInflado === "sin_maximo_defendible"
+    ? t("sin máximo defendible") : t("máximo visible observado");
+  return html` · <strong>${t("NO CONFIRMADO")}</strong> (${detalleEstado})`;
+}
+
+// R15.2 (ALTO-04): detección del rechazo explícito por CAS del documento
+// (409 «recarga…»). Sirve para refrescar el detalle tras un conflicto.
+function esConflictoRevision(mensaje) {
+  return /recarga/i.test(String(mensaje || ""));
+}
+const geometriaVisor = window.VMatrixVisorPrecision;
+// R15 (MEDIA-08/09/13): capa de red segura (sondeo serial, secuencias, 404).
+const RedSegura = window.VMatrixRedSegura;
 const t = (texto) => window.OCR_I18N?.t?.(texto) || texto;
+function actualizarZoomAnclado(elemento, evento, actualizar) {
+  if (geometriaVisor?.zoomAtPointer) return geometriaVisor.zoomAtPointer(elemento, evento, actualizar);
+  actualizar?.();
+}
 function Icono({tipo="documento"}) { const paths={documento:"M5 3h9l5 5v13H5z M14 3v6h6 M8 13h8 M8 17h6",grid:"M4 4h6v6H4z M14 4h6v6h-6z M4 14h6v6H4z M14 14h6v6h-6z",lista:"M7 6h13 M7 12h13 M7 18h13 M4 6h.01 M4 12h.01 M4 18h.01",carpeta:"M3 6h7l2 2h9v11H3z",luna:"M18 16a7 7 0 0 1-10-10 8 8 0 1 0 10 10",sol:"M12 4v2 M12 18v2 M4 12h2 M18 12h2 M6.3 6.3l1.4 1.4 M16.3 16.3l1.4 1.4 M17.7 6.3l-1.4 1.4 M7.7 16.3l-1.4 1.4 M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6"};return html`<svg class="icono-svg" viewBox="0 0 24 24" aria-hidden="true"><path d=${paths[tipo]||paths.documento}/></svg>`;}
 
 
 /* ----------------------------- Utilidades ----------------------------- */
 
-async function pedirJSON(url, signal) {
+function usarFallbackImagen(evento, alternativa = null) {
+  const img = evento?.currentTarget;
+  if (!img) return;
+  const actual = img.getAttribute("src") || "";
+  if (alternativa && actual !== alternativa && img.dataset.fallbackUsado !== "1") {
+    img.dataset.fallbackUsado = "1";
+    img.src = alternativa;
+    return;
+  }
+  img.dataset.errorCarga = "1";
+  img.alt = `${img.alt || "Imagen"} · archivo no disponible`;
+  img.title = "No se pudo cargar esta imagen. Revisa la raíz del lote o vuelve a procesar si los archivos fueron movidos.";
+}
+
+async function pedirJSON(url, signal, opciones) {
   const r = await fetch(url, { signal });
-  if (r.status === 404) return null; // sin datos procesados aún
+  if (r.status === 404) {
+    // R15 (MEDIA-13): null sólo donde «sin datos todavía» es legítimo.
+    // En recursos concretos se lanza error para que la pantalla limpie su
+    // estado dependiente en vez de conservar información anterior.
+    if (RedSegura?.lanzar404(opciones)) {
+      const cuerpo = await r.json().catch(() => ({}));
+      throw new Error(typeof cuerpo?.detail === "string" ? cuerpo.detail : "HTTP 404");
+    }
+    return null; // sin datos procesados aún
+  }
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
 }
@@ -38,6 +84,69 @@ async function enviarJSON(url, datos) {
     throw new Error(mensaje);
   }
   return cuerpo;
+}
+
+function EstadoRecuperacion() {
+  // R15.6 (MEDIO-05): flujo PÚBLICO de recuperación — lista los bloqueos
+  // durables por estado potencialmente inconsistente, anuncia el MODO
+  // RECUPERACIÓN (registro durable no fiable) y permite resolverlos con
+  // confirmación explícita de la verificación manual. Nunca pide borrar
+  // archivos a mano.
+  const [estado, setEstado] = useState(null);
+  const [resolviendo, setResolviendo] = useState(null);
+  useEffect(() => {
+    let cancelado = false, temporizador;
+    async function consultar() {
+      try {
+        const datos = await pedirJSON("/api/recuperacion/inconsistencias");
+        if (!cancelado) setEstado(datos);
+      } catch (_) { /* backend reiniciando o sin ruta: se reintenta */ }
+      if (!cancelado) temporizador = setTimeout(consultar, 5000);
+    }
+    consultar();
+    return () => { cancelado = true; clearTimeout(temporizador); };
+  }, []);
+  if (!estado) return null;
+  const entradas = estado.inconsistencias || [];
+  const modo = estado.modo_recuperacion;
+  if (!modo && !entradas.length) return null;
+  async function resolver(recurso, esModo) {
+    const usuario = (window.prompt(t("Usuario que verifica y resuelve el bloqueo"), "dashboard") || "").trim();
+    if (!usuario) return;
+    const confirmado = window.confirm(esModo
+      ? t("¿Confirmas que verificaste el documento y los almacenes y que el registro durable ya es escribible? Se limpiará el MODO RECUPERACIÓN.")
+      : t("¿Confirmas que verificaste el documento de resultados y los almacenes de aprendizaje/revisiones de este recurso? Se resolverá el bloqueo."));
+    if (!confirmado) return;
+    setResolviendo(recurso);
+    try {
+      const ruta = esModo
+        ? "/api/recuperacion/modo-recuperacion/resolver"
+        : "/api/recuperacion/inconsistencias/" + recurso.split("/").map(encodeURIComponent).join("/") + "/resolver";
+      await enviarJSON(ruta, { usuario, confirmo_verificacion: true });
+      setEstado(await pedirJSON("/api/recuperacion/inconsistencias"));
+    } catch (e) {
+      window.alert(e?.message || t("No se pudo resolver el bloqueo."));
+    } finally { setResolviendo(null); }
+  }
+  return html`<div class="aviso estado-recuperacion notificacion-actividad" role="alert" aria-live="assertive">
+    <div class="notificacion-cabecera"><strong>${modo
+      ? t("MODO RECUPERACIÓN: el registro de inconsistencias no es fiable")
+      : t("Bloqueos por estado potencialmente inconsistente")}</strong></div>
+    <div class="contenido-notificacion">
+      ${modo && html`<span class="mono">${modo.motivo || ""} · ${modo.fecha || ""}</span>`}
+      ${entradas.map(e => html`<div class="entrada-inconsistencia" key=${e.recurso}>
+        <span class="mono">${e.recurso}</span>
+        <span>${t("operación")} «${e.operacion}» · ${e.fecha}</span>
+        <span>${e.detalle}</span>
+        <button type="button" class="boton-resolver-inconsistencia" disabled=${resolviendo === e.recurso}
+          onClick=${() => resolver(e.recurso, false)}>
+          ${resolviendo === e.recurso ? t("Resolviendo…") : t("Verificado, resolver bloqueo")}</button>
+      </div>`)}
+      ${modo && !entradas.length && html`<button type="button" class="boton-resolver-inconsistencia"
+        disabled=${resolviendo === "(modo)"} onClick=${() => resolver("(modo)", true)}>
+        ${resolviendo === "(modo)" ? t("Resolviendo…") : t("Verificado, limpiar MODO RECUPERACIÓN")}</button>`}
+    </div>
+  </div>`;
 }
 
 function useApi(ruta, deps) {
@@ -285,19 +394,65 @@ function unidadesOcr(ocr = {}) {
     && todas.findIndex((otra) => firmaUnidad(otra) === firmaUnidad(unidad)) === indice);
   if (ocr.texto_completo) {
     vistas.push({ texto: ocr.texto_completo, texto_original: ocr.texto_completo_original || ocr.texto_completo,
-      confirmado_manualmente: Boolean(ocr.texto_completo_confirmado), bbox: null, tipo_unidad: "bloque completo" });
+      confirmado_manualmente: Boolean(ocr.texto_completo_confirmado),
+      aceptado_provisional: Boolean(ocr.texto_completo_aceptado_provisional),
+      estado_supervision: ocr.texto_completo_estado_supervision || null,
+      bbox: null, tipo_unidad: "bloque completo" });
   }
   return vistas.map((unidad, indice) => ({
     ...unidad, unidad_id: `${unidad.tipo_unidad}-${indice}-${firmaUnidad(unidad)}`,
   }));
 }
+function unidadAceptadaProvisional(unidad, correcciones = []) {
+  if (!unidad) return false;
+  if (unidad.aceptado_provisional || unidad.estado_supervision === "aceptado_provisional") return true;
+  return (correcciones || []).some((c) =>
+    (c.estado_supervision === "aceptado_provisional" || c.fuente === "aceptar_ocr" || c.accion === "aceptar")
+    && String(c.texto_correcto || "") === textoVisible(unidad)
+    && [textoUnidad(unidad), textoVisible(unidad)].includes(String(c.texto_ocr || ""))
+    && JSON.stringify(c.bbox || null) === JSON.stringify(unidad.bbox || null));
+}
 function unidadConfirmada(unidad, correcciones = []) {
   if (!unidad) return false;
   if (unidad.confirmado_manualmente || unidad.edicion_zona ||
+      unidad.estado_supervision === "corregido_humano" ||
       unidad.correccion_modelo?.tipo === "memoria_imagen_confirmada") return true;
-  return (correcciones || []).some((c) => String(c.texto_ocr || "") === textoUnidad(unidad)
-    && String(c.texto_correcto || "") === textoVisible(unidad)
-    && JSON.stringify(c.bbox || null) === JSON.stringify(unidad.bbox || null));
+  return (correcciones || []).some((c) => {
+    const provisional = c.estado_supervision === "aceptado_provisional"
+      || c.fuente === "aceptar_ocr" || c.accion === "aceptar";
+    const textoOrigenCorreccion = String(c.texto_ocr ?? c.texto_original ?? "");
+    const origenCoincide = !textoOrigenCorreccion
+      || textoOrigenCorreccion === String(textoUnidad(unidad) || "");
+    return !provisional && origenCoincide
+      && String(c.texto_correcto || "") === textoVisible(unidad)
+      && JSON.stringify(c.bbox || null) === JSON.stringify(unidad.bbox || null);
+  });
+}
+function estadoSupervisionUnidad(unidad, correcciones = []) {
+  if (unidadConfirmada(unidad, correcciones)) return "corregido_humano";
+  if (unidadAceptadaProvisional(unidad, correcciones)) return "aceptado_provisional";
+  return "sin_confirmar";
+}
+function etiquetaSupervisionUnidad(unidad, correcciones = []) {
+  const estado = estadoSupervisionUnidad(unidad, correcciones);
+  return estado === "corregido_humano" ? "Corregido / confirmado"
+    : estado === "aceptado_provisional" ? "Aceptado provisional · pendiente de verificar"
+    : "Sin confirmar";
+}
+function claseCajaSupervision(unidad, correcciones = []) {
+  const estado = estadoSupervisionUnidad(unidad, correcciones);
+  return estado === "corregido_humano" ? "caja-corregida"
+    : estado === "aceptado_provisional" ? "caja-provisional" : "";
+}
+function claseTokenSupervision(unidad, correcciones = []) {
+  const estado = estadoSupervisionUnidad(unidad, correcciones);
+  return estado === "corregido_humano" ? "token-confirmado"
+    : estado === "aceptado_provisional" ? "token-provisional" : "";
+}
+function marcaSupervision(unidad, correcciones = []) {
+  const estado = estadoSupervisionUnidad(unidad, correcciones);
+  return estado === "corregido_humano" ? "✓"
+    : estado === "aceptado_provisional" ? "◷" : "";
 }
 
 /* ----------------------------- Componentes ----------------------------- */
@@ -322,7 +477,7 @@ function Dona({ conteo, colores, total }) {
   // Dona SVG pura (sin librería): segmentos proporcionales al semáforo.
   const radio = 62, grosor = 20, cx = 80, cy = 80;
   const circ = 2 * Math.PI * radio;
-  const orden = ["verde", "amarillo", "rojo", "sin_clasificar"];
+  const orden = ["verde", "amarillo", "rojo", "pendiente", "sin_clasificar"];
   let acumulado = 0;
   const segmentos = orden.filter((k) => (conteo[k] || 0) > 0).map((k) => {
     const frac = conteo[k] / total;
@@ -335,7 +490,7 @@ function Dona({ conteo, colores, total }) {
     <circle cx=${cx} cy=${cy} r=${radio} fill="none" stroke="var(--borde)" strokeWidth=${grosor} />
     ${segmentos.map((s) => html`
       <circle key=${s.k} cx=${cx} cy=${cy} r=${radio} fill="none"
-        stroke=${colores[s.k] || "var(--texto-3)"} strokeWidth=${grosor}
+        stroke=${s.k === "pendiente" ? "var(--acento)" : (colores[s.k] || "var(--texto-3)")} strokeWidth=${grosor}
         strokeDasharray=${`${s.largo} ${circ - s.largo}`}
         strokeDashoffset=${-s.offset} transform=${`rotate(-90 ${cx} ${cy})`} />`)}
     <text x=${cx} y=${cy - 4} textAnchor="middle" fontSize="26" fontWeight="700" fill="var(--texto)">${total}</text>
@@ -355,20 +510,21 @@ function BarrasLote({ porLote, colores }) {
         </div>
         <div role="img" aria-label=${`Lote ${lote}: ${c.verde} verdes, ${c.amarillo} amarillos, ${c.rojos ?? c.rojo} rojos`}
              style=${{ display: "flex", height: 14, borderRadius: 7, overflow: "hidden", background: "var(--borde)" }}>
-          ${["verde", "amarillo", "rojo", "sin_clasificar"].map((k) =>
+          ${["verde", "amarillo", "rojo", "pendiente", "sin_clasificar"].map((k) =>
             (c[k] || 0) > 0 && html`<div key=${k} title=${`${k}: ${c[k]}`}
-              style=${{ width: `${(c[k] / total) * 100}%`, background: colores[k] || "var(--texto-3)" }}></div>`)}
+              style=${{ width: `${(c[k] / total) * 100}%`, background: k === "pendiente" ? "var(--acento)" : (colores[k] || "var(--texto-3)") }}></div>`)}
         </div>
       </div>`;
     })}
   </div>`;
 }
 
-function LeyendaSemaforo({ colores }) {
+function LeyendaSemaforo({ colores, mostrarPendiente=false }) {
   return html`<div class="leyenda">
     ${["verde", "amarillo", "rojo"].map((k) => html`<span key=${k} class="item">
       <span class="swatch" style=${{ background: colores[k] }}></span>${k}</span>`)}
-    <span class="item"><span class="swatch" style=${{ background: "var(--texto-3)" }}></span>sin clasificar</span>
+    ${mostrarPendiente && html`<span class="item"><span class="swatch" style=${{ background: "var(--acento)" }}></span>pendiente de procesamiento</span>`}
+    <span class="item"><span class="swatch" style=${{ background: "var(--texto-3)" }}></span>sin clasificar / evidencia insuficiente</span>
   </div>`;
 }
 
@@ -396,13 +552,25 @@ function EstadoError({ mensaje = "No fue posible cargar el dashboard." }) {
   </div>`;
 }
 
+/* R15.4 (MEDIUM-03): aviso visible cuando el listado viene de una
+   recuperación de checkpoint (el documento oficial no existe). Los parciales
+   nunca deben presentarse como resultados actuales sin comunicarlo. */
+function AvisoCheckpointRecuperacion({ fuente }) {
+  if (fuente !== "checkpoint_recuperacion") return null;
+  return html`<div class="aviso aviso-checkpoint" role="status" aria-live="polite">
+    <strong>${t("Vista de recuperación")}</strong>
+    ${t("No existe el documento oficial de resultados; estas filas provienen del checkpoint de una corrida en curso o recuperable.")}
+  </div>`;
+}
+
 /* ----------------------------- Vistas ----------------------------- */
 
 function MatrizApertura({ matriz, colores }) {
-  if (!matriz?.etapas?.length) return null;
+  if (!matriz?.etapas?.length && !matriz?.sin_clasificar?.length) return null;
   const paleta = {
     verde: colores.verde || "#22c55e", amarillo: colores.amarillo || "#f59e0b",
     rojo: colores.rojo || "#ef4444", gris: colores.gris || "#9ca3af",
+    pendiente: "var(--acento)",
   };
   const abrirEnListado = (item) => {
     if (!item) return;
@@ -414,40 +582,103 @@ function MatrizApertura({ matriz, colores }) {
     location.hash = "#/tabla";
   };
   const textoTiempo = (item) => item?.opening_time_ms === null || item?.opening_time_ms === undefined
-    ? "Tiempo de apertura aún no conocido"
-    : `Tiempo de apertura: ${item.opening_time_ms} ms`;
+    ? (item?.tiempo_pendiente_ms != null
+      ? `Medida pendiente de revisión: ${item.tiempo_pendiente_ms} ms (no se colorea)`
+      : "Tiempo de apertura aún no conocido")
+    : item?.tiempo_es_estimado
+      ? `Estimación automática de apertura: ${item.opening_time_ms} ms (color calculado; publicación pendiente)`
+      : `Tiempo de apertura: ${item.opening_time_ms} ms`;
+  const motivoGris = (item) => ({
+    sin_tiempo: "sin tiempo medido", pendiente_revision: "pendiente de revisión",
+    conflicto: "conflicto entre fuentes", valor_no_finito: "valor no finito descartado",
+    valor_negativo: "valor negativo descartado", valor_no_positivo: "tiempo final debe ser > 0",
+    no_positivo: "tiempo final debe ser > 0", no_finito: "tiempo final no finito",
+    no_interpretable: "tiempo final no interpretable", referencia_invalida: "referencia temporal inválida",
+    sin_medicion: "sin medición", sin_caso: "posición sin caso",
+    procesamiento_pendiente: "aún no termina el análisis de este caso",
+  }[item?.motivo_estado] || item?.motivo_estado || "sin tiempo confiable");
+  const trazaCelda = (item) => [
+    item?.decision_apertura && `Decisión: ${item.decision_apertura}`,
+    item?.estado_tiempo && `Estado temporal: ${item.estado_tiempo}`,
+    item?.motivo_rechazo && `Rechazo: ${item.motivo_rechazo}`,
+    item?.raw_time_ms !== null && item?.raw_time_ms !== undefined && `Tiempo crudo: ${item.raw_time_ms} ms`,
+    item?.fuente_evidencia && `Fuente: ${item.fuente_evidencia}`,
+    item?.color_fuente && `Color: ${item.color_fuente}`,
+    item?.color_motor_version && `Motor: ${item.color_motor_version}`,
+    item?.auto_color_soporte != null && item?.tiempo_es_estimado && `Soporte automático: ${item.auto_color_soporte} video(s)`,
+    item?.auto_color_score_max != null && item?.tiempo_es_estimado && `Evidencia visual: ${Number(item.auto_color_score_max).toFixed(3)}`,
+    item?.auto_color_niveles?.length && item?.tiempo_es_estimado && `Nivel: ${item.auto_color_niveles.join(", ")}`,
+    item?.auto_color_puertas && Object.keys(item.auto_color_puertas).length && `Puertas: ${Object.entries(item.auto_color_puertas).map(([k,v])=>`${k}=${v?"OK":"NO"}`).join(", ")}`,
+    item?.auto_color_puertas_fallidas?.length && `Bloqueos: ${item.auto_color_puertas_fallidas.join(", ")}`,
+    item?.auto_color_riesgos?.length && `Riesgos: ${item.auto_color_riesgos.join(", ")}`,
+    item?.auto_color_prioridad === "video_unico_defendible" && "Prioridad: un video físicamente defendible",
+    item?.duracion_llenado_estimada_ms != null && `Llenado visual estimado: ${Number(item.duracion_llenado_estimada_ms).toFixed(3)} ms`,
+    item?.tiempo_max_inflado_estimado_ms != null && `Máximo inflado estimado: ${Number(item.tiempo_max_inflado_estimado_ms).toFixed(3)} ms desde inicio de video`,
+    item?.duracion_hasta_max_inflado_ms != null && `Breakout→máximo: ${Number(item.duracion_hasta_max_inflado_ms).toFixed(3)} ms`,
+    item?.max_inflado_estado && item.max_inflado_estado !== "maximo_inflado_estimado" && `Máximo inflado: ${t("NO CONFIRMADO")} (${item.max_inflado_estado})${item.tiempo_max_inflado_no_confirmado_ms != null ? ` · ${Number(item.tiempo_max_inflado_no_confirmado_ms).toFixed(3)} ms observados` : ""}`,
+    item?.max_inflado_anomalias?.length && `Anomalías despliegue: ${item.max_inflado_anomalias.join(", ")}`,
+    item?.razones_apertura?.length && `Evidencia: ${item.razones_apertura.join("; ")}`,
+  ].filter(Boolean).join(" · ");
+  // Al pasar el cursor por una celda, sólo mostrar su tiempo de apertura.
+  const tituloCelda = (item) => {
+    const valor = item?.opening_time_ms ?? item?.tiempo_pendiente_ms;
+    const n = Number(valor);
+    return valor != null && Number.isFinite(n) && n > 0
+      ? `Tiempo de apertura: ${n.toFixed(1)} ms`
+      : "Tiempo de apertura: no disponible";
+  };
   return html`<div class="tarjeta matriz-apertura-tarjeta">
     <div class="matriz-apertura-encabezado">
       <div>
         <h3 class="titulo-seccion" style=${{ margin: 0 }}>Matriz de tiempo de apertura</h3>
         <p class="subtitulo-seccion" style=${{ marginBottom: 0 }}>
-          1ST y 2ST en un solo resumen. Haz clic en una prueba para localizar su carpeta en el Listado.
+          1ST y 2ST en un solo resumen. Se muestran únicamente casos existentes; las categorías vacías no crean casillas. Haz clic en una prueba para localizar su carpeta en el Listado.
         </p>
       </div>
       <div class="leyenda-apertura" aria-label="Leyenda tiempo de apertura">
-        ${Object.entries(matriz.regla || {}).map(([estado, etiqueta]) => html`
-          <span key=${estado}><i style=${{ background: paleta[estado] }}></i>${etiqueta}</span>`)}
+        ${["verde", "amarillo", "rojo", "gris"].filter((estado) => matriz.regla?.[estado]).map((estado) => html`
+          <span key=${estado}><i style=${{ background: paleta[estado] || paleta.gris }}></i>${matriz.regla[estado]}</span>`)}
+        ${matriz.tiene_pendientes && html`<span key="pendiente"><i style=${{ background: paleta.pendiente }}></i>pendiente de procesamiento</span>`}
       </div>
     </div>
+    ${matriz.regla?.origen_criterio && html`<p class="subtitulo-seccion" style=${{ margin: "0 0 8px" }}>
+      Criterio aplicado: <span class="mono">${matriz.regla.origen_criterio}</span>
+      ${matriz.regla.origen_criterio === "cambio_posterior_confirmado"
+        ? " (cambio confirmado después de la ejecución)" : ""}.</p>`}
+    <p class="subtitulo-seccion" style=${{ margin: "0 0 8px" }}>
+      V16.0.20: apertura = primera bolsa visible corroborada por FRONTAL y LATERAL; FORVIA = primer movimiento del tablero en DETAIL; inflado completo = verificación de despliegue entre FRONTAL y LATERAL. Se conservan pendientes cuando la evidencia o los tiempos son insuficientes. Una cámara con evidencia visible conserva su estimación, pero no la publica en Excel sin corroboración independiente. Azul indica procesamiento activo; gris indica evidencia o tiempo insuficiente, discrepancia o revisión pendiente.
+    </p>
     <div class="matrices-apertura">
-      ${matriz.etapas.map((etapa) => html`<section class="matriz-etapa" key=${etapa.tipo_st}>
+      ${(matriz.etapas || []).map((etapa) => html`<section class="matriz-etapa" key=${etapa.tipo_st}>
         <div class="matriz-etapa-titulo">Overview results (${etapa.tipo_st})</div>
         <div class="matriz-apertura-grid">
           ${etapa.columnas.map((col) => html`<div class="matriz-apertura-columna" key=${col.id}>
             <div class="matriz-apertura-celdas">
-              ${col.celdas.map((item, idx) => item
-                ? html`<button key=${item.id || idx} type="button"
-                    class=${`matriz-celda estado-${item.estado || "gris"}`}
-                    style=${{ background: paleta[item.estado] || paleta.gris }}
-                    title=${`${item.test_number} · ${textoTiempo(item)} · abrir en Listado`}
-                    onClick=${() => abrirEnListado(item)}>${item.test_number}</button>`
-                : html`<span key=${`vacio-${idx}`} class="matriz-celda matriz-celda-vacia" aria-hidden="true"></span>`)}
+              ${col.celdas.map((item, idx) => html`<button key=${item.id || idx} type="button"
+                  class=${`matriz-celda estado-${item.estado || "gris"}`}
+                  style=${{ background: paleta[item.estado] || paleta.gris }}
+                  title=${tituloCelda(item)}
+                  aria-label=${`${item.test_number} · ${tituloCelda(item)}`}
+                  onClick=${() => abrirEnListado(item)}>${item.test_number}</button>`)}
             </div>
-            <div class="matriz-columna-meta"><strong>${col.temperatura}</strong><span>${col.generador}</span></div>
+            <div class="matriz-columna-meta"><strong>${col.temperatura}</strong><span>${col.generador}</span>
+              <small class="matriz-columna-cupos">${col.ocupados ?? col.celdas?.length ?? 0} casos</small></div>
           </div>`)}
         </div>
       </section>`)}
     </div>
+    ${matriz.sin_clasificar?.length ? html`<section class="matriz-sin-clasificar">
+      <h4 class="titulo-seccion" style=${{ margin: "10px 0 4px" }}>Sin clasificar (${matriz.sin_clasificar.length})</h4>
+      <p class="subtitulo-seccion">Casos sin etapa, temperatura o generador verificable. Se cuentan aquí para que ningún caso desaparezca del resumen.</p>
+      <div class="matriz-sin-clasificar-lista">
+        ${matriz.sin_clasificar.map((item) => html`<button key=${item.id || item.test_number} type="button"
+          class=${`matriz-celda matriz-celda-fuera estado-${item.estado || "gris"}`}
+          style=${{ background: paleta[item.estado] || paleta.gris }}
+          title=${tituloCelda(item)}
+          aria-label=${`${item.test_number} · ${tituloCelda(item)}`}
+          onClick=${() => abrirEnListado(item)}>${item.test_number}</button>`)}
+      </div>
+    </section>` : null}
   </div>`;
 }
 
@@ -456,7 +687,7 @@ function ExportadorExcel() {
   const [estado,setEstado]=useState(null); const [enviando,setEnviando]=useState(false);
   useEffect(()=>localStorage.setItem("ocr_export_idioma",idioma),[idioma]);
   async function exportar(){setEnviando(true);setEstado(null);try{const idiomas=idioma==="all"?["es","en","de"]:[idioma];setEstado(await enviarJSON("/api/resultados/exportar",{idiomas}));}catch(e){setEstado({error:e.message});}finally{setEnviando(false);}}
-  return html`<div class="tarjeta exportador-excel"><div><h3 class="titulo-seccion" style=${{margin:0}}>Exportar Excel</h3><p class="subtitulo-seccion">Elige el idioma independientemente de la interfaz. Los tres archivos usan la misma instantánea de datos.</p></div><div class="exportador-controles"><label>Idioma de exportación<select class="campo" value=${idioma} onChange=${e=>setIdioma(e.target.value)}><option value="es">Español</option><option value="en">English</option><option value="de">Deutsch</option><option value="all">Los tres idiomas</option></select></label><button class="boton boton-primario" onClick=${exportar} disabled=${enviando}>${enviando?"Exportando…":"Exportar Excel"}</button></div>${estado?.error&&html`<div class="aviso estado-error">${estado.error}</div>`}${estado?.generados?.length&&html`<div class="descargas-exportacion">${estado.generados.map(x=>html`<a class="boton" href=${x.url}>${x.nombre}</a>`)}</div>`}</div>`;
+  return html`<div class="tarjeta exportador-excel"><div><h3 class="titulo-seccion" style=${{margin:0}}>Exportar Excel</h3><p class="subtitulo-seccion">Elige el idioma independientemente de la interfaz. Los tres archivos usan la misma instantánea de datos.</p></div><div class="exportador-controles"><label>Idioma de exportación<select class="campo" value=${idioma} onChange=${e=>setIdioma(e.target.value)}><option value="es">Español</option><option value="en">English</option><option value="de">Deutsch</option><option value="all">Los tres idiomas</option></select></label><button class="boton boton-primario" onClick=${exportar} disabled=${enviando}>${enviando?"Exportando…":"Exportar Excel"}</button></div>${estado?.error&&html`<div class="aviso estado-error">${estado.error}</div>`}${estado?.generados?.length&&html`<div class="descargas-exportacion">${estado.generados.map(x=>html`<a class="boton" href=${x.url}>${x.nombre}</a>`)}</div>`}${(estado?.estado_publicacion==="pendiente_publicada"||estado?.pendiente_sin_asignar)&&estado?.generados?.length&&html`<div class="aviso alerta-info exportacion-pendiente" role="status"><strong>${t("Excel publicado como PENDIENTE: proyecto «Sin asignar» por decisión del usuario.")}</strong> ${t("El OCR terminó; este reporte NO tiene identidad de proyecto verificada.")}</div>`}${estado?.bloqueados?.length&&html`<div class="aviso alerta-warning exportacion-bloqueada" role="alert"><strong>${t("Exportación BLOQUEADA: identidad del proyecto no verificable.")}</strong> ${t("El OCR terminó y está guardado; el Excel oficial NO se publicó.")}<ul class="lista-exportacion-bloqueada">${estado.bloqueados.map(x=>html`<li key=${x.idioma}><span class="mono">${x.nombre}</span> — ${x.motivo} <a class="boton boton-compacto" href=${x.url_borrador} target="_blank">${t("Descargar borrador (no publicable)")}</a></li>`)}</ul></div>`}</div>`;
 }
 
 function EditorCriteriosApertura({config, onSaved}) {
@@ -499,6 +730,188 @@ function EditorCriteriosApertura({config, onSaved}) {
   </details>`;
 }
 
+// V15.9.2 (C7): el project_id visible en el diálogo usa la MISMA regla que
+// el backend (utilidades/identidad._slug): minúsculas, separadores -._ y
+// cualquier otro carácter comprimido a guion. Nunca se deduce de la carpeta.
+function slugProyecto(texto) {
+  return String(texto || "").trim().toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "proyecto";
+}
+
+function DialogoRangosApertura({ config, onCancelar, onProcesar, proyectos, sugerencias }) {
+  // V15.9 (Fase 0.5): se abre ANTES de iniciar cualquier trabajo al pulsar
+  // «Procesar carpeta». No arranca OCR, lectura de videos ni escrituras.
+  // V15.9.2 (C7): DOS bloques independientes en el mismo paso previo:
+  //   1. Proyecto al que pertenecen las pruebas (elección consciente).
+  //   2. Rangos de tiempo de apertura (semántica V15.9.1 intacta).
+  // Sin proyecto elegido expresamente no se puede iniciar el procesamiento.
+  const vigentes = config?.criterios_vigentes || config?.criterios_usuario || null;
+  const defecto = config?.criterios_predeterminados || { verde_max: 6, amarillo_max: 7 };
+  const [verde, setVerde] = useState(() =>
+    vigentes?.verde_max != null ? String(vigentes.verde_max) : String(defecto.verde_max));
+  const [amarillo, setAmarillo] = useState(() =>
+    vigentes?.amarillo_max != null ? String(vigentes.amarillo_max) : String(defecto.amarillo_max));
+  const [guardarPreferencia, setGuardarPreferencia] = useState(false);
+  const [error, setError] = useState(null);
+  // C7: "" = sin elección (bloquea), "id:<pid>", "nuevo", "sin_asignar".
+  const [seleccionProyecto, setSeleccionProyecto] = useState("");
+  const [nombreProyectoNuevo, setNombreProyectoNuevo] = useState("");
+  const [errorProyecto, setErrorProyecto] = useState(null);
+  const registrados = Array.isArray(proyectos) ? proyectos : [];
+  const sugeridos = Array.isArray(sugerencias) ? sugerencias : [];
+  const origenInicial = vigentes?.origen === "vigente" ? "vigente"
+    : vigentes?.origen === "predeterminado" ? "predeterminado" : "vigente";
+
+  function validar(vRaw, aRaw) {
+    const v = Number(vRaw), a = Number(aRaw);
+    if (vRaw === "" || aRaw === "" || !Number.isFinite(v) || !Number.isFinite(a)) {
+      return { ok: false, texto: t("Escribe dos números finitos en milisegundos (se admiten decimales).") };
+    }
+    if (v < 0 || a < 0) {
+      return { ok: false, texto: t("Los límites no pueden ser negativos.") };
+    }
+    if (v >= a) {
+      return { ok: false, texto: t("Los límites deben cumplir: 0 ≤ verde < amarillo.") };
+    }
+    return { ok: true, v, a };
+  }
+
+  function proyectoElegido() {
+    if (!seleccionProyecto) return null;
+    if (seleccionProyecto === "sin_asignar") {
+      // Decisión expresa: el lote queda pendiente, sin identidad inventada.
+      return { sin_asignar: true, nombre_proyecto: null, proyecto_id: null };
+    }
+    if (seleccionProyecto === "nuevo") {
+      const nombre = nombreProyectoNuevo.trim();
+      if (!nombre) return null;
+      return { sin_asignar: false, nombre_proyecto: nombre,
+        proyecto_id: slugProyecto(nombre) };
+    }
+    const pid = seleccionProyecto.slice(3);
+    const elegido = registrados.find((p) => p.proyecto_id === pid);
+    if (!elegido) return null;
+    return { sin_asignar: false,
+      nombre_proyecto: elegido.nombre_proyecto || null,
+      proyecto_id: elegido.proyecto_id };
+  }
+
+  function procesarConCampos(origen) {
+    // C7: el proyecto debe confirmarse conscientemente antes que nada.
+    const proyecto = proyectoElegido();
+    if (!proyecto) {
+      setErrorProyecto(t("Elige el proyecto al que pertenecen las pruebas, o marca expresamente «Sin asignar»."));
+      return;
+    }
+    setErrorProyecto(null);
+    const r = origen === "predeterminado"
+      ? { ok: true, v: Number(defecto.verde_max), a: Number(defecto.amarillo_max) }
+      : validar(verde, amarillo);
+    if (!r.ok) { setError(r.texto); return; }
+    setError(null);
+    // V15.9.1 (A7): los predeterminados aplican SOLO a esta ejecución; nunca
+    // sobrescriben la preferencia global aunque la casilla esté marcada.
+    onProcesar({ verde_max: r.v, amarillo_max: r.a, origen,
+      guardar_preferencia: origen === "predeterminado" ? false : guardarPreferencia },
+      proyecto);
+  }
+
+  const vNum = Number(verde), aNum = Number(amarillo);
+  const combinacion = (Number.isFinite(vNum) && Number.isFinite(aNum) && vNum < aNum)
+    ? `${t("Combinación definitiva")}: ${t("verde")} ≤ ${vNum} ms · ${vNum} ms < ${t("amarillo")} ≤ ${aNum} ms · ${t("rojo")} > ${aNum} ms`
+    : `${t("Combinación definitiva")}: ${t("revisa los límites para verla aquí antes de iniciar")}.`;
+
+  // V15.9.1 (A3): todos los textos del diálogo pasan por el sistema de
+  // idiomas del dashboard (ES/EN/DE); no quedan cadenas literales.
+  const proyectoActual = proyectoElegido();
+  const idProyectoVista = proyectoActual
+    ? (proyectoActual.proyecto_id || "sin-asignar") : null;
+  return html`<div class="modal-fondo" role="presentation">
+    <div class="dialogo-rangos dialogo-previo" role="dialog" aria-modal="true" aria-label=${t("Configuración previa al procesamiento")}>
+      <h3 class="titulo-seccion" style=${{ marginTop: 0 }}>${t("Configuración previa al procesamiento")}</h3>
+      <section class="dialogo-proyecto-bloque" aria-label=${t("Proyecto al que pertenecen las pruebas")}>
+        <h4 class="titulo-seccion" style=${{ marginTop: 0 }}>${t("Proyecto al que pertenecen las pruebas")}</h4>
+        <p class="subtitulo-seccion">
+          ${t("Obligatorio: elige conscientemente el proyecto. No se hereda de la plantilla Excel, la carpeta, la configuración global ni la corrida anterior.")}
+        </p>
+        <label>${t("Proyecto registrado")}
+          <select class="campo" value=${seleccionProyecto}
+            onChange=${(e) => { setSeleccionProyecto(e.target.value); setErrorProyecto(null); }}>
+            <option value="">${t("— Elige proyecto conscientemente —")}</option>
+            ${registrados.map((pr) => html`<option key=${pr.proyecto_id} value=${`id:${pr.proyecto_id}`}>${pr.nombre_proyecto || pr.proyecto_id} · ${pr.proyecto_id}</option>`)}
+            <option value="nuevo">${t("Nuevo proyecto…")}</option>
+            <option value="sin_asignar">${t("Sin asignar (el lote quedará pendiente)")}</option>
+          </select>
+        </label>
+        ${seleccionProyecto === "nuevo" && html`
+          <label>${t("Nombre del proyecto")}
+            <input class="campo" type="text" maxLength="120" value=${nombreProyectoNuevo}
+              onInput=${(e) => setNombreProyectoNuevo(e.target.value)} autoFocus />
+          </label>
+          <p class="mono" role="status">${t("ID estable")}: ${nombreProyectoNuevo.trim()
+            ? slugProyecto(nombreProyectoNuevo) : t("Escribe un nombre para el nuevo proyecto.")}</p>`}
+        ${seleccionProyecto === "sin_asignar" && html`
+          <div class="aviso" role="status">${t("El lote y los reportes quedarán marcados como pendientes de identidad; nada se publica a nombre de un proyecto.")}</div>`}
+        ${sugeridos.length > 0 && html`
+          <div class="dialogo-proyecto-sugerencias">
+            <span class="subtitulo-seccion">${t("Sugerencias pendientes de aceptación")}:</span>
+            ${sugeridos.map((s) => html`<button type="button" class="chip chip-sugerencia"
+              key=${s.proyecto_id} title=${`${t("Origen")}: ${s.origen_sugerencia}`}
+              onClick=${() => { setSeleccionProyecto("nuevo");
+                setNombreProyectoNuevo(s.nombre_proyecto || s.proyecto_id);
+                setErrorProyecto(null); }}>
+              ${s.proyecto_id} · ${t("Usar sugerencia")}</button>`)}
+          </div>`}
+        ${proyectoActual && html`<p class="mono" role="status">${t("Resumen previo")}:
+          ${proyectoActual.sin_asignar ? t("Sin asignar (pendiente)") : proyectoActual.nombre_proyecto}
+          · project_id=${idProyectoVista}</p>`}
+        ${errorProyecto && html`<div class="aviso estado-error" role="alert">${errorProyecto}</div>`}
+      </section>
+      <section class="dialogo-rangos-bloque" aria-label=${t("Configurar rangos de apertura")}>
+      <h3 class="titulo-seccion">${t("Configurar rangos de apertura")}</h3>
+      <p class="subtitulo-seccion">
+        ${t("Estos rangos sólo clasifican visualmente el tiempo de apertura del lote actual.")}
+        ${t("No cambian FPS, frames, el cálculo de la apertura, el consenso ni el máximo visible.")}
+      </p>
+      <div class="dialogo-rangos-vista-previa" aria-label=${t("Vista previa del semáforo")}>
+        <span class="chip" style=${{ background: config?.colores?.verde || "#22c55e" }}>${t("Verde")}</span>
+        <span class="chip" style=${{ background: config?.colores?.amarillo || "#f59e0b" }}>${t("Amarillo")}</span>
+        <span class="chip" style=${{ background: config?.colores?.rojo || "#ef4444" }}>${t("Rojo")}</span>
+        <span class="chip" style=${{ background: config?.colores?.gris || "#9ca3af" }}>${t("Gris (sin tiempo fiable, pendiente o sin caso)")}</span>
+      </div>
+      ${vigentes && html`<p class="mono">${t("Valores vigentes")}: ${vigentes.verde_max} / ${vigentes.amarillo_max} ms
+        (${vigentes.origen === "vigente" ? t("preferencia guardada") : t("predeterminados del proyecto")}).</p>`}
+      <div class="dialogo-rangos-campos">
+        <label>${t("Verde hasta (ms)")}<input class="campo" type="number" min="0" step="any" inputMode="decimal"
+          value=${verde} onInput=${(e) => setVerde(e.target.value)} autoFocus /></label>
+        <label>${t("Amarillo hasta (ms)")}<input class="campo" type="number" min="0" step="any" inputMode="decimal"
+          value=${amarillo} onInput=${(e) => setAmarillo(e.target.value)} /></label>
+      </div>
+      <p class="mono dialogo-rangos-combinacion" role="status">${String(combinacion)}</p>
+      <p class="subtitulo-seccion">${t("Reglas")}: <span class="mono">${t("verde")} ≤ V</span>,
+        <span class="mono">V &lt; ${t("amarillo")} ≤ A</span>, <span class="mono">${t("rojo")} &gt; A</span>.
+        ${t("El gris nunca se sustituye por 0 ms.")}</p>
+      <label class="dialogo-rangos-guardar">
+        <input type="checkbox" checked=${guardarPreferencia}
+          onChange=${(e) => setGuardarPreferencia(e.target.checked)} />
+        ${t("Guardar para próximas carpetas (preferencia permanente)")}
+      </label>
+      ${error && html`<div class="aviso estado-error" role="alert">${error}</div>`}
+      </section>
+      <div class="dialogo-rangos-acciones">
+        <button type="button" class="boton boton-primario" disabled=${!proyectoActual}
+          onClick=${() => procesarConCampos("elegido")}>
+          ${t("Procesar con estos rangos")}</button>
+        <button type="button" class="boton" disabled=${!proyectoActual}
+          onClick=${() => procesarConCampos("predeterminado")}
+          title=${t("Usa 6.0 / 7.0 ms solo para esta ejecución; no modifica tu preferencia guardada")}>
+          ${t("Usar predeterminados (6 / 7 ms)")}</button>
+        <button type="button" class="boton" onClick=${onCancelar}>${t("Cancelar")}</button>
+      </div>
+    </div>
+  </div>`;
+}
+
 function VistaResumen() {
   const [resumen, setResumen, errorResumen] = useApi("/api/resumen");
   const [config, setConfig, errorConfig] = useApi("/api/config");
@@ -506,28 +919,40 @@ function VistaResumen() {
   if (resumen === undefined || config === undefined) return html`<${CargandoKpis} />`;
   if (errorResumen || errorConfig) return html`<${EstadoError} />`;
   if (!resumen) return html`<${EstadoVacio} />`;
-  const s = resumen.semaforo;
+  // El resumen visual junto a la matriz usa el MISMO semáforo canónico de apertura.
+  // El semáforo OCR se conserva aparte en la API para diagnóstico, pero no se mezcla
+  // con los colores del tiempo de apertura.
+  const s = resumen.semaforo_apertura || resumen.semaforo;
+  const pctApertura = resumen.pct_apertura || resumen.pct;
+  const porLoteApertura = resumen.distribucion_apertura_por_lote || resumen.distribucion_por_lote;
+  const calidadDecision = resumen.calidad_decision_apertura || {};
   return html`
+    ${(resumen.resumen_en_vivo || (s.pendiente || 0) > 0 || (calidadDecision.estimada_automatica || 0) > 0) && html`<div class="aviso alerta-info" role="status">
+      <strong>Ejecución en curso:</strong> ${resumen.total_procesadas || 0} analizados · ${s.pendiente || resumen.pendientes_pipeline || 0} pendientes.
+      <span class="mono"> Decisiones: ${calidadDecision.confirmada || 0} confirmadas · ${calidadDecision.estimada_automatica || 0} estimadas automáticas · ${calidadDecision.abstencion || 0} en abstención · ${calidadDecision.pendiente || 0} pendientes.</span>
+      <strong>Los colores estimados no son mediciones confirmadas.</strong> Identifican candidatos automáticos con evidencia visual según las reglas actuales; la medición final sigue pendiente de validación temporal cuando así se indique. El resumen y la matriz usan la misma decisión del caso.
+    </div>`}
     <div class="rejilla-kpi">
       <${Kpi} etiqueta="Pruebas procesadas" valor=${resumen.total_procesadas}
         sub=${`${resumen.total_carpetas} carpetas recorridas`} />
-      <${Kpi} etiqueta="Verde" valor=${`${resumen.pct.verde ?? 0}%`} sub=${`${s.verde} carpetas`} color=${colores.verde} />
-      <${Kpi} etiqueta="Amarillo" valor=${`${resumen.pct.amarillo ?? 0}%`} sub=${`${s.amarillo} carpetas`} color=${colores.amarillo} />
-      <${Kpi} etiqueta="Rojo" valor=${`${resumen.pct.rojo ?? 0}%`} sub=${`${s.rojo} carpetas`} color=${colores.rojo} />
+      <${Kpi} etiqueta="Verde" valor=${`${pctApertura.verde ?? 0}%`} sub=${`${s.verde} carpetas`} color=${colores.verde} />
+      <${Kpi} etiqueta="Amarillo" valor=${`${pctApertura.amarillo ?? 0}%`} sub=${`${s.amarillo} carpetas`} color=${colores.amarillo} />
+      <${Kpi} etiqueta="Rojo" valor=${`${pctApertura.rojo ?? 0}%`} sub=${`${s.rojo} carpetas`} color=${colores.rojo} />
+      ${(resumen.resumen_en_vivo || (s.pendiente || 0) > 0) && html`<${Kpi} etiqueta="Pendientes" valor=${s.pendiente || 0} sub="procesándose ahora" color="var(--acento)" />`}
       <${Kpi} etiqueta="Confianza OCR promedio" valor=${fmtPct(resumen.confianza_promedio)}
         sub="media del lote (etiquetas)" />
     </div>
 
     <div class="rejilla-2">
       <div class="tarjeta">
-        <h3 class="titulo-seccion" style=${{ marginTop: 0 }}>Distribución del semáforo</h3>
+        <h3 class="titulo-seccion" style=${{ marginTop: 0 }}>Distribución del tiempo de apertura</h3>
         <${Dona} conteo=${{ ...s }} colores=${colores} total=${resumen.total_carpetas} />
-        <div style=${{ marginTop: 12 }}><${LeyendaSemaforo} colores=${colores} /></div>
+        <div style=${{ marginTop: 12 }}><${LeyendaSemaforo} colores=${colores} mostrarPendiente=${Boolean(resumen.resumen_en_vivo || (s.pendiente || 0) > 0)} /></div>
       </div>
       <div class="tarjeta">
-        <h3 class="titulo-seccion" style=${{ marginTop: 0 }}>Semáforo por lote</h3>
-        <p class="subtitulo-seccion">Cada barra apila el estado de las carpetas de un lote.</p>
-        <${BarrasLote} porLote=${resumen.distribucion_por_lote} colores=${colores} />
+        <h3 class="titulo-seccion" style=${{ marginTop: 0 }}>Tiempo de apertura por lote</h3>
+        <p class="subtitulo-seccion">Cada barra usa exactamente el mismo estado de apertura que la matriz.</p>
+        <${BarrasLote} porLote=${porLoteApertura} colores=${colores} />
       </div>
     </div>
 
@@ -578,6 +1003,9 @@ function VistaCarga() {
   const [marcadoresNuevaPlantilla, setMarcadoresNuevaPlantilla] = useState("");
   const [registrandoPlantilla, setRegistrandoPlantilla] = useState(false);
   const [dialogoDetencion, setDialogoDetencion] = useState(false);
+  // V15.9: diálogo de rangos previo a iniciar el procesamiento del lote.
+  const [dialogoRangos, setDialogoRangos] = useState(false);
+  const [configRangos, setConfigRangos] = useState(null);
   const [estado, setEstado] = useState(undefined);
   const [errorEstado, setErrorEstado] = useState(null);
   const [enviando, setEnviando] = useState(false);
@@ -592,25 +1020,71 @@ function VistaCarga() {
       .catch(() => setPlantillas([]));
   }, []);
 
+  // V15.9.2 (C7): proyectos declarados + sugerencias pendientes de aceptación.
+  const [proyectosRegistrados, setProyectosRegistrados] = useState([]);
+  const [sugerenciasProyecto, setSugerenciasProyecto] = useState([]);
+  const refrescarProyectos = useCallback(() => {
+    pedirJSON("/api/proyectos")
+      .then((dato) => {
+        setProyectosRegistrados(dato?.proyectos || []);
+        setSugerenciasProyecto(dato?.sugerencias || []);
+      })
+      .catch(() => { setProyectosRegistrados([]); setSugerenciasProyecto([]); });
+  }, []);
+
+  // R15.1 (MEDIO-07): UNA sola guarda de secuencia por recurso, compartida
+  // entre los refrescos manuales y el sondeo serial: cualquier respuesta
+  // rezagada (inicial o manual) se descarta frente a la más reciente.
+  const guardaEstadoRef = useRef(null);
+  if (!guardaEstadoRef.current) guardaEstadoRef.current = RedSegura.crearGuardaSecuencia();
+  const guardaReanalisisRef = useRef(null);
+  if (!guardaReanalisisRef.current) guardaReanalisisRef.current = RedSegura.crearGuardaSecuencia();
+
   const refrescar = useCallback(() => {
+    const guarda = guardaEstadoRef.current;
+    const token = guarda.siguiente();
     pedirJSON("/api/pipeline/estado")
-      .then((dato) => { setEstado(dato); setErrorEstado(null); })
-      .catch((e) => setErrorEstado(e));
+      .then((dato) => { if (guarda.esVigente(token)) { setEstado(dato); setErrorEstado(null); } })
+      .catch((e) => { if (guarda.esVigente(token)) setErrorEstado(e); });
   }, []);
 
   const refrescarReanalisisVideos = useCallback(() => {
+    const guarda = guardaReanalisisRef.current;
+    const token = guarda.siguiente();
     pedirJSON("/api/video/reanalisis/estado")
-      .then((dato) => { setReanalisisVideos(dato); setErrorReanalisisVideos(null); })
-      .catch((e) => setErrorReanalisisVideos(e));
+      .then((dato) => { if (guarda.esVigente(token)) { setReanalisisVideos(dato); setErrorReanalisisVideos(null); } })
+      .catch((e) => { if (guarda.esVigente(token)) setErrorReanalisisVideos(e); });
   }, []);
 
   useEffect(() => {
-    refrescar();
     refrescarPlantillas();
-    refrescarReanalisisVideos();
-    const id = setInterval(() => { refrescar(); refrescarReanalisisVideos(); }, 1200);
-    return () => clearInterval(id);
-  }, [refrescar, refrescarPlantillas, refrescarReanalisisVideos]);
+    refrescarProyectos();
+    // R15 (MEDIA-08) + R15.1 (MEDIO-07): polling SERIAL — la siguiente
+    // consulta se programa sólo cuando la anterior terminó, y una guarda de
+    // secuencia descarta respuestas rezagadas (nunca «retroceden» el
+    // porcentaje/fase en pantalla). El sondeo ejecuta TAMBIÉN la primera
+    // consulta (iniciar() dispara la tarea de inmediato): ya no existe un
+    // refrescar() inicial sin guarda en paralelo al primer ciclo.
+    const guardaEstado = guardaEstadoRef.current;
+    const guardaReanalisis = guardaReanalisisRef.current;
+    const sondeo = RedSegura.crearSondeoSerial({
+      intervaloMs: 1200,
+      tarea: async () => {
+        const tokenEstado = guardaEstado.siguiente();
+        const tokenReanalisis = guardaReanalisis.siguiente();
+        await Promise.allSettled([
+          pedirJSON("/api/pipeline/estado")
+            .then((dato) => { if (guardaEstado.esVigente(tokenEstado)) { setEstado(dato); setErrorEstado(null); } })
+            .catch((e) => { if (guardaEstado.esVigente(tokenEstado)) setErrorEstado(e); }),
+          pedirJSON("/api/video/reanalisis/estado")
+            .then((dato) => { if (guardaReanalisis.esVigente(tokenReanalisis)) { setReanalisisVideos(dato); setErrorReanalisisVideos(null); } })
+            .catch((e) => { if (guardaReanalisis.esVigente(tokenReanalisis)) setErrorReanalisisVideos(e); }),
+        ]);
+      },
+    });
+    sondeo.iniciar();
+    return () => sondeo.detener();
+  }, []);
 
   useEffect(() => {
     try { localStorage.setItem("ocr_idiomas_exportacion", JSON.stringify(idiomasExportacion)); } catch (_) {}
@@ -653,6 +1127,28 @@ function VistaCarga() {
   const procesar = async (ev) => {
     ev.preventDefault();
     setErrorEnvio(null);
+    // V15.9: ANTES de cualquier trabajo aparece «Configurar rangos de apertura».
+    // El usuario puede continuar sin tocar nada (predeterminados 6/7 ms).
+    try {
+      const config = await pedirJSON("/api/config");
+      setConfigRangos(config);
+      setDialogoRangos(true);
+    } catch (e) {
+      // Sin configuración disponible se permite continuar con defaults locales.
+      setConfigRangos({ criterios_predeterminados: { verde_max: 6, amarillo_max: 7 },
+        criterios_vigentes: null, colores: {} });
+      setDialogoRangos(true);
+    }
+  };
+
+  const confirmarProcesamiento = async (rango, proyecto) => {
+    setDialogoRangos(false);
+    setErrorEnvio(null);
+    // C7: sin decisión explícita de proyecto no se inicia ningún trabajo.
+    if (!proyecto) {
+      setErrorEnvio(t("Elige el proyecto al que pertenecen las pruebas, o marca expresamente «Sin asignar»."));
+      return;
+    }
     setEnviando(true);
     try {
       await enviarJSON("/api/pipeline", {
@@ -664,6 +1160,17 @@ function VistaCarga() {
         contenido,
         idiomas_exportacion: idiomasExportacion,
         ruta_inventario: null,
+        rango_apertura: rango ? {
+          verde_max: rango.verde_max, amarillo_max: rango.amarillo_max,
+          origen: rango.origen, guardar_preferencia: !!rango.guardar_preferencia,
+        } : null,
+        // C7: proyecto declarado en la misma solicitud que los rangos.
+        proyecto: {
+          nombre_proyecto: proyecto.nombre_proyecto || null,
+          proyecto_id: proyecto.proyecto_id || null,
+          sin_asignar: !!proyecto.sin_asignar,
+          usuario: "dashboard",
+        },
       });
       const nueva = {
         ruta: ruta.trim(), nombre_excel: nombreExcel.trim(),
@@ -673,6 +1180,7 @@ function VistaCarga() {
       setRutasRecientes(actualizadas);
       persistirRutasRecientes(actualizadas);
       refrescar();
+      refrescarProyectos();
     } catch (e) {
       setErrorEnvio(e.message);
     } finally {
@@ -711,6 +1219,15 @@ function VistaCarga() {
     ? (plantillaDetectada.ruta
       ? `${plantillaDetectada.estilo || "Plantilla detectada"} · ${plantillaDetectada.ruta}`
       : "Formato integrado (no se encontró un XLSX compatible)")
+    : null;
+  // C7: identidad autoritativa de la ejecución visible durante y después.
+  const proyectoEjecucion = estado?.proyecto_ejecucion || null;
+  const etiquetaProyecto = proyectoEjecucion
+    ? (proyectoEjecucion.sin_asignar
+      ? t("Sin asignar (pendiente)")
+      : proyectoEjecucion.nombre_proyecto
+        ? `${proyectoEjecucion.nombre_proyecto} · ${proyectoEjecucion.project_id}`
+        : `${proyectoEjecucion.project_id} · ${t("identidad pendiente (carga legacy)")}`)
     : null;
   function elegirRutaGuardada(valor) {
     const elegida = rutasRecientes.find((item) => item.ruta === valor);
@@ -986,6 +1503,7 @@ function VistaCarga() {
         <dt>Persistencia</dt><dd>${estado.persistencia
           ? `${estado.persistencia.estado_persistencia || estado.persistencia.estado || "—"}${estado.persistencia.pendientes ? ` · ${estado.persistencia.pendientes} pendientes` : ""}${estado.persistencia.error_tipo ? ` · ${estado.persistencia.error_tipo}` : ""}`
           : "—"}</dd>
+        ${etiquetaProyecto && html`<dt>${t("Proyecto")}</dt><dd class="mono ${proyectoEjecucion && proyectoEjecucion.pendiente ? "identidad-pendiente" : ""}">${etiquetaProyecto}</dd>`}
         ${etiquetaPlantilla && html`<dt>Plantilla</dt><dd class="mono">${etiquetaPlantilla}</dd>`}
         <dt>Inicio</dt><dd>${fmtFecha(estado.iniciado_en)}</dd>
         <dt>Tiempo transcurrido</dt><dd class="reloj-vivo">${fmtDuracion(transcurridoVivo)}</dd>
@@ -1012,6 +1530,15 @@ function VistaCarga() {
                 ${t("Abrir")} ${idioma.toUpperCase()}</a>`)
             : html`<a class="boton boton-compacto" href="/api/pipeline/excel-parcial" target="_blank">
                 Abrir Excel parcial</a>`}
+        </span>
+      </div>`}
+      ${Object.keys(estado.archivos_excel_parcial_borrador || {}).length > 0 && html`<div class="aviso alerta-warning" role="alert">
+        <strong>${t("Exportación BLOQUEADA: identidad del proyecto no verificable.")}</strong>
+        <span class="acciones-excel-parcial">
+          ${Object.keys(estado.archivos_excel_parcial_borrador || {}).map(idioma => html`
+            <a key=${idioma} class="boton boton-compacto"
+              href=${`/api/pipeline/borrador-parcial?idioma=${encodeURIComponent(idioma)}`} target="_blank">
+              ${t("Descargar borrador (no publicable)")} ${idioma.toUpperCase()}</a>`)}
         </span>
       </div>`}
       ${estado.advertencia_excel_parcial && html`<div class="aviso alerta-warning" role="alert">
@@ -1043,6 +1570,11 @@ function VistaCarga() {
       </div>`}
       ${errorReanalisisVideos && html`<div class="mensaje-error" role="alert">${errorReanalisisVideos}</div>`}
     </div>
+
+    ${dialogoRangos && html`<${DialogoRangosApertura} config=${configRangos}
+      proyectos=${proyectosRegistrados} sugerencias=${sugerenciasProyecto}
+      onCancelar=${() => { setDialogoRangos(false); setConfigRangos(null); }}
+      onProcesar=${confirmarProcesamiento} />`}
 
     ${dialogoDetencion && html`<div class="modal-fondo" role="presentation"
       onClick=${(e) => { if (e.target === e.currentTarget) setDialogoDetencion(false); }}>
@@ -1084,7 +1616,15 @@ function VistaCarga() {
   `;
 }
 
-function TarjetaExterna({ prueba, alActualizarRevision }) {
+// R15.7 (MEDIO-05): el panel externo envía `expected_revision` del
+// documento externo en TODA mutación (CAS estricto en el backend).
+// R15.7 (MEDIO-05): un 409 de CAS significa «pantalla desactualizada»:
+// la UI recarga el documento antes de reintentar (nunca pierde cambios).
+function esConflictoDeRevision(error) {
+  return /409|revisi[oó]n|recarga la pantalla/i.test(String(error?.message || ""));
+}
+
+function TarjetaExterna({ prueba, revisionDocumento, alActualizarRevision }) {
   const unidades = unidadesOcr(prueba);
   const lecturaSugerida = () => {
     const mejor = unidades.find((t) => normalizarCodigoVista(textoUnidad(t))
@@ -1137,15 +1677,17 @@ function TarjetaExterna({ prueba, alActualizarRevision }) {
     setGuardando(true);
     setRespuesta(null);
     try {
+      const accion = accionForzada || (accionSupervision === "aceptar" && textoCorrecto === textoVisible(seleccionada) ? "aceptar" : "corregir");
       const resultado = await enviarJSON("/api/externas/correcciones", {
-        prueba_id: prueba.id, texto_ocr: textoUnidad(seleccionada),
-        texto_correcto: accionForzada === "aceptar" ? textoVisible(seleccionada) : textoCorrecto, bbox: seleccionada?.bbox || null,
-        accion: accionForzada || (accionSupervision === "aceptar" && textoCorrecto === textoVisible(seleccionada) ? "aceptar" : "corregir"),
+        prueba_id: prueba.id, texto_ocr: textoVisible(seleccionada),
+        texto_correcto: accion === "aceptar" ? textoVisible(seleccionada) : textoCorrecto,
+        bbox: seleccionada?.bbox || null, accion,
       });
-      setRespuesta({ ok: true, resultado });
+      setRespuesta({ ok: true, resultado, accion });
       await alActualizarRevision();
     } catch (error) {
       setRespuesta({ ok: false, mensaje: error.message });
+      if (esConflictoDeRevision(error)) await alActualizarRevision();
     } finally {
       setGuardando(false);
     }
@@ -1159,6 +1701,7 @@ function TarjetaExterna({ prueba, alActualizarRevision }) {
       await alActualizarRevision();
     } catch (error) {
       setRespuesta({ ok: false, mensaje: error.message });
+      if (esConflictoDeRevision(error)) await alActualizarRevision();
     } finally {
       setGuardando(false);
     }
@@ -1190,11 +1733,13 @@ function TarjetaExterna({ prueba, alActualizarRevision }) {
     try {
       const resultado = await enviarJSON("/api/aprendizaje/rotaciones", {
         tipo: "externa", prueba_id: prueba.id, imagen_id: null, grados, usar_automatico: usarAutomatico,
+        expected_revision: revisionDocumento ?? null,
       });
       setRespuesta({ ok: true, rotacion: true, resultado });
       await alActualizarRevision();
     } catch (error) {
       setRespuesta({ ok: false, mensaje: error.message });
+      if (esConflictoDeRevision(error)) await alActualizarRevision();
     } finally {
       setGuardando(false);
     }
@@ -1206,11 +1751,13 @@ function TarjetaExterna({ prueba, alActualizarRevision }) {
       const resultado = await enviarJSON(restaurar ? "/api/imagenes/con-texto" : "/api/imagenes/sin-datos", {
         tipo: "externa", prueba_id: prueba.id, imagen_id: null,
         motivo: motivoSinDatos.trim() || null,
+        expected_revision: revisionDocumento ?? null,
       });
       setRespuesta({ ok: true, sinDatos: true, resultado });
       await alActualizarRevision();
     } catch (error) {
       setRespuesta({ ok: false, mensaje: error.message });
+      if (esConflictoDeRevision(error)) await alActualizarRevision();
     } finally {
       setGuardando(false);
     }
@@ -1224,6 +1771,7 @@ function TarjetaExterna({ prueba, alActualizarRevision }) {
       await alActualizarRevision();
     } catch (error) {
       setRespuesta({ ok: false, mensaje: error.message });
+      if (esConflictoDeRevision(error)) await alActualizarRevision();
     } finally {
       setGuardando(false);
     }
@@ -1269,7 +1817,7 @@ function TarjetaExterna({ prueba, alActualizarRevision }) {
       <div><p class="sobrelinea">APRENDIZAJE SUPERVISADO</p>
         <h3 class="titulo-seccion">Corregir una lectura</h3>
         <p class="subtitulo-seccion">Selecciona un renglón y confirma su texto. Guardarlo
-          prepara el dato; el aprendizaje inmediato se usa desde la siguiente imagen similar y el ajuste visual se programa automáticamente.</p>
+          prepara el dato; el aprendizaje inmediato se usa desde la siguiente imagen similar. El entrenamiento de ajuste se ejecuta automáticamente cuando es seguro y genera sólo un candidato; no se activa hasta superar una evaluación sellada y revisión humana.</p>
       </div>
       <${MiniVisorCorreccion} item=${itemExterno} unidad=${seleccionada}
         textoReferencia=${textoCorrecto} onSelectText=${seleccionar} />
@@ -1345,11 +1893,16 @@ function TarjetaExterna({ prueba, alActualizarRevision }) {
       ${((prueba.correcciones || []).length > 0 || (prueba.anotaciones || []).length > 0) && html`
         <details class="historial-aprendizaje">
           <summary>Lista de aprendizaje supervisado (${(prueba.correcciones || []).length + (prueba.anotaciones || []).length}) · desplegar / ocultar</summary>
-          ${(prueba.correcciones || []).map((item) => html`<div key=${`c-${item.id}`} class="evidencia-aprendizaje">
-            <span class="chip neutro">Corrección OCR</span><strong class="mono">${item.texto_correcto}</strong>
-            ${item.texto_ocr !== item.texto_correcto && html`<small class="mono">Antes: ${item.texto_ocr}</small>`}
-            <small>${prueba.imagen}${item.bbox ? ` · región ${item.bbox.join(", ")}` : ""}</small>
-          </div>`)}
+          ${(prueba.correcciones || []).map((item) => {
+            const provisional = item.estado_supervision === "aceptado_provisional" || item.fuente === "aceptar_ocr";
+            return html`<div key=${`c-${item.id}`} class="evidencia-aprendizaje">
+              <span class=${`chip ${provisional ? "chip-provisional" : "neutro"}`}>${t(provisional ? "Aceptación provisional" : "Corrección humana guardada")}</span>
+              <strong class="mono">${item.texto_correcto}</strong>
+              ${item.texto_ocr !== item.texto_correcto && html`<small class="mono">Antes: ${item.texto_ocr}</small>`}
+              <small>${prueba.imagen}${item.bbox ? ` · región ${item.bbox.join(", ")}` : ""}
+                ${item.usuario ? ` · ${item.usuario}` : ""}${item.creado_en ? ` · ${item.creado_en}` : ""}</small>
+            </div>`;
+          })}
           ${(prueba.anotaciones || []).map((item) => html`<div key=${`a-${item.id}`} class="evidencia-aprendizaje">
             <span class="chip neutro">Texto omitido</span><strong class="mono">${item.texto_correcto}</strong>
             <small>${prueba.imagen} · región ${item.bbox.join(", ")}</small>
@@ -1360,10 +1913,12 @@ function TarjetaExterna({ prueba, alActualizarRevision }) {
       ? "Estado de revisión actualizado."
       : respuesta.rotacion ? respuesta.resultado.mensaje
       : respuesta.sinDatos ? respuesta.resultado.mensaje
-      : html`<strong>Corrección guardada y memorizada para esta imagen.</strong>
-        ${respuesta.resultado.entrenamiento?.promovido
-          ? " También se activó como regla global para imágenes nuevas."
-          : " Se reutilizará en esta imagen; todavía no se generaliza a imágenes nuevas hasta reunir más evidencia."}`}</div>`}
+      : respuesta.accion === "aceptar"
+        ? t("Lectura aceptada provisionalmente; no es una corrección humana verificada ni una etiqueta de oro entrenable.")
+        : html`<strong>Corrección guardada y memorizada para esta imagen.</strong>
+          ${respuesta.resultado.entrenamiento?.promovido
+            ? " También se activó como regla global para imágenes nuevas."
+            : " Se reutilizará en esta imagen; todavía no se generaliza a imágenes nuevas hasta reunir más evidencia."}`}</div>`}
     ${respuesta && !respuesta.ok && html`<div class="mensaje-error">${respuesta.mensaje}</div>`}
     <div class="acciones-revision">
       ${!completada && html`<button class="boton" disabled=${guardando}
@@ -1437,6 +1992,7 @@ function VistaExternas({ caso }) {
     </div>`}
     ${resultados.length ? html`<div class="rejilla-externas">
       ${resultados.map((prueba) => html`<${TarjetaExterna} key=${prueba.id} prueba=${prueba}
+        revisionDocumento=${datos?.revision_documento ?? null}
         alActualizarRevision=${refrescarExternas} />`)}
     </div>` : html`<div class="estado-vacio">
       <div class="icono"><${Icono} tipo="documento" /></div><h2>Las imágenes están listas para evaluarse</h2>
@@ -1462,16 +2018,34 @@ function VistaTabla() {
   const limite = 100;
   const [config, , errorConfig] = useApi("/api/config");
   const rutaFilas = `/api/pruebas?q=${encodeURIComponent(consultaEstable)}&estado=${encodeURIComponent(estado)}&limit=${limite}&offset=${pagina * limite}&incluir_ocultos=${mostrarOcultos}`;
-  const [filas, setFilas, errorFilas] = useApi(rutaFilas,
-    [consultaEstable, estado, pagina, mostrarOcultos]);
+  // R15.1 (MEDIO-07): fuente única por recurso — la primera consulta la
+  // ejecuta el propio sondeo serial (con guarda); sin useApi inicial paralelo.
+  const [filas, setFilas] = useState(undefined); // undefined = cargando
+  const [errorFilas, setErrorFilas] = useState(null);
   const colores = (config && config.colores) || {};
   const refTabla = useRef(null);
 
   useEffect(() => {
-    const id = setInterval(() => {
-      pedirJSON(rutaFilas).then(setFilas).catch(() => {});
-    }, 1200);
-    return () => clearInterval(id);
+    // R15 (MEDIA-08) + R15.1 (MEDIO-07): polling serial del listado con
+    // guarda de secuencia; ejecuta también la primera consulta. Una
+    // respuesta antigua nunca sobrescribe a la nueva.
+    setFilas(undefined);
+    setErrorFilas(null);
+    const guarda = RedSegura.crearGuardaSecuencia();
+    const sondeo = RedSegura.crearSondeoSerial({
+      intervaloMs: 1200,
+      tarea: async () => {
+        const token = guarda.siguiente();
+        try {
+          const dato = await pedirJSON(rutaFilas);
+          if (guarda.esVigente(token)) { setFilas(dato); setErrorFilas(null); }
+        } catch (e) {
+          if (guarda.esVigente(token)) { setErrorFilas(e); setFilas(null); }
+        }
+      },
+    });
+    sondeo.iniciar();
+    return () => sondeo.detener();
   }, [rutaFilas]);
 
   useEffect(() => {
@@ -1500,7 +2074,7 @@ function VistaTabla() {
 
   if (config === undefined) return html`<${CargandoKpis} />`;
   if (filas === undefined) return html`<div class="tarjeta"><div class="esqueleto"></div></div>`;
-  if (errorConfig || errorFilas) return html`<${EstadoError} />`;
+  if (errorConfig || errorFilas) return html`<${EstadoError} mensaje=${(errorFilas || errorConfig)?.message} />`;
   if (filas === null) return html`<${EstadoVacio} />`;
 
   const celda = (valor, clase) =>
@@ -1521,6 +2095,7 @@ function VistaTabla() {
 
   return html`
     <div ref=${refTabla} onKeyDown=${alPulsarTecla}>
+    <${AvisoCheckpointRecuperacion} fuente=${filas?.fuente} />
     <div class="barra-filtros">
       <input class="campo" type="search" placeholder=${t("Buscar por identificador o nomenclatura…")}
         aria-label="Buscar en la tabla"
@@ -1616,7 +2191,8 @@ function MiniVisorCorreccion({ item, unidad, textoReferencia, onSelectText }) {
   const cambiarZoom = (valor) => setZoom(limitar(valor));
   function alRueda(evento) {
     evento.preventDefault();
-    cambiarZoom(zoom + (evento.deltaY < 0 ? 25 : -25));
+    const nuevo = limitar(zoom + (evento.deltaY < 0 ? 25 : -25));
+    actualizarZoomAnclado(marcoRef.current, evento, () => setZoom(nuevo));
   }
   function iniciarArrastre(evento) {
     const marco = marcoRef.current;
@@ -1642,10 +2218,7 @@ function MiniVisorCorreccion({ item, unidad, textoReferencia, onSelectText }) {
     marcoRef.current?.scrollTo({ left: 0, top: 0, behavior: "smooth" });
   }
   function estiloCaja(bbox) {
-    return { left: `${bbox[0] / dimensiones[0] * 100}%`,
-      top: `${bbox[1] / dimensiones[1] * 100}%`,
-      width: `${bbox[2] / dimensiones[0] * 100}%`,
-      height: `${bbox[3] / dimensiones[1] * 100}%` };
+    return geometriaVisor.xywhToPercent(bbox, dimensiones[0], dimensiones[1]);
   }
   return html`<aside class="mini-visor-correccion" aria-label="Previsualización de la corrección">
     <div class="mini-visor-cabecera">
@@ -1662,13 +2235,14 @@ function MiniVisorCorreccion({ item, unidad, textoReferencia, onSelectText }) {
       onPointerUp=${terminarArrastre} onPointerCancel=${terminarArrastre}>
       <div class="mini-visor-lienzo" style=${{ width: `${zoom}%` }}>
         <img src=${item?.ruta_api_orientada || item?.ruta_api}
-          alt=${`Previsualización de ${item?.nombre || "imagen"}`} draggable="false" />
+          alt=${`Previsualización de ${item?.nombre || "imagen"}`} draggable="false"
+          onError=${(e) => usarFallbackImagen(e, item?.ruta_api)} />
         ${detectadas.map((linea, indice) => html`<button type="button"
           key=${linea.unidad_id || indice}
-          class=${`caja-region caja-ocr ${unidadConfirmada(linea, item?.correcciones) ? "caja-corregida" : ""} ${unidad?.unidad_id === linea.unidad_id ? "caja-activa" : ""}`}
-          style=${estiloCaja(linea.bbox)} title=${`Seleccionar: ${textoVisible(linea)}`}
+          class=${`caja-region caja-ocr ${claseCajaSupervision(linea, item?.correcciones)} ${unidad?.unidad_id === linea.unidad_id ? "caja-activa" : ""}`}
+          style=${estiloCaja(linea.bbox)} title=${`${t(etiquetaSupervisionUnidad(linea, item?.correcciones))}: ${textoVisible(linea)}`}
           onPointerDown=${(evento) => evento.stopPropagation()}
-          onClick=${() => onSelectText?.(linea)}>${unidadConfirmada(linea, item?.correcciones) ? "✓" : ""}</button>`)}
+          onClick=${() => onSelectText?.(linea)}>${marcaSupervision(linea, item?.correcciones)}</button>`)}
       </div>
     </div>
     <div class="mini-visor-textos">
@@ -2340,7 +2914,10 @@ function SelectorRegion({ item, valor, onChange, onSelectText, giroVista = 0, pa
   useEffect(() => {
     const marco = scrollRef.current;
     if (!marco) return;
-    const rueda = (e) => { e.preventDefault(); setZoom((z) => Math.max(100, Math.min(600, z + (e.deltaY < 0 ? 25 : -25)))); };
+    const rueda = (e) => {
+      e.preventDefault();
+      actualizarZoomAnclado(marco, e, () => setZoom((z) => Math.max(100, Math.min(600, z + (e.deltaY < 0 ? 25 : -25)))));
+    };
     marco.addEventListener("wheel", rueda, { passive: false });
     return () => marco.removeEventListener("wheel", rueda);
   }, []);
@@ -2399,15 +2976,14 @@ function SelectorRegion({ item, valor, onChange, onSelectText, giroVista = 0, pa
   const altoGirado = Math.abs(seno) * anchoImagen + Math.abs(coseno) * altoImagen;
   const limitar = (v, minimo, maximo) => Math.max(minimo, Math.min(maximo, v));
   function punto(evento) {
-    const rect = marcoRef.current.getBoundingClientRect();
-    // Inversa del giro CSS: las anotaciones conservan el sistema de coordenadas OCR.
-    const dx = evento.clientX - (rect.left + rect.width / 2);
-    const dy = evento.clientY - (rect.top + rect.height / 2);
-    const escala = marcoRef.current.offsetWidth / anchoImagen;
-    return {
-      x: limitar((coseno * dx + seno * dy) / escala + anchoImagen / 2, 0, anchoImagen),
-      y: limitar((-seno * dx + coseno * dy) / escala + altoImagen / 2, 0, altoImagen),
-    };
+    const marco = marcoRef.current;
+    const rect = marco.getBoundingClientRect();
+    // Una matriz inversa compartida: conserva el bbox fuente bajo zoom y giro.
+    return geometriaVisor.viewportToSourcePoint(
+      { x: evento.clientX, y: evento.clientY },
+      { centerX: rect.left + rect.width / 2, centerY: rect.top + rect.height / 2,
+        sourceWidth: anchoImagen, sourceHeight: altoImagen,
+        renderedWidth: marco.offsetWidth, rotationDeg: giroVista });
   }
   function caja(desde, hasta) {
     const x = Math.round(Math.min(desde.x, hasta.x));
@@ -2504,10 +3080,7 @@ function SelectorRegion({ item, valor, onChange, onSelectText, giroVista = 0, pa
     }
   }
   function estiloCaja(bbox) {
-    return {
-      left: `${bbox[0] / anchoImagen * 100}%`, top: `${bbox[1] / altoImagen * 100}%`,
-      width: `${bbox[2] / anchoImagen * 100}%`, height: `${bbox[3] / altoImagen * 100}%`,
-    };
+    return geometriaVisor.xywhToPercent(bbox, anchoImagen, altoImagen);
   }
   const ocr = item?.resultado_ocr || {};
   const detectadas = ocr.lineas_texto || ocr.tokens || [];
@@ -2552,10 +3125,11 @@ function SelectorRegion({ item, valor, onChange, onSelectText, giroVista = 0, pa
       onPointerMove=${mover} onPointerUp=${terminar} onPointerCancel=${terminar}
       role="img" aria-label="Arrastra para seleccionar la zona que contiene texto">
       <img src=${item?.ruta_api_orientada || item?.ruta_api}
-        alt=${`Seleccionar texto en ${item?.nombre || "imagen"}`} draggable="false" />
+        alt=${`Seleccionar texto en ${item?.nombre || "imagen"}`} draggable="false"
+        onError=${(e) => usarFallbackImagen(e, item?.ruta_api)} />
       ${detectadas.filter((linea) => linea.bbox).map((linea, i) => html`
-        <button type="button" key=${`ocr-${i}`} class=${`caja-region caja-ocr ${linea.orientacion_region_dudosa ? "caja-orientacion-dudosa" : ""} ${unidadConfirmada(linea, item?.correcciones) ? "caja-corregida" : ""} ${modo === "unir" && bloquesUnion.some(b=>JSON.stringify(b)===JSON.stringify(linea.bbox)) ? "caja-union-seleccionada" : ""}`}
-          style=${estiloCaja(linea.bbox)} title=${`${unidadConfirmada(linea, item?.correcciones) ? "Corregido / confirmado" : "Sin corrección confirmada"}: ${textoVisible(linea)}`}
+        <button type="button" key=${`ocr-${i}`} class=${`caja-region caja-ocr ${linea.orientacion_region_dudosa ? "caja-orientacion-dudosa" : ""} ${claseCajaSupervision(linea, item?.correcciones)} ${modo === "unir" && bloquesUnion.some(b=>JSON.stringify(b)===JSON.stringify(linea.bbox)) ? "caja-union-seleccionada" : ""}`}
+          style=${estiloCaja(linea.bbox)} title=${`${t(etiquetaSupervisionUnidad(linea, item?.correcciones))}: ${textoVisible(linea)}`}
           onPointerDown=${(evento) => { if (modo !== "seleccionar" && modo !== "mover_recorte" && !(modo === "ajustar" && origenBloque)) evento.stopPropagation(); }}
           onClick=${(evento) => {
             evento?.stopPropagation?.();
@@ -2584,7 +3158,7 @@ function SelectorRegion({ item, valor, onChange, onSelectText, giroVista = 0, pa
             const x1=Math.min(...seleccion.map(c=>c[0])), y1=Math.min(...seleccion.map(c=>c[1]));
             const x2=Math.max(...seleccion.map(c=>c[0]+c[2])), y2=Math.max(...seleccion.map(c=>c[1]+c[3]));
             onChange([x1,y1,x2-x1,y2-y1]);
-          }}>${unidadConfirmada(linea, item?.correcciones) ? "✓" : ""}</button>`)}
+          }}>${marcaSupervision(linea, item?.correcciones)}</button>`)}
       ${(item?.anotaciones || []).filter(a=>!a.poligono).map((anotacion) => html`
         <span key=${`manual-${anotacion.id}`} class="caja-region caja-manual"
           style=${estiloCaja(anotacion.bbox)} title=${`Manual: ${anotacion.texto_correcto}`} />`)}
@@ -2616,10 +3190,11 @@ function SelectorRegion({ item, valor, onChange, onSelectText, giroVista = 0, pa
     </div>
     </div>
     <div class="leyenda-regiones">
-      <span><i class="leyenda-caja ocr"></i>Detectado por OCR</span>
-      <span>✓ Corregido / confirmado y guardado</span>
-      <span><i class="leyenda-caja manual"></i>Confirmado manualmente</span>
-      <span><i class="leyenda-caja seleccion"></i>Selección actual</span>
+      <span><i class="leyenda-caja ocr"></i>${t("Detectado por OCR")}</span>
+      <span>◷ ${t("Aceptado provisional · pendiente de verificar")}</span>
+      <span>✓ ${t("Corregido / confirmado y guardado")}</span>
+      <span><i class="leyenda-caja manual"></i>${t("Confirmado manualmente")}</span>
+      <span><i class="leyenda-caja seleccion"></i>${t("Selección actual")}</span>
     </div>
     </div>
     ${pruebaId && origenBloque && html`<${EditorDimensionBloque}
@@ -2681,16 +3256,7 @@ function PanelImagen({ titulo, item, vacio, onSelectText, onBulkDiscard, edicion
     const marco = marcoZoomRef.current;
     const nuevo = limitarZoom(valor);
     if (!marco || !evento) return setZoomVista(nuevo);
-    const rect = marco.getBoundingClientRect();
-    const localX = evento.clientX - rect.left;
-    const localY = evento.clientY - rect.top;
-    const razonX = (marco.scrollLeft + localX) / Math.max(marco.scrollWidth, 1);
-    const razonY = (marco.scrollTop + localY) / Math.max(marco.scrollHeight, 1);
-    setZoomVista(nuevo);
-    requestAnimationFrame(() => {
-      marco.scrollLeft = razonX * marco.scrollWidth - localX;
-      marco.scrollTop = razonY * marco.scrollHeight - localY;
-    });
+    actualizarZoomAnclado(marco, evento, () => setZoomVista(nuevo));
   }
   function alRueda(evento) {
     evento.preventDefault();
@@ -2762,7 +3328,8 @@ function PanelImagen({ titulo, item, vacio, onSelectText, onBulkDiscard, edicion
               ? `${dimensionesNaturales[0] * zoomVista / 100}px` : `${zoomVista}%`, maxWidth: "none",
               transform: cambioPendiente ? `rotate(${giroPrevisualizado}deg)` : "none" }}
             src=${item.ruta_api_visual || item.ruta_api} alt=${`Imagen: ${item.ruta}`} loading="lazy"
-            draggable="false" onLoad=${(e) => setDimensionesNaturales([
+            draggable="false" onError=${(e) => usarFallbackImagen(e, item.ruta_api)}
+            onLoad=${(e) => setDimensionesNaturales([
               e.currentTarget.naturalWidth, e.currentTarget.naturalHeight])} />
         </div>
         `}
@@ -2835,18 +3402,18 @@ function PanelImagen({ titulo, item, vacio, onSelectText, onBulkDiscard, edicion
               }}>Descartar ${seleccionBorrado.length} seleccionados</button>`}
           </div>`}
           <ul class="tokens-lista">
-            ${unidadesOcr(ocr).filter((u) => u.tipo_unidad !== "bloque completo").map((t) => html`
-            <li key=${t.unidad_id} class=${`token-fila ${unidadConfirmada(t, item.correcciones) ? "token-confirmado" : ""}`}>
-              ${modoBorradoMultiple && t.bbox && html`<input type="checkbox" class="selector-texto-multiple"
-                checked=${seleccionBorrado.includes(t.unidad_id)} aria-label=${`Seleccionar ${textoVisible(t)} para descartar`}
+            ${unidadesOcr(ocr).filter((u) => u.tipo_unidad !== "bloque completo").map((unidad) => html`
+            <li key=${unidad.unidad_id} class=${`token-fila ${claseTokenSupervision(unidad, item.correcciones)}`}>
+              ${modoBorradoMultiple && unidad.bbox && html`<input type="checkbox" class="selector-texto-multiple"
+                checked=${seleccionBorrado.includes(unidad.unidad_id)} aria-label=${`Seleccionar ${textoVisible(unidad)} para descartar`}
                 onChange=${(e) => setSeleccionBorrado((actual) => e.target.checked
-                  ? [...actual, t.unidad_id] : actual.filter((id) => id !== t.unidad_id))} />`}
+                  ? [...actual, unidad.unidad_id] : actual.filter((id) => id !== unidad.unidad_id))} />`}
               <button type="button" class="token-texto-boton mono" disabled=${!edicionActiva || modoBorradoMultiple}
                 title=${edicionActiva ? "Usar este texto en la corrección" : "Selecciona esta imagen para editar"}
-                onClick=${() => onSelectText?.(item, t)}>${textoVisible(t)}</button>
-              <span class=${`estado-texto ${unidadConfirmada(t, item.correcciones) ? "texto-corregido" : "texto-pendiente"}`}>
-                ${unidadConfirmada(t, item.correcciones) ? "✓ Corregido / confirmado" : "Sin confirmar"}</span>
-              <span class="conf">${t.confianza == null ? "—" : `${(t.confianza * 100).toFixed(1)}%`}</span>
+                onClick=${() => onSelectText?.(item, unidad)}>${textoVisible(unidad)}</button>
+              <span class=${`estado-texto ${estadoSupervisionUnidad(unidad, item.correcciones) === "corregido_humano" ? "texto-corregido" : estadoSupervisionUnidad(unidad, item.correcciones) === "aceptado_provisional" ? "texto-provisional" : "texto-pendiente"}`}>
+                ${t(etiquetaSupervisionUnidad(unidad, item.correcciones))}</span>
+              <span class="conf">${unidad.confianza == null ? "—" : `${(unidad.confianza * 100).toFixed(1)}%`}</span>
             </li>`)}
           </ul>
           ${(ocr.reglas_codigo || []).length > 0 && html`<details><summary>Reglas de aceptación de códigos</summary>
@@ -2874,21 +3441,63 @@ function fpsGrabacionOverlayVideo(video) {
   return Number.isFinite(valor) && valor > 0 ? valor : 0;
 }
 
-function TarjetaVideoAirbag({ video, pruebaId, onSaved, bloqueado = false }) {
+function TarjetaVideoAirbag({ video, pruebaId, onSaved, bloqueado = false, revisionDocumento = null }) {
+  // R15 (MEDIA-14): las mutaciones envían expected_revision (CAS). Si otra
+  // pestaña cambió el documento, el backend responde 409 «recarga antes de
+  // guardar» y esta pantalla recarga el detalle en vez de pintar datos viejos.
+  async function falloMutacion(e) {
+    setMensaje({ok:false, texto:e.message});
+    if (/recarga antes de guardar/i.test(String(e?.message || "")) && onSaved) {
+      try { await onSaved({conflicto_revision: true}); } catch (_) {}
+    }
+  }
   const frameBase = Number(video.revision_manual?.frame_index ?? video.frame_evento ?? 0);
   const fpsOverlayBase = fpsGrabacionOverlayVideo(video);
   const fpsBase = fpsOverlayBase || Number(video.fps_grabacion || video.fps || 0);
   const resolucionBase = fpsBase > 0 ? 1000 / fpsBase : 0;
-  const tiempoGuardadoRaw = Number(video.revision_manual?.tiempo_ms ?? video.tiempo_ms);
+  const tieneRevisionManual = video.revision_manual?.estado === "confirmado"
+    && (video.revision_manual?.raw_time_ms != null || video.revision_manual?.tiempo_ms != null);
+  const estadoManual = video.revision_manual?.estado;
+  const eventoCensuradoVideo = Boolean(video.evento_al_inicio || video.censurado_por_izquierda
+    || video.estado === "evento_al_inicio" || video.estado_evento === "evento_al_inicio"
+    || video.estado_tiempo === "CENSURADO"
+    || video.revision_manual?.estado_tiempo === "CENSURADO");
+  const tiempoRevisionRaw = video.revision_manual?.raw_time_ms != null
+    ? Number(video.revision_manual.raw_time_ms)
+    : video.revision_manual?.tiempo_ms == null ? NaN : Number(video.revision_manual.tiempo_ms);
+  const frameRevisionRaw = video.revision_manual?.frame_index;
+  const frameRevisionValido = frameRevisionRaw != null && Number.isInteger(Number(frameRevisionRaw))
+    && Number(frameRevisionRaw) >= 0;
+  const referenciaRevisionValida = Object.prototype.hasOwnProperty.call(video.revision_manual || {}, "referencia_tiempo_valida")
+    ? video.revision_manual.referencia_tiempo_valida === true
+    : video.revision_manual?.estado_tiempo === "VALIDO";
+  const revisionManualValida = estadoManual !== "confirmado" ||
+    (Number.isFinite(tiempoRevisionRaw) && tiempoRevisionRaw > 0
+      && frameRevisionValido && referenciaRevisionValida && !eventoCensuradoVideo
+      && !["NO_FINITO", "NO_POSITIVO", "NO_INTERPRETABLE", "REFERENCIA_INVALIDA", "PENDIENTE", "CENSURADO"].includes(video.revision_manual?.estado_tiempo));
+  const revisionManualNoPublicable = estadoManual === "confirmado" && !revisionManualValida;
+  const preservarRevisionHistorica = revisionManualNoPublicable;
+  const tiempoAutoRaw = video.tiempo_crudo_ms ?? video.tiempo_ms;
+  const tiempoAutoNumero = tiempoAutoRaw == null ? NaN : Number(tiempoAutoRaw);
+  const referenciaAutoValida = Object.prototype.hasOwnProperty.call(video, "referencia_tiempo_valida")
+    ? video.referencia_tiempo_valida === true : video.estado_tiempo === "VALIDO";
+  const tiempoAutoPublicable = Number.isFinite(tiempoAutoNumero) && tiempoAutoNumero > 0
+    && referenciaAutoValida && !eventoCensuradoVideo
+    && !["NO_FINITO", "NO_POSITIVO", "NO_INTERPRETABLE", "REFERENCIA_INVALIDA", "PENDIENTE", "CENSURADO"].includes(video.estado_tiempo);
+  const tiempoGuardadoRaw = Number(tieneRevisionManual
+    ? (video.revision_manual.raw_time_ms ?? video.revision_manual.tiempo_ms)
+    : (video.tiempo_crudo_ms ?? video.tiempo_ms));
   const metadataFpsSospechosa = fpsOverlayBase > 0 && Number(video.fps || 0) > 0 &&
     Math.abs(Number(video.fps || 0) - fpsOverlayBase) > 0.01;
-  const tiempoBaseRaw = metadataFpsSospechosa && resolucionBase > 0
-    ? Math.max(0, frameBase) * resolucionBase
-    : tiempoGuardadoRaw;
-  const tiempoBase = Number.isFinite(tiempoBaseRaw) ? Math.max(0, tiempoBaseRaw) :
-    (resolucionBase > 0 ? Math.max(0, frameBase) * resolucionBase : 0);
+  // Una revisión histórica humana nunca se recalcula ni se clipea desde frame/FPS.
+  const tiempoBaseRaw = tieneRevisionManual ? tiempoGuardadoRaw
+    : metadataFpsSospechosa && resolucionBase > 0 ? Math.max(0, frameBase) * resolucionBase
+      : tiempoGuardadoRaw;
+  const tiempoBase = Number.isFinite(tiempoBaseRaw) ? tiempoBaseRaw
+    : (resolucionBase > 0 ? Math.max(0, frameBase) * resolucionBase : 0);
   const [frame, setFrame] = useState(Math.max(0, frameBase));
   const [tiempo, setTiempo] = useState(tiempoBase);
+  const [preservarTiempoRevision, setPreservarTiempoRevision] = useState(preservarRevisionHistorica);
   const [infoTiempo, setInfoTiempo] = useState(null);
   const [cargandoTiempo, setCargandoTiempo] = useState(false);
   const [guardando, setGuardando] = useState(false);
@@ -2907,6 +3516,25 @@ function TarjetaVideoAirbag({ video, pruebaId, onSaved, bloqueado = false }) {
   const inicioZonaRef = useRef(null);
   const zoomZonaRef = useRef(null);
   const inicioNacimientoRef = useRef(null);
+  // V15.9 (Fase 3): zoom de inspección general, independiente del modo ROI.
+  // Disponible en todos los cuadros; no altera coordenadas guardadas ni datos
+  // de entrenamiento (los overlays siguen en % de la imagen).
+  const [zoomInspector, setZoomInspector] = useState(100);
+  const [lupaActiva, setLupaActiva] = useState(false);
+  const [overlayRoi, setOverlayRoi] = useState(true);
+  const [overlaySugerida, setOverlaySugerida] = useState(true);
+  const [overlayNacimiento, setOverlayNacimiento] = useState(true);
+  // V15.9.1 (A1): overlay de la ROI previa para comparar antes de revertir.
+  const [overlayAnterior, setOverlayAnterior] = useState(true);
+  const [revertiendoRoi, setRevertiendoRoi] = useState(false);
+  // V15.9.1 (A2): arrastre para desplazarse (pan) cuando hay zoom > 100 %.
+  const panRef = useRef(null);
+  const panRafRef = useRef(null);
+  const panPendienteRef = useRef(null);
+  const visorInspectorRef = useRef(null);
+  const previewRef = useRef(null);
+  const PASOS_ZOOM = [100, 150, 200, 300, 400, 600, 800];
+  const ZOOM_MIN = 100, ZOOM_MAX = 1000;
 
   const fpsOverlay = fpsGrabacionOverlayVideo(video);
   const fpsActual = Number(infoTiempo?.fps || fpsOverlay || video.fps_grabacion || video.fps || 0);
@@ -2920,13 +3548,18 @@ function TarjetaVideoAirbag({ video, pruebaId, onSaved, bloqueado = false }) {
 
   useEffect(() => {
     const nuevoFrame = Math.max(0, Number(video.revision_manual?.frame_index ?? video.frame_evento ?? 0));
-    const nuevoTiempoRaw = Number(video.revision_manual?.tiempo_ms ?? video.tiempo_ms);
+    const tieneRevision = video.revision_manual?.estado === "confirmado"
+      && (video.revision_manual?.raw_time_ms != null || video.revision_manual?.tiempo_ms != null);
+    const nuevoTiempoRaw = Number(tieneRevision
+      ? (video.revision_manual.raw_time_ms ?? video.revision_manual.tiempo_ms)
+      : (video.tiempo_crudo_ms ?? video.tiempo_ms));
     const fpsRec = fpsGrabacionOverlayVideo(video);
     const fpsViejo = Number(video.fps || video.fps_archivo || 0);
-    const metadataVieja = fpsRec > 0 && fpsViejo > 0 && Math.abs(fpsRec - fpsViejo) > .01;
-    const tiempoReparado = metadataVieja ? (nuevoFrame * 1000 / fpsRec) : nuevoTiempoRaw;
+    const metadataVieja = !tieneRevision && fpsRec > 0 && fpsViejo > 0 && Math.abs(fpsRec - fpsViejo) > .01;
+    const tiempoInicial = metadataVieja ? (nuevoFrame * 1000 / fpsRec) : nuevoTiempoRaw;
     setFrame(nuevoFrame);
-    setTiempo(Number.isFinite(tiempoReparado) ? Math.max(0, Math.round(tiempoReparado * 10) / 10) : 0);
+    setPreservarTiempoRevision(preservarRevisionHistorica);
+    setTiempo(Number.isFinite(tiempoInicial) ? Math.round(tiempoInicial * 10) / 10 : 0);
     setInfoTiempo(null);
     setModoZona(false); setZonaTemporal(null); inicioZonaRef.current = null;
     setZonaNacimiento(null); setDetalleNacimiento(null); setLocalizandoNacimiento(false);
@@ -2959,23 +3592,55 @@ function TarjetaVideoAirbag({ video, pruebaId, onSaved, bloqueado = false }) {
   const rutaFrameSolicitada = `/api/video/frame?ruta=${encodeURIComponent(video.ruta || "")}&frame=${Math.max(0, Math.round(frame || 0))}`;
   const [rutaFrameMostrada, setRutaFrameMostrada] = useState(rutaFrameSolicitada);
   const [errorFrame, setErrorFrame] = useState(false);
+  const urlBlobAnteriorRef = useRef(null);
   useEffect(() => {
+    // R15 (MEDIA-09): fetch + AbortController + Blob URL con debounce corto:
+    // la descarga/decodificación del frame anterior se CANCELA de verdad (no
+    // sólo se ignora) al cambiar de cuadro; como máximo una petición activa
+    // por tarjeta. El doble búfer se conserva: el cuadro anterior sigue
+    // visible hasta que el nuevo terminó de decodificarse.
     let vigente = true;
-    const img = new Image();
-    img.onload = () => { if (vigente) { setRutaFrameMostrada(rutaFrameSolicitada); setErrorFrame(false); } };
-    img.onerror = () => { if (vigente) setErrorFrame(true); };
-    img.src = rutaFrameSolicitada;
-    return () => { vigente = false; };
+    const controlador = new AbortController();
+    const temporizador = setTimeout(async () => {
+      let urlBlob = null;
+      try {
+        const r = await fetch(rutaFrameSolicitada, { signal: controlador.signal });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const blob = await r.blob();
+        if (!vigente) return;
+        urlBlob = URL.createObjectURL(blob);
+        const img = new Image();
+        img.onload = () => {
+          if (!vigente) { URL.revokeObjectURL(urlBlob); return; }
+          if (urlBlobAnteriorRef.current) URL.revokeObjectURL(urlBlobAnteriorRef.current);
+          urlBlobAnteriorRef.current = urlBlob;
+          setRutaFrameMostrada(urlBlob);
+          setErrorFrame(false);
+        };
+        img.onerror = () => {
+          if (!vigente) return;
+          URL.revokeObjectURL(urlBlob);
+          setErrorFrame(true);
+        };
+        img.src = urlBlob;
+      } catch (e) {
+        if (e?.name === "AbortError" || !vigente) return;
+        if (urlBlob) URL.revokeObjectURL(urlBlob);
+        setErrorFrame(true);
+      }
+    }, 60);
+    return () => { vigente = false; clearTimeout(temporizador); controlador.abort(); };
   }, [rutaFrameSolicitada]);
+  useEffect(() => () => {
+    if (urlBlobAnteriorRef.current) URL.revokeObjectURL(urlBlobAnteriorRef.current);
+  }, []);
   const proporcion = Number(video.ancho) > 0 && Number(video.alto) > 0 ? `${Number(video.ancho)} / ${Number(video.alto)}` : "4 / 3";
 
   function tiempoProvisional(indice) {
-    if (!(resolucion > 0)) return Math.max(0, Number(tiempo || 0));
-    // Mientras llega la validación OCR usamos frame/FPS desde cero. No se
-    // arrastra el timestamp inicial porque un OCR viejo/erróneo era la causa
-    // de saltos y contradicciones visuales. El backend decide después si el
-    // reloj del MISMO frame justifica un anclaje distinto.
-    return Math.max(0, Math.round((Number(indice || 0) * resolucion) * 10) / 10);
+    if (!(resolucion > 0)) return Number(tiempo || 0);
+    // Previsualización independiente; el backend decide si reloj/FPS sustentan
+    // una apertura final. No se usa para reescribir revisiones históricas.
+    return Math.round((Number(indice || 0) * resolucion) * 10) / 10;
   }
 
   useEffect(() => {
@@ -2987,12 +3652,12 @@ function TarjetaVideoAirbag({ video, pruebaId, onSaved, bloqueado = false }) {
         const q = new URLSearchParams({
           prueba_id: String(pruebaId), video_id: String(video.id), frame: String(Math.max(0, Math.round(frame || 0))),
         });
-        const info = await pedirJSON(`/api/video/tiempo-frame?${q.toString()}`, controlador.signal);
+        const info = await pedirJSON(`/api/video/tiempo-frame?${q.toString()}`, controlador.signal, { permitir404: false });
         if (!info) return;
-        const valor = Number(info.tiempo_ms);
-        const seguro = Number.isFinite(valor) ? Math.max(0, valor) : tiempoProvisional(frame);
+        const valor = info.tiempo_ms == null ? NaN : Number(info.tiempo_ms);
+        const seguro = Number.isFinite(valor) ? valor : tiempoProvisional(frame);
         setInfoTiempo(info);
-        setTiempo(Math.round(seguro * 10) / 10);
+        if (!preservarTiempoRevision) setTiempo(Math.round(seguro * 10) / 10);
       } catch (e) {
         if (e?.name === "AbortError") return;
         setInfoTiempo({
@@ -3000,18 +3665,19 @@ function TarjetaVideoAirbag({ video, pruebaId, onSaved, bloqueado = false }) {
           fuente_tiempo: "fallback_dashboard", overlay_valido: false,
           advertencia: `No se pudo validar el reloj de este cuadro: ${e.message}`,
         });
-        setTiempo(tiempoProvisional(frame));
+        if (!preservarTiempoRevision) setTiempo(tiempoProvisional(frame));
       } finally {
         if (!controlador.signal.aborted) setCargandoTiempo(false);
       }
     }, 160);
     return () => { clearTimeout(temporizador); controlador.abort(); };
-  }, [frame, video.id, pruebaId, video.revision_manual?.confirmado_en]);
+  }, [frame, video.id, pruebaId, video.revision_manual?.confirmado_en, preservarTiempoRevision]);
 
   function cambiarFrame(valor) {
     anclarTarjeta();
     const numero = Number(valor);
     const siguiente = Math.max(0, Math.min(maxFrame, Number.isFinite(numero) ? Math.round(numero) : 0));
+    if (siguiente !== frame) setPreservarTiempoRevision(false);
     setFrame(siguiente);
     setTiempo(tiempoProvisional(siguiente));
     setInfoTiempo(null);
@@ -3020,6 +3686,82 @@ function TarjetaVideoAirbag({ video, pruebaId, onSaved, bloqueado = false }) {
     }
   }
   function moverFrame(delta) { cambiarFrame(Number(frame || 0) + delta); }
+  // V15.9: zoom del visor principal por pasos fijos 100/200/400/800 (o ajuste
+  // a pantalla con 0). La transformación imagen↔visor es única: los overlays
+  // se posicionan en % de la imagen, así que el zoom nunca las recoloca.
+  function siguienteZoomInspector(direccion) {
+    if (geometriaVisor?.zoomSuavePorPaso)
+      return geometriaVisor.zoomSuavePorPaso(zoomInspector, direccion, ZOOM_MIN, ZOOM_MAX, 1.25);
+    return Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, Math.round(zoomInspector * (direccion > 0 ? 1.25 : 0.8))));
+  }
+  function zoomPaso(direccion) {
+    setZoomInspector(siguienteZoomInspector(direccion));
+  }
+  function ruedaZoomInspector(e) {
+    e.preventDefault();
+    const nuevo = geometriaVisor?.zoomSuavePorRueda
+      ? geometriaVisor.zoomSuavePorRueda(zoomInspector, e.deltaY, ZOOM_MIN, ZOOM_MAX, 0.0018, e.deltaMode)
+      : siguienteZoomInspector(e.deltaY < 0 ? 1 : -1);
+    actualizarZoomAnclado(visorInspectorRef.current, e, () => setZoomInspector(nuevo));
+  }
+  function resetZoomInspector() {
+    setZoomInspector(100);
+    requestAnimationFrame(() => {
+      const marco = visorInspectorRef.current;
+      if (marco) { marco.scrollLeft = 0; marco.scrollTop = 0; }
+    });
+  }
+  function dobleClicZoom(e) {
+    const nuevo = zoomInspector > 100 ? 100 : 250;
+    actualizarZoomAnclado(visorInspectorRef.current, e, () => setZoomInspector(nuevo));
+  }
+  function pantallaCompleta() {
+    // V15.9.1 (A2): la pantalla completa cubre el visor Y su barra de
+    // controles (zoom, overlays, lupa); antes quedaban fuera de la región.
+    const el = previewRef.current || visorInspectorRef.current;
+    if (!el) return;
+    if (document.fullscreenElement) document.exitFullscreen?.();
+    else el.requestFullscreen?.();
+  }
+  // V15.9.1 (A2): pan con puntero capturado. Sólo en modo inspección
+  // (zoom > 100 % y sin dibujar ROI); nunca compite con la selección de zona.
+  const puedePan = zoomInspector > 100 && !modoZona;
+  function iniciarPan(evento) {
+    const marco = visorInspectorRef.current;
+    if (!puedePan || !marco || evento.button !== 0) return;
+    if (evento.target.closest && evento.target.closest("button, input, label, a")) return;
+    panRef.current = { x: evento.clientX, y: evento.clientY,
+      left: marco.scrollLeft, top: marco.scrollTop };
+    marco.setPointerCapture?.(evento.pointerId);
+  }
+  function moverPan(evento) {
+    const estado = panRef.current;
+    const marco = visorInspectorRef.current;
+    if (!estado || !marco) return;
+    let pos = {
+      left: estado.left - (evento.clientX - estado.x),
+      top: estado.top - (evento.clientY - estado.y),
+    };
+    if (geometriaVisor?.panLimitado) pos = geometriaVisor.panLimitado(marco, pos.left, pos.top);
+    panPendienteRef.current = pos;
+    if (!panRafRef.current) {
+      panRafRef.current = requestAnimationFrame(() => {
+        const destino = panPendienteRef.current;
+        const el = visorInspectorRef.current;
+        if (destino && el) { el.scrollLeft = destino.left; el.scrollTop = destino.top; }
+        panRafRef.current = null;
+      });
+    }
+    evento.preventDefault();
+  }
+  function terminarPan(evento) {
+    const marco = visorInspectorRef.current;
+    if (evento?.pointerId != null && marco?.hasPointerCapture?.(evento.pointerId)) {
+      try { marco.releasePointerCapture(evento.pointerId); } catch (_) {}
+    }
+    panRef.current = null;
+    panPendienteRef.current = null;
+  }
   function tecladoVideo(e) {
     const tag = String(e.target?.tagName || "").toUpperCase();
     if (["INPUT", "BUTTON", "SELECT", "TEXTAREA"].includes(tag) || modoZona) return;
@@ -3027,6 +3769,11 @@ function TarjetaVideoAirbag({ video, pruebaId, onSaved, bloqueado = false }) {
     if (e.key === "ArrowRight") { e.preventDefault(); moverFrame(e.shiftKey ? 10 : 1); }
     if (e.key === "Home") { e.preventDefault(); cambiarFrame(0); }
     if (e.key === "End") { e.preventDefault(); cambiarFrame(maxFrame); }
+    if (e.key === "+" || e.key === "=") { e.preventDefault(); zoomPaso(1); }
+    if (e.key === "-" || e.key === "_") { e.preventDefault(); zoomPaso(-1); }
+    if (e.key === "0") { e.preventDefault(); resetZoomInspector(); }
+    if (e.key.toLowerCase() === "f") { e.preventDefault(); pantallaCompleta(); }
+    if (e.key.toLowerCase() === "l") { e.preventDefault(); setLupaActiva((v) => !v); }
   }
 
   async function recalcularEsteVideo() {
@@ -3079,20 +3826,25 @@ function TarjetaVideoAirbag({ video, pruebaId, onSaved, bloqueado = false }) {
   }, [recalculandoVideo, pruebaId, video.id]);
 
   async function guardar(estado) {
+    if (estado === "confirmado" && eventoCensuradoVideo) {
+      setMensaje({ok:false, texto:"Evento censurado al inicio del clip: confirma apertura sólo cuando haya evidencia previa del nacimiento."});
+      return;
+    }
     anclarTarjeta();
     setGuardando(true); setMensaje(null);
     try {
       const bboxNacimientoVisible = mostrarNacimiento ? zonaNacimientoVisible : null;
       const r = await enviarJSON("/api/video/revision", {
         prueba_id: pruebaId, video_id: video.id, frame_index: Math.max(0, Math.round(frame)),
-        tiempo_ms: estado === "sin_evento" ? null : Math.max(0, Number(tiempo)), estado,
+        tiempo_ms: estado === "sin_evento" ? null : Number(tiempo), estado,
         usuario: "dashboard",
         bbox_evento_norm: estado === "confirmado" && Array.isArray(bboxNacimientoVisible) ? bboxNacimientoVisible : null,
+        expected_revision: revisionDocumento ?? null,
       });
       if (r.tiempo_resuelto) {
         setInfoTiempo(r.tiempo_resuelto);
         const valor = Number(r.tiempo_resuelto.tiempo_ms);
-        if (Number.isFinite(valor)) setTiempo(Math.max(0, Math.round(valor * 10) / 10));
+        if (Number.isFinite(valor)) setTiempo(Math.round(valor * 10) / 10);
       }
       if (estado === "confirmado" && Array.isArray(r.localizacion_nacimiento?.bbox_norm)) {
         setZonaNacimiento(r.localizacion_nacimiento.bbox_norm.map(Number));
@@ -3106,7 +3858,7 @@ function TarjetaVideoAirbag({ video, pruebaId, onSaved, bloqueado = false }) {
         : aprendido ? `Punto de apertura confirmado y añadido al aprendizaje preciso (microzona + F-3…F+3).${ajusteServidor}`
         : `Punto de apertura confirmado.${ajusteServidor}${avisoAprendizaje}`});
       if (onSaved) await onSaved(r);
-    } catch (e) { setMensaje({ok:false, texto:e.message}); }
+    } catch (e) { await falloMutacion(e); }
     finally { setGuardando(false); }
   }
 
@@ -3117,10 +3869,11 @@ function TarjetaVideoAirbag({ video, pruebaId, onSaved, bloqueado = false }) {
       const r = await enviarJSON("/api/video/maximo", {
         prueba_id: pruebaId, video_id: video.id,
         frame_index: Math.max(0, Math.round(frame)), usuario: "dashboard",
+        expected_revision: revisionDocumento ?? null,
       });
       setMensaje({ok:true, texto:`Máximo despliegue visible confirmado: cuadro ${r.despliegue_maximo.frame_index}, ${r.despliegue_maximo.tiempo_ms} ms. Se exporta por separado; no cambia apertura ni inflado completo.`});
       if (onSaved) await onSaved(r);
-    } catch (e) { setMensaje({ok:false, texto:e.message}); }
+    } catch (e) { await falloMutacion(e); }
     finally { setGuardando(false); }
   }
 
@@ -3129,10 +3882,9 @@ function TarjetaVideoAirbag({ video, pruebaId, onSaved, bloqueado = false }) {
     if (!img) return null;
     const rect = img.getBoundingClientRect();
     if (!rect.width || !rect.height) return null;
-    return {
-      x: Math.max(0, Math.min(1, (evento.clientX - rect.left) / rect.width)),
-      y: Math.max(0, Math.min(1, (evento.clientY - rect.top) / rect.height)),
-    };
+    const punto = geometriaVisor.viewportPointToBox(
+      { x: evento.clientX, y: evento.clientY }, rect, [0, 0, 1, 1]);
+    return punto ? { x: punto.x, y: punto.y } : null;
   }
   function iniciarZona(evento) {
     if (!modoZona || bloqueado || guardando || evento.button !== 0) return;
@@ -3202,14 +3954,36 @@ function TarjetaVideoAirbag({ video, pruebaId, onSaved, bloqueado = false }) {
         bbox_norm: zonaElegida.map(v => Math.round(Number(v) * 1000000) / 1000000),
         frame_index: Math.round(Number(frame || 0)), tipo_camara: tipoCamara,
         usuario: "dashboard",
+        expected_revision: revisionDocumento ?? null,
       });
       setMensaje({ok:true, texto:`Zona guardada y bloqueada${r.perfil?.tipo_camara ? ` para ${r.perfil.tipo_camara}` : ""}. El video se volvió a analizar mirando exactamente ahí.`});
       setModoZona(false); setZonaTemporal(null);
       if (onSaved) await onSaved(r);
-    } catch (e) { setMensaje({ok:false, texto:e.message}); }
+    } catch (e) { await falloMutacion(e); }
     finally { setGuardando(false); }
   }
+  // V15.9.1 (A1): flujo real de restauración de una ROI ya guardada.
+  async function revertirRoi(indice = 0) {
+    if (revertiendoRoi || bloqueado || guardando) return;
+    anclarTarjeta();
+    setGuardando(true); setRevertiendoRoi(true); setMensaje(null);
+    try {
+      const r = await enviarJSON("/api/video/zona-revertir", {
+        prueba_id: pruebaId, video_id: video.id, indice, usuario: "dashboard",
+        expected_revision: revisionDocumento ?? null,
+      });
+      setMensaje({ok:true, texto:"ROI revertida a la versión anterior del historial. El video se volvió a analizar con esa región. La ROI desplazada quedó en el historial (reversible)."});
+      setModoZona(false); setZonaTemporal(null);
+      if (onSaved) await onSaved(r);
+    } catch (e) { await falloMutacion(e); }
+    finally { setGuardando(false); setRevertiendoRoi(false); }
+  }
+
   async function guardarZonaYApertura() {
+    if (eventoCensuradoVideo) {
+      setMensaje({ok:false, texto:"Evento censurado al inicio del clip: la zona puede conservarse, pero no confirma un tiempo de apertura sin evidencia previa."});
+      return;
+    }
     anclarTarjeta();
     const zonaElegida = zonaTemporal;
     if (!zonaElegida) return;
@@ -3220,11 +3994,16 @@ function TarjetaVideoAirbag({ video, pruebaId, onSaved, bloqueado = false }) {
     }
     setGuardando(true); setMensaje(null);
     try {
+      let revisionActual = revisionDocumento ?? null;
       const zonaResp = await enviarJSON("/api/video/zona-aprendizaje", {
         prueba_id: pruebaId, video_id: video.id,
         bbox_norm: zonaElegida.map(v => Math.round(Number(v) * 1000000) / 1000000),
         frame_index: Math.round(Number(frame || 0)), tipo_camara: tipoCamara, usuario: "dashboard",
+        expected_revision: revisionActual,
       });
+      // R15 (MEDIA-14): el flujo encadena mutaciones; cada respuesta trae la
+      // nueva revisión del documento y la siguiente operación la usa.
+      if (zonaResp?.revision_documento != null) revisionActual = zonaResp.revision_documento;
       let nacimientoExacto = zonaNacimiento;
       if (!Array.isArray(nacimientoExacto)) {
         const afinado = await enviarJSON("/api/video/refinar-zona-apertura", {
@@ -3239,14 +4018,15 @@ function TarjetaVideoAirbag({ video, pruebaId, onSaved, bloqueado = false }) {
       }
       const revision = await enviarJSON("/api/video/revision", {
         prueba_id: pruebaId, video_id: video.id, frame_index: Math.max(0, Math.round(frame)),
-        tiempo_ms: Math.max(0, Number(tiempo)), estado: "confirmado", usuario: "dashboard",
+        tiempo_ms: Number(tiempo), estado: "confirmado", usuario: "dashboard",
         comentario: "Supervisión combinada: ROI general + microzona exacta + primer cuadro de apertura",
         bbox_evento_norm: Array.isArray(nacimientoExacto) ? nacimientoExacto : null,
+        expected_revision: revisionActual,
       });
       if (revision.tiempo_resuelto) {
         setInfoTiempo(revision.tiempo_resuelto);
         const valor = Number(revision.tiempo_resuelto.tiempo_ms);
-        if (Number.isFinite(valor)) setTiempo(Math.max(0, Math.round(valor * 10) / 10));
+        if (Number.isFinite(valor)) setTiempo(Math.round(valor * 10) / 10);
       }
       if (Array.isArray(revision.localizacion_nacimiento?.bbox_norm)) {
         setZonaNacimiento(revision.localizacion_nacimiento.bbox_norm.map(Number));
@@ -3255,14 +4035,12 @@ function TarjetaVideoAirbag({ video, pruebaId, onSaved, bloqueado = false }) {
       setMensaje({ok:true, texto:`Aprendizaje guardado: la ROI general indica dónde mirar y la microzona marca dónde nace exactamente la bolsa en el cuadro ${Math.round(frame)}. F-3…F+3 se guardó recortado alrededor de ese nacimiento.`});
       setModoZona(false); setZonaTemporal(null); setModoNacimientoManual(false);
       if (onSaved) await onSaved({zona: zonaResp, revision});
-    } catch (e) { setMensaje({ok:false, texto:e.message}); }
+    } catch (e) { await falloMutacion(e); }
     finally { setGuardando(false); }
   }
 
   function estiloZona(bbox) {
-    if (!Array.isArray(bbox) || bbox.length !== 4) return null;
-    return { left:`${bbox[0]*100}%`, top:`${bbox[1]*100}%`,
-      width:`${Math.max(0,bbox[2]-bbox[0])*100}%`, height:`${Math.max(0,bbox[3]-bbox[1])*100}%` };
+    return geometriaVisor.xyxyToPercent(bbox);
   }
   function zonaZoomEnfocada(nacimiento, general) {
     if (!Array.isArray(general) || general.length !== 4) return general;
@@ -3301,12 +4079,7 @@ function TarjetaVideoAirbag({ video, pruebaId, onSaved, bloqueado = false }) {
     };
   }
   function estiloNacimientoEnZoom(nacimiento, general) {
-    if (!Array.isArray(nacimiento) || nacimiento.length !== 4 || !Array.isArray(general) || general.length !== 4) return null;
-    const [gx1,gy1,gx2,gy2] = general.map(Number);
-    const [x1,y1,x2,y2] = nacimiento.map(Number);
-    const gw = Math.max(.0001,gx2-gx1), gh = Math.max(.0001,gy2-gy1);
-    return {left:`${((x1-gx1)/gw)*100}%`,top:`${((y1-gy1)/gh)*100}%`,
-      width:`${((x2-x1)/gw)*100}%`,height:`${((y2-y1)/gh)*100}%`};
+    return geometriaVisor.childBoxToParentPercent(nacimiento, general);
   }
   function puntoNacimientoZoom(evento) {
     const lienzo = zoomZonaRef.current;
@@ -3314,9 +4087,8 @@ function TarjetaVideoAirbag({ video, pruebaId, onSaved, bloqueado = false }) {
     if (!lienzo || !Array.isArray(general)) return null;
     const rect = lienzo.getBoundingClientRect();
     if (!rect.width || !rect.height) return null;
-    const u = Math.max(0,Math.min(1,(evento.clientX-rect.left)/rect.width));
-    const v = Math.max(0,Math.min(1,(evento.clientY-rect.top)/rect.height));
-    return {x:general[0]+u*(general[2]-general[0]), y:general[1]+v*(general[3]-general[1])};
+    return geometriaVisor.viewportPointToBox(
+      { x: evento.clientX, y: evento.clientY }, rect, general);
   }
   function iniciarNacimientoManual(evento) {
     if (!modoNacimientoManual || bloqueado || guardando || evento.button !== 0) return;
@@ -3347,13 +4119,19 @@ function TarjetaVideoAirbag({ video, pruebaId, onSaved, bloqueado = false }) {
     setModoNacimientoManual(false);
   }
 
-  const estadoManual = video.revision_manual?.estado;
-  const tiempoRevisionRaw = Number(video.revision_manual?.tiempo_ms);
-  const revisionManualValida = estadoManual !== "confirmado" || (Number.isFinite(tiempoRevisionRaw) && tiempoRevisionRaw >= 0);
-  const revisionReparada = Boolean(video.revision_manual?.tiempo_reparado);
+  const decisionSombraVideo = video.decision_apertura_v15_10 || {};
+  const estadoRevisionSombra = video.candidatos_apertura_sombra?.[0]?.verificacion?.estado_revision;
+  const nivelEvidencia = eventoCensuradoVideo ? "censurada al inicio"
+    : !video.candidatos_apertura_sombra?.length ? "sin candidato"
+    : estadoRevisionSombra === "propuesta_alta_confianza" ? "alta (heurística, no calibrada)"
+    : estadoRevisionSombra === "revisar_conflicto" ? "en conflicto"
+    : "revisión requerida (no calibrada)";
   const zona = video.zona_deteccion || {};
   const zonaBloqueada = Boolean(zonaAuto) && zona.bloqueada !== false;
   const zonaSugerida = Array.isArray(zona.bbox_sugerida_norm) ? zona.bbox_sugerida_norm : null;
+  // V15.9.1 (A1): historial persistente de ROI para comparar y revertir.
+  const historialRoi = Array.isArray(zona.historial_roi) ? zona.historial_roi.filter((h) => Array.isArray(h?.bbox_norm) && h.bbox_norm.length === 4) : [];
+  const roiAnterior = historialRoi.length > 0 ? historialRoi[0].bbox_norm.map(Number) : null;
   const zonaNacimientoPersistida = Array.isArray(video.ultima_zona_nacimiento?.bbox_norm) ? video.ultima_zona_nacimiento.bbox_norm.map(Number) : null;
   const zonaNacimientoVisible = modoZona ? zonaNacimiento : (zonaNacimiento || zonaNacimientoPersistida);
   const detalleNacimientoVisible = modoZona ? detalleNacimiento : (detalleNacimiento || video.ultima_zona_nacimiento || null);
@@ -3364,6 +4142,7 @@ function TarjetaVideoAirbag({ video, pruebaId, onSaved, bloqueado = false }) {
     x: +(zonaAuto[0]*100).toFixed(1), y: +(zonaAuto[1]*100).toFixed(1),
     w: +((zonaAuto[2]-zonaAuto[0])*100).toFixed(1), h: +((zonaAuto[3]-zonaAuto[1])*100).toFixed(1) } : null);
   const zonaEtiqueta = fuenteZona.startsWith("manual_bloqueada") ? "Región dibujada en este video"
+    : fuenteZona === "deformacion_temporal_auto" ? `ROI elegida por deformación temporal desde el cuadro ${zona.frame_deformacion ?? "—"} (corroborada en ${zona.frames_soporte_deformacion?.length ?? 0} cuadros)`
     : fuenteZona === "nombre_archivo" ? "Región heredada de otro video de esta cámara"
     : fuenteZona === "similitud_visual" ? `Región heredada por similitud (${(Number(zona.similitud_visual||0)*100).toFixed(0)}%)`
     : fuenteZona === "similitud_insuficiente" || fuenteZona === "nombre_no_coincide_visualmente" ? "Sin coincidencia visual suficiente"
@@ -3372,11 +4151,13 @@ function TarjetaVideoAirbag({ video, pruebaId, onSaved, bloqueado = false }) {
   const relojLeido = infoTiempo?.tiempo_overlay_leido_ms ?? relojValidado;
   const fuenteActual = infoTiempo?.fuente_tiempo || (cargandoTiempo ? "validando…" : "pendiente");
   const advertenciaTiempo = infoTiempo?.advertencia
-    || (revisionReparada ? video.revision_manual?.motivo_reparacion : null)
+    || video.revision_manual?.motivo_rechazo
+    || (revisionManualNoPublicable ? "El tiempo crudo de la revisión histórica se conserva, pero no es publicable; revisa el cuadro y confirma un tiempo finito mayor que cero con referencia válida." : null)
     || (infoTiempo?.fps_fuente === "desconocido" ? "No se leyó Rec…fps en ninguna cámara de este ensayo. El tiempo sólo se acepta desde el reloj visible." : null);
   const overlayCoincide = Boolean(infoTiempo?.overlay_valido);
-  const textoEstado = estadoManual === "confirmado" && revisionManualValida ? (revisionReparada ? "Confirmado · tiempo reparado" : "Confirmado")
-    : estadoManual === "confirmado" && !revisionManualValida ? "Revisión requerida (tiempo antiguo inválido)"
+  const textoEstado = eventoCensuradoVideo ? "Evento censurado al inicio"
+    : estadoManual === "confirmado" && revisionManualValida ? "Confirmado"
+    : estadoManual === "confirmado" && !revisionManualValida ? "Revisión requerida (tiempo no publicable)"
     : estadoManual === "sin_evento" ? "Sin apertura confirmado"
     : video.estado === "sin_evento" ? "Sin evento" : "Candidato automático";
   const etiquetaFps = {overlay_rec: "leído de Rec… fps", overlay_rec_otra_camara: "Rec… fps de otra cámara del ensayo",
@@ -3395,17 +4176,60 @@ function TarjetaVideoAirbag({ video, pruebaId, onSaved, bloqueado = false }) {
       </div>
     </div>
     <div class="video-airbag-grid">
-      <div class=${`video-airbag-preview ${modoZona ? "seleccionando-zona" : ""}`}>
-        <div class="video-frame-zona-lienzo" style=${{aspectRatio: proporcion}} onPointerDown=${iniciarZona} onPointerMove=${moverZona}
-          onPointerUp=${terminarZona} onPointerCancel=${terminarZona}>
+      <div ref=${previewRef} class=${`video-airbag-preview ${modoZona ? "seleccionando-zona" : ""}`}>
+        <div class="video-inspector-barra" role="toolbar" aria-label=${t("Zoom e inspección del cuadro")}>
+          <span class="chip neutro">Zoom ${zoomInspector}%</span>
+          <button type="button" class="boton boton-compacto" onClick=${() => zoomPaso(-1)} disabled=${zoomInspector <= ZOOM_MIN}>−</button>
+          <button type="button" class="boton boton-compacto" onClick=${() => zoomPaso(1)} disabled=${zoomInspector >= ZOOM_MAX}>+</button>
+          ${PASOS_ZOOM.map((p) => html`<button key=${p} type="button"
+            class=${`boton boton-compacto ${zoomInspector === p ? "boton-primario" : ""}`}
+            onClick=${() => setZoomInspector(p)}>${p}%</button>`)}
+          <button type="button" class="boton boton-compacto" onClick=${resetZoomInspector}>Ajustar a pantalla</button>
+          <button type="button" class="boton boton-compacto" onClick=${pantallaCompleta} title="Pantalla completa (tecla F)">⛶</button>
+          <button type="button" class=${`boton boton-compacto ${lupaActiva ? "boton-primario" : ""}`}
+            onClick=${() => setLupaActiva((v) => !v)} title="Lupa temporal F-2…F+2 (tecla L)">Lupa F±2</button>
+          <span class="video-inspector-overlays">
+            <label><input type="checkbox" checked=${overlayRoi} onChange=${(e) => setOverlayRoi(e.target.checked)} /> ROI</label>
+            <label><input type="checkbox" checked=${overlaySugerida} onChange=${(e) => setOverlaySugerida(e.target.checked)} /> ${t("Sugerida")}</label>
+            <label><input type="checkbox" checked=${overlayNacimiento} onChange=${(e) => setOverlayNacimiento(e.target.checked)} /> ${t("Nacimiento")}</label>
+            ${Array.isArray(zona.historial_roi) && zona.historial_roi.length > 0 && html`<label
+              title=${t("Muestra la ROI previa guardada en el historial (para comparar antes de revertir)")}>
+              <input type="checkbox" checked=${overlayAnterior} onChange=${(e) => setOverlayAnterior(e.target.checked)} /> ${t("Anterior")}</label>`}
+          </span>
+        </div>
+        <div class=${`video-inspector-marco ${puedePan ? "pan-activo" : ""}`} ref=${visorInspectorRef} onWheel=${ruedaZoomInspector}
+          onPointerDown=${iniciarPan} onPointerMove=${moverPan}
+          onPointerUp=${terminarPan} onPointerCancel=${terminarPan} onLostPointerCapture=${terminarPan}
+          title=${puedePan ? t("Arrastra para desplazarte por el cuadro con zoom") : null}>
+        <div class="video-frame-zona-lienzo" style=${{aspectRatio: proporcion, width: zoomInspector > 100 ? `${zoomInspector}%` : undefined, maxWidth: "none"}}
+          onPointerDown=${iniciarZona} onPointerMove=${moverZona}
+          onPointerUp=${terminarZona} onPointerCancel=${terminarZona} onDblClick=${dobleClicZoom}>
           <img ref=${imgZonaRef} src=${rutaFrameMostrada} alt=${`Cuadro ${frame} de ${video.nombre || "video"}`} draggable="false" />
-          ${zonaVisible && html`<div class=${`video-zona-overlay ${zonaTemporal ? "temporal" : "aprendida"} ${zonaBloqueada && !zonaTemporal ? "bloqueada" : ""}`}
+          ${zonaVisible && overlayRoi && html`<div class=${`video-zona-overlay ${zonaTemporal ? "temporal" : "aprendida"} ${zonaBloqueada && !zonaTemporal ? "bloqueada" : ""}`}
             style=${estiloZona(zonaVisible)}><span>${zonaTemporal ? "ROI general" : `${tipoCamara || "Zona"}${zonaBloqueada ? " · bloqueada" : ""}`}</span></div>`}
-          ${mostrarNacimiento && html`<div class=${`video-zona-nacimiento-overlay ${detalleNacimientoVisible?.metodo === "manual_dashboard" ? "manual" : "automatica"}`}
+          ${mostrarNacimiento && overlayNacimiento && html`<div class=${`video-zona-nacimiento-overlay ${detalleNacimientoVisible?.metodo === "manual_dashboard" ? "manual" : "automatica"}`}
             style=${estiloZona(zonaNacimientoVisible)}><span>◎ Nacimiento</span></div>`}
-          ${!zonaTemporal && zonaSugerida && html`<div class="video-zona-overlay sugerida" style=${estiloZona(zonaSugerida)}><span>Sugerida</span></div>`}
+          ${!zonaTemporal && zonaSugerida && overlaySugerida && html`<div class="video-zona-overlay sugerida" style=${estiloZona(zonaSugerida)}><span>${t("Sugerida")}</span></div>`}
+          ${!modoZona && roiAnterior && overlayAnterior && html`<div class="video-zona-overlay anterior" style=${estiloZona(roiAnterior)}><span>${t("ROI anterior")}</span></div>`}
           ${errorFrame && html`<div class="video-frame-error">No se pudo cargar el cuadro ${Math.round(frame)}</div>`}
         </div>
+        </div>
+        ${lupaActiva && html`<div class="video-lupa-temporal" role="group" aria-label="Lupa temporal F-2, F-1, F, F+1, F+2">
+          ${[-2, -1, 0, 1, 2].map((delta) => {
+            const indice = Math.max(0, Math.min(maxFrame, Math.round(frame) + delta));
+            const foco = Array.isArray(zonaNacimientoVisible) ? zonaNacimientoVisible
+              : (zonaVisible || zonaAuto || null);
+            const cx = foco ? ((foco[0] + foco[2]) / 2) * 100 : 50;
+            const cy = foco ? ((foco[1] + foco[3]) / 2) * 100 : 50;
+            return html`<figure key=${delta} class="video-lupa-panel">
+              <img src=${`/api/video/frame?ruta=${encodeURIComponent(video.ruta || "")}&frame=${indice}`}
+                alt=${`Lupa cuadro ${indice}`} draggable="false"
+                style=${{ transformOrigin: `${cx}% ${cy}%`, transform: "scale(3)" }} />
+              <figcaption>${delta === 0 ? "F (actual)" : `F${delta < 0 ? "−" : "+"}${Math.abs(delta)}`} · cuadro ${indice}</figcaption>
+            </figure>`;
+          })}
+          <small class="video-lupa-nota">Misma microzona en cinco cuadros nativos para comparar previos y continuidad; los cuadros comparten la fuente del detector y no son votos independientes.</small>
+        </div>`}
         ${(modoZona && zonaTemporal) && html`<div class="video-zona-zoom">
           <div class="video-zona-zoom-cabecera">
             <div><strong>Zoom exacto del nacimiento</strong><small> se acerca automáticamente al primer fragmento</small></div>
@@ -3445,12 +4269,25 @@ function TarjetaVideoAirbag({ video, pruebaId, onSaved, bloqueado = false }) {
           : zonaAuto ? html`<div>
               <strong>${zonaBloqueada ? "REGIÓN MANUAL BLOQUEADA" : "REGIÓN AJUSTADA AUTOMÁTICAMENTE"}</strong>
               <span class="mono">Cámara: ${tipoCamara || "sin etiqueta"} · X ${pct?.x ?? guion} % · Y ${pct?.y ?? guion} % · W ${pct?.w ?? guion} % · H ${pct?.h ?? guion} %</span>
-              <small>${zonaEtiqueta}. ${zonaBloqueada ? "El sistema no puede mover esta región automáticamente." : "La autoalineación está activada en config.yaml."}</small>
+              <small>${zonaEtiqueta}. ${zonaBloqueada ? "La región dibujada por ti se respeta; se muestra otra propuesta si hay deformación temporal." : fuenteZona === "deformacion_temporal_auto" ? "ROI definida automáticamente por movimiento local de la pieza, no confirma ruptura por sí sola." : "ROI automática: contrastar con el inicio real de ruptura."}</small>
             </div>`
           : html`<div><strong>Sin zona de interés</strong><small>Se analiza todo el cuadro. Usa “Marcar zona de interés” para enseñar dónde aparece primero la bolsa.</small></div>`}
           <div class="video-roi-sugerencia">${!modoZona && zonaSugerida && html`
             <small>El sistema sugiere mover la región (contorno discontinuo). Tú decides:</small>
             <button type="button" class="boton" onClick=${()=>guardarZona(zonaSugerida)} disabled=${bloqueado||guardando}>Aceptar ROI sugerida</button>`}</div>
+          ${!modoZona && roiAnterior && html`<div class="video-roi-revertir">
+            <small>${t("ROI actual")}: <span class="mono">X ${pct?.x ?? guion} % · Y ${pct?.y ?? guion} % · W ${pct?.w ?? guion} % · H ${pct?.h ?? guion} %</span>
+              · ${t("ROI anterior")}: <span class="mono">X ${(roiAnterior[0]*100).toFixed(1)} % · Y ${(roiAnterior[1]*100).toFixed(1)} % · W ${((roiAnterior[2]-roiAnterior[0])*100).toFixed(1)} % · H ${((roiAnterior[3]-roiAnterior[1])*100).toFixed(1)} %</span>
+              · ${t("historial")}: ${historialRoi.length}</small>
+            <button type="button" class="boton" onClick=${()=>revertirRoi(0)}
+              disabled=${bloqueado||guardando||revertiendoRoi||recalculandoVideo}
+              title=${t("Restaura la ROI previa verificada y reanaliza el video; la ROI desplazada queda en el historial")}>
+              ${revertiendoRoi ? t("Revirtiendo…") : t("Revertir ROI anterior")}</button>
+            ${historialRoi.length > 1 && historialRoi.slice(1).map((h, i) => html`<button key=${i} type="button" class="boton boton-compacto"
+              onClick=${()=>revertirRoi(i+1)} disabled=${bloqueado||guardando||revertiendoRoi}
+              title=${t("Restaura una versión más antigua del historial de ROI")}>
+              ${t("Revertir a")} −${i+2}</button>`)}
+          </div>`}
         </div>
       </div>
       <div class="video-airbag-datos">
@@ -3472,17 +4309,24 @@ function TarjetaVideoAirbag({ video, pruebaId, onSaved, bloqueado = false }) {
               readOnly aria-readonly="true" title="El tiempo se sincroniza con el cuadro, la tasa real Rec…fps y el reloj superior derecho." />
               <small>Sincronizado con el cuadro; no se guarda un tiempo contradictorio.</small></label>
           </div>
-          <small class="atajos-video">Atajos: ←/→ = 1 cuadro · Shift+←/→ = 10 cuadros · Inicio/Fin = extremos.</small>
+          <small class="atajos-video">Atajos: ←/→ = 1 cuadro · Shift+←/→ = 10 cuadros · rueda/trackpad = zoom continuo centrado en cursor · arrastrar = pan suave · +/− = zoom · doble clic = 250%/ajustar · 0 = ajustar a pantalla · F = pantalla completa · L = lupa F±2.</small>
           <div class="acciones-revision-video">
             <button type="button" class="boton boton-primario" onClick=${()=>guardar("confirmado")}
-              disabled=${bloqueado||guardando||cargandoTiempo||recalculandoVideo}>✓ Confirmar apertura aquí</button>
+              disabled=${bloqueado||guardando||cargandoTiempo||recalculandoVideo||eventoCensuradoVideo}
+              title=${eventoCensuradoVideo ? "Evento censurado: falta evidencia previa del nacimiento." : "Confirma el primer cuadro de apertura con referencia validada."}>✓ Confirmar apertura aquí</button>
             <button type="button" class="boton" onClick=${()=>guardar("sin_evento")}
               disabled=${bloqueado||guardando||recalculandoVideo}>No hay apertura en este video</button>
           </div>
           <div class="video-maximo-visible">
             <strong>Máximo despliegue visible</strong>
             <p class="subtitulo-seccion">Después de confirmar la ruptura, avanza hasta el cuadro de mayor despliegue visible y guárdalo aquí. No es el inicio de ruptura ni una medición de volumen o de inflado completo.</p>
+            ${video.duracion_llenado_estimada_ms != null && html`<p class="subtitulo-seccion"><strong>Estimación automática de llenado visual:</strong> ${Number(video.duracion_llenado_estimada_ms).toFixed(3)} ms desde el primer onset defendible${video.frame_llenado_estimado != null ? ` · meseta en cuadro ${video.frame_llenado_estimado}` : ""}. No equivale a volumen o presión internos.</p>`}
+            ${video.congruencia_v1606 && html`<p class="subtitulo-seccion"><strong>Decisión visual (motor de referencia):</strong> ${video.congruencia_v1606.decision_apertura_aplicada ? `primera bolsa propuesta en cuadro ${video.frame_evento}` : "se conserva la apertura previa"} · ${video.congruencia_v1606.maximo_visible?.estado === "maximo_censurado_por_encuadre" ? "Máximo NO MEDIBLE: la bolsa satura el encuadre" : video.congruencia_v1606.maximo_visible?.estado === "meseta_de_area_2d_candidata" ? "meseta de área visible 2D (no máximo físico confirmado)" : "máximo no confirmado o evidencia insuficiente"}. ${video.congruencia_v1606.criterio_ruptura === "material_sin_respaldo_local" ? "La propuesta de apertura conserva incertidumbre: falta evidencia de ruptura física." : ""}</p>`}
+            ${video.comparacion_roi_v1610 && html`<p class="subtitulo-seccion"><strong>Arbitraje de ROI:</strong> ${video.comparacion_roi_v1610.seleccion || "sin comparacion"}${video.roi_arbitraje_conflicto ? " · CONFLICTO entre regiones: apertura no publicable automaticamente" : ""}. Evidencia física: ${video.congruencia_v1606?.nivel_evidencia_fisica || "no evaluable"}.</p>`}
+            ${video.frame_max_inflado_estimado != null && html`<p class="subtitulo-seccion"><strong>${t("Máximo inflado automático")}:</strong> cuadro ${video.frame_max_inflado_estimado}${video.tiempo_max_inflado_estimado_ms != null ? ` · ${Number(video.tiempo_max_inflado_estimado_ms).toFixed(3)} ms desde inicio del video` : ""}${video.duracion_hasta_max_inflado_ms != null ? ` · breakout→máximo ${Number(video.duracion_hasta_max_inflado_ms).toFixed(3)} ms` : ""}${maximoNoConfirmadoBadge(video.estado_max_inflado, t)}. ${video.anomalías_despliegue?.length ? `Revisar: ${video.anomalías_despliegue.join(", ")}.` : (video.estado_max_inflado && video.estado_max_inflado !== "maximo_inflado_estimado" ? "" : t("Sin anomalías automáticas."))}</p>`}
             <div class="acciones-revision-video">
+              ${video.frame_max_inflado_estimado != null && html`<button type="button" class="boton" onClick=${()=>cambiarFrame(Number(video.frame_max_inflado_estimado))} disabled=${guardando}>${t("Ir al máximo automático")}</button>`}
+              ${video.frame_llenado_estimado != null && html`<button type="button" class="boton" onClick=${()=>cambiarFrame(Number(video.frame_llenado_estimado))} disabled=${guardando}>Ir a meseta estimada</button>`}
               <button type="button" class="boton" onClick=${guardarMaximo}
                 disabled=${bloqueado||guardando||cargandoTiempo||recalculandoVideo||estadoManual!=="confirmado"}
                 title="Guarda el cuadro actual como máximo visible; apertura y su aprendizaje se conservan.">
@@ -3506,8 +4350,12 @@ function TarjetaVideoAirbag({ video, pruebaId, onSaved, bloqueado = false }) {
           <dt>Tiempo del cuadro actual</dt><dd><strong>${Number(tiempo).toFixed(1)} ms</strong> · ${fuenteActual}</dd>
           <dt>Reloj esquina superior derecha</dt><dd>${relojLeido != null ? `${Number(relojLeido).toFixed(1)} ms` : (cargandoTiempo ? "leyendo…" : "no legible en este cuadro")}
             ${relojLeido != null ? (overlayCoincide ? html` <span class="chip verde chip-mini">coincide</span>` : html` <span class="chip neutro chip-mini">no coincide, descartado</span>`) : ""}</dd>
-          <dt>Detección automática</dt><dd>cuadro ${video.frame_evento ?? guion} · ${video.tiempo_ms ?? guion} ms</dd>
-          <dt>Tu confirmación</dt><dd>${estadoManual === "confirmado" ? `cuadro ${video.revision_manual?.frame_index ?? guion} · ${video.revision_manual?.tiempo_ms ?? guion} ms${revisionReparada ? ` (antes ${video.revision_manual?.tiempo_original_ms} ms)` : ""}` : estadoManual === "sin_evento" ? "sin apertura" : guion}</dd>
+          <dt>Detección automática</dt><dd>cuadro ${video.frame_evento ?? guion} · ${tiempoAutoPublicable
+            ? `${tiempoAutoNumero.toFixed(3)} ms · candidato con referencia validada, no confirmado`
+            : tiempoAutoRaw != null
+              ? `raw ${String(tiempoAutoRaw)} ms · no publicable${video.motivo_rechazo ? ` · ${video.motivo_rechazo}` : ""}`
+              : "tiempo no disponible"}</dd>
+          <dt>Tu confirmación</dt><dd>${estadoManual === "confirmado" ? `cuadro ${video.revision_manual?.frame_index ?? guion} · ${video.revision_manual?.raw_time_ms ?? video.revision_manual?.tiempo_ms ?? guion} ms${revisionManualNoPublicable ? " · valor crudo no publicable; requiere revisión" : ""}` : estadoManual === "sin_evento" ? "sin apertura" : guion}</dd>
           <dt>Origen del análisis</dt><dd>${["recalculado_v15_6","recalculado_v15_7_3","recalculado_v15_7_4"].includes(video.origen_resultado_video) || video.desde_cache === false
             ? html`<span class="chip verde chip-mini">recalculado</span>`
             : video.desde_cache === true ? html`<span class="chip neutro chip-mini">caché</span>` : guion}
@@ -3519,10 +4367,13 @@ function TarjetaVideoAirbag({ video, pruebaId, onSaved, bloqueado = false }) {
           <dt>Validación temporal</dt><dd>${video.frame_confirmacion_automatica != null && video.frame_evento != null
             ? `Primer indicio: cuadro ${video.frame_evento} · evidencia fuerte: cuadro ${video.frame_confirmacion_automatica}` : guion}</dd>
           <dt>Crecimiento observado</dt><dd>${video.crecimiento_ratio != null ? `${Number(video.crecimiento_ratio).toFixed(2)}× en la ventana de confirmación` : guion}</dd>
+          <dt>Tiempo de llenado visual</dt><dd>${video.duracion_llenado_estimada_ms != null ? `${Number(video.duracion_llenado_estimada_ms).toFixed(3)} ms · meseta visual estimada${video.frame_llenado_estimado != null ? ` en cuadro ${video.frame_llenado_estimado}` : ""}` : "sin meseta visual defendible todavía"}</dd>
+          <dt>${t("Máximo inflado automático")}</dt><dd>${video.frame_max_inflado_estimado != null ? `cuadro ${video.frame_max_inflado_estimado}${video.tiempo_max_inflado_estimado_ms != null ? ` · ${Number(video.tiempo_max_inflado_estimado_ms).toFixed(3)} ms desde inicio de video` : ""}${video.duracion_hasta_max_inflado_ms != null ? ` · expansión ${Number(video.duracion_hasta_max_inflado_ms).toFixed(3)} ms` : ""}${maximoNoConfirmadoBadge(video.estado_max_inflado, t)}` : t("Sin máximo defendible todavía")}</dd>
+          <dt>${t("Anomalías automáticas")}</dt><dd>${video.anomalías_despliegue?.length ? video.anomalías_despliegue.join(", ") : t("Ninguna detectada")}</dd>
           <dt>Score de apertura</dt><dd>${video.score_apertura != null ? `${(Number(video.score_apertura)*100).toFixed(1)}%` : guion}</dd>
           <dt>Ejemplos aprendidos</dt><dd>${(video.perfil_evento_aprendido?.ejemplos||0) > 0 ? `${Number(video.perfil_evento_aprendido.ejemplos)} de ${tipoCamara || "esta vista"}` : guion}</dd>
-          <dt>Nacimiento preciso</dt><dd>${Array.isArray(zonaNacimientoVisible) ? `${detalleNacimientoVisible?.metodo === "manual_dashboard" ? "ajustado por ti" : "localizado automáticamente"}${detalleNacimientoVisible?.confianza != null ? ` · ${(Number(detalleNacimientoVisible.confianza)*100).toFixed(0)}%` : ""}` : guion}</dd>
-          <dt>Confianza</dt><dd>${video.confianza != null ? `${(Number(video.confianza)*100).toFixed(1)}%` : guion}</dd>
+          <dt>Nacimiento preciso</dt><dd>${Array.isArray(zonaNacimientoVisible) ? `${detalleNacimientoVisible?.metodo === "manual_dashboard" ? "ajustado por ti" : "propuesta automática"} · señal no calibrada` : guion}</dd>
+          <dt>Nivel de evidencia</dt><dd>${nivelEvidencia}</dd>
           <dt>Texto de overlay</dt><dd class="mono">${video.overlay_texto || guion}</dd>
         </dl>
         <div class="video-zona-acciones">
@@ -3532,8 +4383,8 @@ function TarjetaVideoAirbag({ video, pruebaId, onSaved, bloqueado = false }) {
           <button type="button" class="boton" onClick=${()=>guardarZona()}
             disabled=${bloqueado||guardando||!modoZona||!zonaTemporal} hidden=${!modoZona}>Guardar solo zona</button>
           <button type="button" class="boton boton-aprender-apertura" onClick=${guardarZonaYApertura}
-            disabled=${bloqueado||guardando||cargandoTiempo||localizandoNacimiento||!modoZona||!zonaTemporal} hidden=${!modoZona}
-            title="Guarda esta región como zona de interés y el cuadro actual como primer cuadro de apertura">✓ Esta zona + este cuadro = apertura</button>
+            disabled=${bloqueado||guardando||cargandoTiempo||localizandoNacimiento||!modoZona||!zonaTemporal||eventoCensuradoVideo} hidden=${!modoZona}
+            title=${eventoCensuradoVideo ? "Evento censurado: guarda la ROI por separado, sin confirmar apertura." : "Guarda esta región como zona de interés y el cuadro actual como primer cuadro de apertura. Guarda la ROI y confirma la apertura sólo con evidencia previa del nacimiento."}>✓ Esta zona + este cuadro = apertura</button>
           <button type="button" class="boton" onClick=${()=>{setModoZona(false);setZonaTemporal(null);setZonaNacimiento(null);setDetalleNacimiento(null);setModoNacimientoManual(false);}}
             disabled=${guardando} hidden=${!modoZona}>Cancelar</button>
         </div>
@@ -3549,11 +4400,42 @@ function PanelVideosAirbag({ detalle, onSaved, bloqueado = false }) {
   const [estadoRecalculo, setEstadoRecalculo] = useState(null);
   const [errorRecalculo, setErrorRecalculo] = useState(null);
   const c = detalle.video_apertura || {};
-  const soporte = Number(c.soporte || 0);
-  const valido = ["confirmado_manual", "primera_aparicion", "confirmado_3_de_4"].includes(c.estado) && c.tiempo_ms != null;
-  const etiquetaEstado = c.estado === "confirmado_manual" ? `${c.tiempo_ms} ms · confirmado por ti (${c.camara_referencia || "video"})`
-    : valido ? `${c.tiempo_ms} ms · primera aparición (${c.camara_referencia || "video"}, ${soporte} cámara${soporte === 1 ? "" : "s"})`
-    : `Revisión · ${soporte} de ${videos.length}`;
+  const aperturaCanonica = detalle.resultado_caso_canonico?.apertura || {};
+  const canonicaDisponible = Object.prototype.hasOwnProperty.call(
+    detalle.resultado_caso_canonico?.apertura || {}, "estado");
+  const videoCensurado = Boolean(aperturaCanonica.censurado_por_izquierda
+    || c.censurado_por_izquierda || c.evento_al_inicio
+    || c.estado === "evento_al_inicio" || c.estado_evento === "evento_al_inicio"
+    || c.estado_tiempo === "CENSURADO");
+  const tiempoFinalSeguro = (raw, referenciaValida) => {
+    const n = raw == null ? NaN : Number(raw);
+    return Number.isFinite(n) && n > 0 && referenciaValida && !videoCensurado ? n : null;
+  }; 
+  const referenciaCanonica = aperturaCanonica.referencia_tiempo_valida === true;
+  const referenciaVideo = Object.prototype.hasOwnProperty.call(c, "referencia_tiempo_valida")
+    ? c.referencia_tiempo_valida === true : c.estado_tiempo === "VALIDO";
+  const decisionCanonica = aperturaCanonica.estado ||
+    (c.estado === "confirmado_manual" ? "VERIFICADO_HUMANO" : c.tiempo_ms != null ? "PROPUESTA" : "NO_OBSERVADO");
+  const tiempoConfirmado = canonicaDisponible
+    ? tiempoFinalSeguro(aperturaCanonica.tiempo_ms, referenciaCanonica)
+    : ["VERIFICADO_HUMANO", "AUTO_VERIFICABLE"].includes(decisionCanonica)
+      ? tiempoFinalSeguro(c.tiempo_ms, referenciaVideo) : null;
+  const tiempoPropuesto = canonicaDisponible
+    ? tiempoFinalSeguro(aperturaCanonica.tiempo_propuesto_ms, referenciaCanonica)
+    : decisionCanonica === "PROPUESTA"
+      ? tiempoFinalSeguro(c.tiempo_propuesto_ms ?? c.tiempo_ms, referenciaVideo) : null;
+  const tiempoCrudoAuditoria = aperturaCanonica.tiempo_crudo_ms ?? aperturaCanonica.raw_time_ms
+    ?? c.tiempo_crudo_ms ?? c.raw_time_ms;
+  const motivoRechazoTiempo = aperturaCanonica.motivo_rechazo || c.motivo_rechazo;
+  const soporte = Number(c.soporte || aperturaCanonica.soporte_independiente || 0);
+  const valido = ["VERIFICADO_HUMANO", "AUTO_VERIFICABLE"].includes(decisionCanonica) && tiempoConfirmado != null;
+  const etiquetaEstado = valido ? `${tiempoConfirmado} ms · ${decisionCanonica === "AUTO_VERIFICABLE" ? "consenso automático validado" : "confirmado por una persona"} (${c.camara_referencia || "video"})`
+    : aperturaCanonica.censurado_por_izquierda ? "Evento al inicio del clip · tiempo censurado"
+    : tiempoPropuesto != null ? `Propuesta ${tiempoPropuesto} ms · no confirmada (${soporte} cámaras)`
+    : decisionCanonica === "CONFLICTO" ? "Conflicto · requiere revisión"
+    : `Sin tiempo confirmado · ${soporte} de ${videos.length} con soporte`;
+  const razonesCanonicas = aperturaCanonica.motivos || [];
+  const candidatosSombra = aperturaCanonica.candidatos_sombra || [];
   const excluidas = (c.camaras_excluidas || []).join(", ");
 
   // V15.7.4: recálculo completo del ID. Cada tarjeta también puede recalcular
@@ -3629,15 +4511,38 @@ function PanelVideosAirbag({ detalle, onSaved, bloqueado = false }) {
     </div>`}
     ${errorRecalculo && html`<div class="mensaje-error" role="alert">${errorRecalculo}</div>`}
 
-    <p class="subtitulo-seccion">Apertura = primera ruptura visible de la costura, no el abombamiento previo. El detector propone un indicio y busca corroboración posterior; revisa el cuadro anterior y el siguiente. No se garantiza detectar cualquier píxel con compresión, reflejos u oclusión${excluidas ? `. ${excluidas} no define el tiempo por ser la vista trasera` : ""}. Tus confirmaciones manuales mandan.</p>
+    <p class="subtitulo-seccion">Apertura = primera ruptura visible de la costura, no el abombamiento previo. V15.10 muestra hipótesis en modo sombra; no sustituye el tiempo oficial. Las decisiones automáticas no están calibradas con el conjunto reservado. Revisa previos y continuidad; no se garantiza detectar un píxel con compresión, reflejos u oclusión${excluidas ? `. ${excluidas} no define el tiempo por ser la vista trasera` : ""}. Tus confirmaciones manuales mandan.</p>
     <div class="video-panel-avisos-reservado">
+      <div class="aviso apertura-sombra-resumen" role="status">
+        <strong>Decisión canónica V15.10: ${decisionCanonica}</strong>
+        ${aperturaCanonica.fuente ? html`<span> · Fuente: ${aperturaCanonica.fuente}</span>` : null}
+        ${aperturaCanonica.resolucion_ms != null ? html`<span> · Resolución nativa: ${aperturaCanonica.resolucion_ms} ms</span>` : null}
+        ${aperturaCanonica.duracion_llenado_estimada_ms != null ? html`<span> · Llenado visual estimado: ${Number(aperturaCanonica.duracion_llenado_estimada_ms).toFixed(3)} ms</span>` : null}
+        ${aperturaCanonica.auto_color_prioridad === "video_unico_defendible" ? html`<span> · color sustentado por un video físicamente defendible</span>` : null}
+        <p class="subtitulo-seccion">${razonesCanonicas.join(" · ") || "Sin razones adicionales."}</p>
+        ${tiempoCrudoAuditoria != null && tiempoConfirmado == null && tiempoPropuesto == null && html`<p class="subtitulo-seccion" role="status">
+          <strong>Auditoría temporal (no es propuesta):</strong> raw ${String(tiempoCrudoAuditoria)} ms · ${aperturaCanonica.estado_tiempo || c.estado_tiempo || "PENDIENTE"}
+          ${motivoRechazoTiempo ? ` · ${motivoRechazoTiempo}` : ""}
+        </p>`}
+        ${candidatosSombra.length > 0 && html`<div>
+          <strong>Hipótesis sombra (tiempo local por video; relojes no sincronizados):</strong>
+          <ul>${candidatosSombra.slice(0, 3).map((cand, idx) => html`<li key=${`${cand.video}-${cand.frame}-${idx}`}>
+            ${cand.video || cand.video_id || "Video"} · cuadro ${cand.frame}
+            ${cand.tiempo_local_ms != null ? ` · ${Number(cand.tiempo_local_ms).toFixed(3)} ms local` : " · tiempo no calculable"}
+            ${Array.isArray(cand.intervalo_tiempo_local_ms) ? ` · intervalo ${cand.intervalo_tiempo_local_ms.join("–")} ms` : ""}
+            ${Array.isArray(cand.tipo_senales) ? ` · señales ${cand.tipo_senales.join(", ")}` : ""}
+          </li>`)}</ul>
+          <small>El score ordena hipótesis; no es probabilidad ni evidencia independiente.</small>
+        </div>`}
+      </div>
       ${c.camara_anterior_sin_respaldo && html`<div class="aviso aviso-advertencia">
         <strong>Revisa ${c.camara_anterior_sin_respaldo.camara || c.camara_anterior_sin_respaldo.video}:</strong> detectó apertura en ${c.camara_anterior_sin_respaldo.tiempo_ms} ms, antes que las demás cámaras, sin que ninguna lo respalde. Confírmalo o corrígelo en su tarjeta.
       </div>`}
     </div>
 
     ${videosVisibles ? html`<div class="lista-videos-airbag">${videos.map(video => html`<${TarjetaVideoAirbag} key=${video.id||video.ruta}
-      video=${video} pruebaId=${detalle.id} onSaved=${onSaved} bloqueado=${bloqueado} />`)}</div>`
+      video=${video} pruebaId=${detalle.id} onSaved=${onSaved} bloqueado=${bloqueado}
+      revisionDocumento=${detalle?.revision_documento ?? null} />`)}</div>`
       : html`<div class="videos-ocultos-resumen">
           <div><strong>Videos ocultos</strong><p class="subtitulo-seccion">La sección está contraída para dejar más espacio al resto del ID.</p></div>
           <button type="button" class="boton" onClick=${() => setVideosVisibles(true)}>Desplegar videos</button>
@@ -3856,6 +4761,16 @@ function VistaDetalle({ nombre }) {
       requestAnimationFrame(() => formulario?.classList.add("destacar-formulario"));
     }, 0);
   }
+  // R15.2 (ALTO-04): ante un conflicto CAS (409) se refresca el detalle para
+  // que el próximo intento envíe la revisión vigente; el borrador del usuario
+  // NO se descarta (nunca perder trabajo humano).
+  async function refrescarTrasConflicto(error) {
+    if (!esConflictoRevision(error?.message)) return false;
+    try {
+      setDetalle(await pedirJSON(`/api/pruebas/${encodeURIComponent(nombre)}`, undefined, { permitir404: false }));
+    } catch (_) {}
+    return true;
+  }
   async function confirmarCorreccion(e, accionForzada = null) {
     e.preventDefault();
     const versionEnviada = versionBorradorRef.current;
@@ -3867,7 +4782,7 @@ function VistaDetalle({ nombre }) {
     try {
       const resultado = await enviarJSON("/api/aprendizaje/correcciones", {
         prueba_id: detalle.id, campo: "etiqueta", imagen_id: imagenSeleccionada?.id,
-        texto_ocr: textoUnidad(unidadSeleccionada),
+        texto_ocr: textoVisible(unidadSeleccionada),
         texto_correcto: textoEnviado,
         bbox: unidadSeleccionada?.bbox || null,
         tipo_unidad: unidadSeleccionada?.tipo_unidad || null,
@@ -3875,8 +4790,9 @@ function VistaDetalle({ nombre }) {
         campo_destino: campoDestino || null,
         estrategia_ocr: estrategiaOcrPendiente,
         accion: accionEfectiva,
+        expected_revision: detalle?.revision_documento ?? null,
       });
-      const actualizado = await pedirJSON(`/api/pruebas/${encodeURIComponent(nombre)}`);
+      const actualizado = await pedirJSON(`/api/pruebas/${encodeURIComponent(nombre)}`, undefined, { permitir404: false });
       setDetalle(actualizado);
       const imagenActualizada = (actualizado.imagenes || []).find(i=>i.id===imagenSeleccionada?.id);
       const guardada = unidadesOcr(imagenActualizada?.resultado_ocr || {}).find(u=>
@@ -3897,12 +4813,13 @@ function VistaDetalle({ nombre }) {
           if (versionBorradorRef.current === versionEnviada) setTextoCorrecto(textoVisible(guardada));
         }
       }
-      setResultadoCorreccion({ ok: true, resultado });
+      setResultadoCorreccion({ ok: true, resultado, accion: accionEfectiva });
       if (seleccionActualRef.current.imagenId === seleccionEnviada.imagenId &&
           seleccionActualRef.current.unidadId === seleccionEnviada.unidadId) setEstrategiaOcrPendiente(null);
       pedirJSON("/api/aprendizaje").then(setAprendizaje).catch(() => {});
     } catch (error) {
       setResultadoCorreccion({ ok: false, mensaje: error.message });
+      await refrescarTrasConflicto(error);
     } finally {
       setGuardandoCorreccion(false);
     }
@@ -3915,7 +4832,7 @@ function VistaDetalle({ nombre }) {
         prueba_id: detalle.id, imagen_id: imagenSeleccionada.id,
         bbox: unidad.bbox, restaurar,
       });
-      setDetalle(await pedirJSON(`/api/pruebas/${encodeURIComponent(nombre)}`));
+      setDetalle(await pedirJSON(`/api/pruebas/${encodeURIComponent(nombre)}`, undefined, { permitir404: false }));
       setResultadoCorreccion({ok: true, resultado});
       setUnidadId("");
     } catch (e) { setResultadoCorreccion({ok: false, mensaje: e.message}); }
@@ -3930,7 +4847,7 @@ function VistaDetalle({ nombre }) {
       const resultado = await enviarJSON("/api/aprendizaje/no-texto-lote", {
         prueba_id: detalle.id, imagen_id: imagen.id, bboxes,
       });
-      const actualizado = await pedirJSON(`/api/pruebas/${encodeURIComponent(nombre)}`);
+      const actualizado = await pedirJSON(`/api/pruebas/${encodeURIComponent(nombre)}`, undefined, { permitir404: false });
       setDetalle(actualizado);
       setResultadoCorreccion({ok: true, resultado});
       if (imagen.id === imagenSeleccionada?.id) {
@@ -3947,7 +4864,7 @@ function VistaDetalle({ nombre }) {
   async function cambiarRevision(estado) {
     try {
       await enviarJSON("/api/revisiones", { tipo: "carpeta", item_id: detalle.id, estado });
-      const actualizado = await pedirJSON(`/api/pruebas/${encodeURIComponent(nombre)}`);
+      const actualizado = await pedirJSON(`/api/pruebas/${encodeURIComponent(nombre)}`, undefined, { permitir404: false });
       setDetalle(actualizado);
       setModoEdicion(false);
     } catch (error) {
@@ -3972,7 +4889,7 @@ function VistaDetalle({ nombre }) {
         proponer_entrenamiento: true,
       });
       setResultadoRegion({ ok: true, resultado });
-      const actualizado = await pedirJSON(`/api/pruebas/${encodeURIComponent(nombre)}`);
+      const actualizado = await pedirJSON(`/api/pruebas/${encodeURIComponent(nombre)}`, undefined, { permitir404: false });
       setDetalle(actualizado);
       setRegion(null); setAnguloRegion(0); setPoligonoRegion(null);
       setTextoRegion("");
@@ -3989,12 +4906,14 @@ function VistaDetalle({ nombre }) {
       const resultado = await enviarJSON("/api/aprendizaje/rotaciones", {
         tipo: "carpeta", prueba_id: detalle.id, imagen_id: imagen.id, grados,
         usar_automatico: usarAutomatico,
+        expected_revision: detalle?.revision_documento ?? null,
       });
       setResultadoCorreccion({ ok: true, rotacion: true, resultado });
-      setDetalle(await pedirJSON(`/api/pruebas/${encodeURIComponent(nombre)}`));
+      setDetalle(await pedirJSON(`/api/pruebas/${encodeURIComponent(nombre)}`, undefined, { permitir404: false }));
       pedirJSON("/api/aprendizaje").then(setAprendizaje).catch(() => {});
     } catch (error) {
       setResultadoCorreccion({ ok: false, mensaje: error.message });
+      await refrescarTrasConflicto(error);
     }
   }
   async function marcarSinDatos(imagen, restaurar = false) {
@@ -4002,10 +4921,11 @@ function VistaDetalle({ nombre }) {
     try {
       const resultado = await enviarJSON(restaurar ? "/api/imagenes/con-texto" : "/api/imagenes/sin-datos", {
         tipo: "carpeta", prueba_id: detalle.id, imagen_id: imagen.id,
-        motivo: motivoSinDatos.trim() || null,
+        motivo: motivoSinDatos.trim() || null, usuario: "dashboard",
+        expected_revision: detalle?.revision_documento ?? null,
       });
       setResultadoCorreccion({ ok: true, sinDatos: true, resultado });
-      const actualizado = await pedirJSON(`/api/pruebas/${encodeURIComponent(nombre)}`);
+      const actualizado = await pedirJSON(`/api/pruebas/${encodeURIComponent(nombre)}`, undefined, { permitir404: false });
       if (!restaurar && ocultarSinTexto) {
         const lista = actualizado.imagenes?.length ? actualizado.imagenes : [actualizado.etiqueta, actualizado.referencia].filter(Boolean);
         const restantes = imagenesParaRevisar(lista, ocultarVerificadas, true);
@@ -4016,6 +4936,7 @@ function VistaDetalle({ nombre }) {
       setDetalle(actualizado);
     } catch (error) {
       setResultadoCorreccion({ ok: false, mensaje: error.message });
+      await refrescarTrasConflicto(error);
     }
   }
   async function verificarImagen(imagen) {
@@ -4034,9 +4955,10 @@ function VistaDetalle({ nombre }) {
     setResultadoCorreccion(null);
     try {
       const resultado = await enviarJSON("/api/imagenes/verificar", {
-        prueba_id: detalle.id, imagen_id: imagen.id,
+        prueba_id: detalle.id, imagen_id: imagen.id, usuario: "dashboard",
+        expected_revision: detalle?.revision_documento ?? null,
       });
-      const actualizado = await pedirJSON(`/api/pruebas/${encodeURIComponent(nombre)}`);
+      const actualizado = await pedirJSON(`/api/pruebas/${encodeURIComponent(nombre)}`, undefined, { permitir404: false });
       const lista = actualizado.imagenes?.length ? actualizado.imagenes : [actualizado.etiqueta, actualizado.referencia].filter(Boolean);
       const imagenActualizada = lista.find(i => i.id === imagen.id);
       const unidadesActualizadas = unidadesOcr(imagenActualizada?.resultado_ocr || {});
@@ -4057,6 +4979,7 @@ function VistaDetalle({ nombre }) {
       setDetalle(actualizado);
     } catch (error) {
       setResultadoCorreccion({ ok: false, mensaje: error.message });
+      await refrescarTrasConflicto(error);
     } finally { setGuardandoImagen(false); }
   }
   async function atenderAlerta(alerta) {
@@ -4064,7 +4987,7 @@ function VistaDetalle({ nombre }) {
       await enviarJSON("/api/alertas/atender", {
         tipo: "carpeta", item_id: detalle.id, alerta_id: alerta.id,
       });
-      setDetalle(await pedirJSON(`/api/pruebas/${encodeURIComponent(nombre)}`));
+      setDetalle(await pedirJSON(`/api/pruebas/${encodeURIComponent(nombre)}`, undefined, { permitir404: false }));
     } catch (error) {
       setResultadoCorreccion({ ok: false, mensaje: error.message });
     }
@@ -4111,11 +5034,13 @@ function VistaDetalle({ nombre }) {
     try {
       const resultado = await enviarJSON(
         `/api/casos/${encodeURIComponent(detalle.id)}/campos/${encodeURIComponent(campoManual)}`,
-        { valor: valorManual.trim(), usuario: "dashboard" });
+        { valor: valorManual.trim(), usuario: "dashboard",
+          expected_revision: detalle?.revision_documento ?? null });
       setResultadoCorreccion({ ok: true, campoManual: true, resultado });
-      setDetalle(await pedirJSON(`/api/pruebas/${encodeURIComponent(nombre)}`));
+      setDetalle(await pedirJSON(`/api/pruebas/${encodeURIComponent(nombre)}`, undefined, { permitir404: false }));
     } catch (error) {
       setResultadoCorreccion({ ok: false, mensaje: error.message });
+      await refrescarTrasConflicto(error);
     }
   }
   async function entrenarVisual() {
@@ -4145,10 +5070,15 @@ function VistaDetalle({ nombre }) {
     } catch (error) { setResultadoCorreccion({ ok: false, mensaje: error.message }); }
   }
   const historialAprendizaje = imagenesDetalle.flatMap((imagen) => [
-    ...(imagen.correcciones || []).map((item) => ({
-      id: `c-${item.id}`, tipo: "Corrección OCR", imagen: imagen.nombre,
-      original: item.texto_ocr, correcto: item.texto_correcto, bbox: item.bbox,
-    })),
+    ...(imagen.correcciones || []).map((item) => {
+      const provisional = item.estado_supervision === "aceptado_provisional" || item.fuente === "aceptar_ocr";
+      return {
+        id: `c-${item.id}`, tipo: provisional ? "Aceptación provisional" : "Corrección humana guardada",
+        estado_supervision: provisional ? "aceptado_provisional" : "corregido_humano",
+        usuario: item.usuario, fecha: item.creado_en, imagen: imagen.nombre,
+        original: item.texto_ocr, correcto: item.texto_correcto, bbox: item.bbox,
+      };
+    }),
     ...(imagen.anotaciones || []).map((item) => ({
       id: `a-${item.id}`, tipo: "Texto omitido", imagen: imagen.nombre,
       original: null, correcto: item.texto_correcto, bbox: item.bbox,
@@ -4250,7 +5180,8 @@ function VistaDetalle({ nombre }) {
               <option key=${clave} value=${clave}>${clave}</option>`)}
           </select>
         </label>
-        <label><strong>Valor confirmado</strong>
+        <label><strong>${campoManual === "opening_time_ms"
+          ? "Valor raw (requiere referencia temporal validada en video)" : "Valor confirmado"}</strong>
           <input class="campo" value=${valorManual} disabled=${revisionCompletada}
             onInput=${(e) => setValorManual(e.target.value)} />
         </label>
@@ -4327,7 +5258,7 @@ function VistaDetalle({ nombre }) {
         visorRegion=${html`<${SelectorRegion} key=${`${imagenSeleccionada.id}-${revisionEditor}`} item=${imagenSeleccionada} valor=${region} onChange=${setRegion}
           anguloSeleccion=${anguloRegion} onAnguloSeleccion=${setAnguloRegion} poligonoSeleccionado=${poligonoRegion} onPoligonoSeleccion=${setPoligonoRegion} permitirRotarSeleccion=${true}
           textoRegion=${textoRegion} onTextoRegion=${setTextoRegion}
-          pruebaId=${detalle.id} onZonaActualizada=${async () => setDetalle(await pedirJSON(`/api/pruebas/${encodeURIComponent(nombre)}`))}
+          pruebaId=${detalle.id} onZonaActualizada=${async () => setDetalle(await pedirJSON(`/api/pruebas/${encodeURIComponent(nombre)}`, undefined, { permitir404: false }))}
           onSelectText=${(unidad) => seleccionarUnidad(imagenSeleccionada, unidad)}
           correccionAbierta=${mostrarCorreccion} onSeleccionarRegion=${cerrarCorreccionActiva}
           panelCorreccion=${html`<div>
@@ -4369,15 +5300,17 @@ function VistaDetalle({ nombre }) {
                 seleccionarUnidad(imagenSeleccionada, unidad);
               }
             }}>
-              ${unidadesCorregibles.map((t) => html`<option key=${t.unidad_id} value=${t.unidad_id}>
-                ${unidadConfirmada(t, imagenSeleccionada?.correcciones) ? "✓ Corregido / confirmado · " : "○ Sin confirmar · "}${t.tipo_unidad}: ${textoVisible(t).replaceAll("\n", " ↵ ")}</option>`)}
+              ${unidadesCorregibles.map((unidadLista) => html`<option key=${unidadLista.unidad_id} value=${unidadLista.unidad_id}>
+                ${t(etiquetaSupervisionUnidad(unidadLista, imagenSeleccionada?.correcciones))} · ${unidadLista.tipo_unidad}: ${textoVisible(unidadLista).replaceAll("\n", " ↵ ")}</option>`)}
             </select>
           </label>
           <div class="estado-bloque-seleccionado" role="status">
-            <span class=${`estado-texto ${unidadConfirmada(unidadSeleccionada, imagenSeleccionada?.correcciones) ? "texto-corregido" : "texto-pendiente"}`}>
-              ${unidadConfirmada(unidadSeleccionada, imagenSeleccionada?.correcciones)
+            <span class=${`estado-texto ${estadoSupervisionUnidad(unidadSeleccionada, imagenSeleccionada?.correcciones) === "corregido_humano" ? "texto-corregido" : estadoSupervisionUnidad(unidadSeleccionada, imagenSeleccionada?.correcciones) === "aceptado_provisional" ? "texto-provisional" : "texto-pendiente"}`}>
+              ${t(estadoSupervisionUnidad(unidadSeleccionada, imagenSeleccionada?.correcciones) === "corregido_humano"
                 ? "✓ Este bloque ya tiene una corrección o confirmación guardada"
-                : "Este bloque aún no tiene una corrección confirmada"}</span>
+                : estadoSupervisionUnidad(unidadSeleccionada, imagenSeleccionada?.correcciones) === "aceptado_provisional"
+                  ? "Aceptado provisional · pendiente de verificar; no cuenta como corrección humana"
+                  : "Este bloque aún no tiene una corrección confirmada")}</span>
             ${textoCorrecto !== textoVisible(unidadSeleccionada) && html`<span class="estado-texto texto-pendiente">Borrador modificado · falta aplicar supervisión</span>`}
             ${estrategiaOcrPendiente && html`<span class="estado-texto texto-pendiente">Estrategia OCR lista para aprender al confirmar: ${estrategiaOcrPendiente.orientacion_base}° ${Number(estrategiaOcrPendiente.ajuste_manual || 0) >= 0 ? "+" : ""}${Number(estrategiaOcrPendiente.ajuste_manual || 0).toFixed(1)}° · ${estrategiaOcrPendiente.variante}</span>`}
           </div>
@@ -4460,24 +5393,30 @@ function VistaDetalle({ nombre }) {
         <button type="button" class="boton boton-compacto" onClick=${entrenarVisual}
           disabled=${aprendizaje.entrenamiento_visual?.estado === "entrenando"}>
           Forzar entrenamiento ahora</button>
-        ${aprendizaje.ultimo_modelo_visual?.estado === "candidato_aprobado" && html`
+        ${aprendizaje.ultimo_modelo_visual?.estado === "candidato_aprobado"
+          && aprendizaje.ultimo_modelo_visual?.metricas?.release_gate?.sellado_aprobado === true && html`
           <button type="button" class="boton boton-compacto" onClick=${activarUltimoVisual}>
             Activar ${aprendizaje.ultimo_modelo_visual.version}</button>`}
         ${aprendizaje.modelo_visual_activo && html`
           <button type="button" class="boton boton-compacto" onClick=${restaurarVisual}>
             Restaurar modelo anterior</button>`}
-        ${aprendizaje.ultimo_modelo_visual?.metricas && html`<br />Última evaluación:
-          CER ${Number(aprendizaje.ultimo_modelo_visual.metricas.candidata?.cer || 0).toFixed(3)} ·
-          WER ${Number(aprendizaje.ultimo_modelo_visual.metricas.candidata?.wer || 0).toFixed(3)} ·
-          Exactitud ${(Number(aprendizaje.ultimo_modelo_visual.metricas.candidata?.exactitud || 0) * 100).toFixed(1)}%`}
+        ${["candidato", "candidato_sin_mejora_dev"].includes(aprendizaje.ultimo_modelo_visual?.estado) && html`
+          <br /><span class="aviso-inline">Candidato no activo. DEV sirve para selección; el test sellado no se predice ni se consulta durante el entrenamiento. La activación requiere un informe independiente y aprobación humana registrada.</span>`}
+        ${aprendizaje.ultimo_modelo_visual?.metricas && html`<br />Última evaluación dev (no test sellado):
+          CER ${Number(aprendizaje.ultimo_modelo_visual.metricas.candidata_dev?.cer || aprendizaje.ultimo_modelo_visual.metricas.candidata?.cer || 0).toFixed(3)} ·
+          WER ${Number(aprendizaje.ultimo_modelo_visual.metricas.candidata_dev?.wer || aprendizaje.ultimo_modelo_visual.metricas.candidata?.wer || 0).toFixed(3)} ·
+          Exactitud dev ${(Number(aprendizaje.ultimo_modelo_visual.metricas.candidata_dev?.exactitud || aprendizaje.ultimo_modelo_visual.metricas.candidata?.exactitud || 0) * 100).toFixed(1)}% ·
+          test: ${aprendizaje.ultimo_modelo_visual.metricas.test_sellado?.estado || "no auditado"}`}
       </p>`}
       ${resultadoCorreccion?.ok && html`<div class="aviso">
         ${resultadoCorreccion.rotacion
           ? resultadoCorreccion.resultado.mensaje
           : resultadoCorreccion.sinDatos ? resultadoCorreccion.resultado.mensaje
           : resultadoCorreccion.imagenVerificada ? resultadoCorreccion.resultado.mensaje
+          : resultadoCorreccion.accion === "aceptar"
+            ? t("Lectura aceptada provisionalmente; no es una corrección humana verificada ni una etiqueta de oro entrenable.")
           : html`<strong>Corrección guardada con su recorte y evidencia.</strong>
-            Se aplicará a esta imagen y zona. La estrategia queda disponible inmediatamente para imágenes similares; el ajuste visual de EasyOCR se ejecuta automáticamente cuando es seguro y sólo se activa si mejora validación y prueba.`}
+            Se aplicará a esta imagen y zona. La estrategia queda disponible para imágenes similares. El ajuste de EasyOCR crea un candidato evaluado con validación; el test reservado no se usa para seleccionar ni activar modelos. La auditoría de la carpeta de aprendizaje sigue pendiente.`}
       </div>`}
       ${resultadoCorreccion && !resultadoCorreccion.ok && html`
         <div class="mensaje-error">${resultadoCorreccion.mensaje}</div>`}
@@ -4487,12 +5426,13 @@ function VistaDetalle({ nombre }) {
       <div class="separador-panel"></div>
       ${historialAprendizaje.length > 0 && html`<details class="historial-aprendizaje">
         <summary>Lista de aprendizaje supervisado (${historialAprendizaje.length}) · desplegar / ocultar</summary>
-        <p class="subtitulo-seccion">Incluye correcciones OCR y textos omitidos guardados manualmente.</p>
+        <p class="subtitulo-seccion">Incluye correcciones OCR, aceptaciones provisionales y textos omitidos guardados manualmente.</p>
         ${historialAprendizaje.map((item) => html`<div key=${item.id} class="evidencia-aprendizaje">
-          <span class="chip neutro">${item.tipo}</span>
+          <span class=${`chip ${item.estado_supervision === "aceptado_provisional" ? "chip-provisional" : "neutro"}`}>${t(item.tipo)}</span>
           <strong class="mono">${item.correcto}</strong>
           ${item.original && item.original !== item.correcto && html`<small class="mono">Antes: ${item.original}</small>`}
-          <small>${item.imagen}${item.bbox ? ` · región ${item.bbox.join(", ")}` : ""}</small>
+          <small>${item.imagen}${item.bbox ? ` · región ${item.bbox.join(", ")}` : ""}
+            ${item.usuario ? ` · ${item.usuario}` : ""}${item.fecha ? ` · ${item.fecha}` : ""}</small>
         </div>`)}
       </details>`}
     </div>` : html`<div class="tarjeta modo-lectura">
@@ -4503,7 +5443,7 @@ function VistaDetalle({ nombre }) {
     </div>`}
 
     <${PanelVideosAirbag} detalle=${detalle} bloqueado=${revisionCompletada}
-      onSaved=${async () => setDetalle(await pedirJSON(`/api/pruebas/${encodeURIComponent(nombre)}`))} />
+      onSaved=${async () => setDetalle(await pedirJSON(`/api/pruebas/${encodeURIComponent(nombre)}`, undefined, { permitir404: false }))} />
 
     <div class="selector-imagenes" aria-label="Imágenes del ID">
       ${imagenesVisibles.map((imagen) => {
@@ -4522,7 +5462,8 @@ function VistaDetalle({ nombre }) {
         <small class="ruta-imagen-lista">${imagen.ruta_relativa || imagen.ruta}</small>
         <span class="miniatura-imagen-lista">
           <img src=${imagen.ruta_api_visual || imagen.ruta_api_orientada || imagen.ruta_api}
-            alt=${`Vista previa de ${imagen.nombre || "imagen"}`} loading="lazy" />
+            alt=${`Vista previa de ${imagen.nombre || "imagen"}`} loading="lazy"
+            onError=${(e) => usarFallbackImagen(e, imagen.ruta_api)} />
         </span>
       </button>`})}
     </div>
@@ -4660,6 +5601,7 @@ function App() {
     <div class="centro-notificaciones" aria-label="Notificaciones de actividad">
       <${EstadoProcesoGlobal} />
       <${EstadoColaExcel} />
+      <${EstadoRecuperacion} />
     </div>
     <main class="contenedor">
       ${vista === "tabla" ? html`<${VistaTabla} />`

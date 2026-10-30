@@ -6,20 +6,35 @@ Aplicación local para recorrer lotes de fotografías, extraer nomenclaturas con
 OCR, comparar etiquetas contra imágenes de referencia, generar un Excel maestro
 y consultar los resultados desde un dashboard responsivo.
 
-> **Versión V15.8.1 · 2026-10-09.** Esta revisión organiza la documentación en `docs/`,
-> conserva las funciones de V15.8 y no cambia el procesamiento OCR ni los datos.
-> Parte del ZIP completo proporcionado el 9 de octubre,
-> con cambios V15.7.4, no de la copia V8 anterior. Añade extracción contextual según
-> la guía de etiquetas, indicios de ruptura a resolución nativa y confirmación del
-> máximo despliegue visible por separado. Conserva SOP, revisión, aprendizaje,
-> persistencia, cola Excel, 1ST/2ST y ES/EN/DE.
-> Incluye límites del semáforo elegidos por el usuario en Resumen y revisión
-> explícita de códigos de prototipo/apertura láser.
-> Consulta [la guía de esta actualización](docs/guias/LEEME_V15_8_GUIA_RUPTURA_MAXIMO.md) antes de instalar.
+> **Versión V16.0.2 · 2026-10-19.** Cambio formal de numeración a partir de R15.9.1, conservando el mismo motor OCR, lógica de apertura, Tmax, semáforo y generación Excel.
+> El **paquete ACUMULATIVO V16** permite actualizar directamente instalaciones verificadas desde R15.6 hasta R15.9.1. No es el instalador incremental antiguo.
+> Las mejoras históricas de R15.9.1 (integridad, recuperación y durabilidad) se mantienen. Consulta su historial en `docs/informes/CHANGELOG_R15_9.md`.
+> Sigue pendiente la validación de campo con Windows, GPU y videos reales; el cambio de nombre no certifica producción.
 
 El procesamiento no utiliza APIs de OCR ni servicios en la nube. EasyOCR es el
 motor de producción: se mantiene una sola instancia por ejecución y usa
 CUDA/MPS cuando están disponibles, con CPU como respaldo seguro.
+
+## Corrección específica V16.0.2 (semáforo)
+
+Sobre V16.0.1 verificada, aplica `INSTALAR_V16_0_2_SEMAFORO.bat` del paquete
+correspondiente, con V-Matrix detenido, respaldo y comprobación de hashes.
+No se usa para instalar sobre R15.x o instalaciones híbridas. Corrige la
+proyección de estimaciones automáticas y la coherencia matriz-resumen, sin
+transformar estimaciones en mediciones finales ni tocar los algoritmos OCR/video.
+Los resultados anteriores de R15 son historia y la precisión de estimaciones
+no está certificada con ground truth de video.
+
+## Actualización acumulativa a V-Matrix V16.0.1
+
+El instalador anterior `INSTALAR_V16_0_1.bat` requería R15.9.1 y NO debe usarse para una base R15.8. Utiliza solamente `INSTALAR_V16_ACUMULADO.bat` del paquete acumulativo.
+
+V16.0.1 sucede a V15.10.1 R15.9.1 y conserva el mismo motor de análisis. Esta entrega de reparación V16.0.1 está basada en el diagnóstico real del 2026-10-19; no es un instalador universal. Consulte INSTRUCCIONES_V16_0_1.md antes de instalar. No es necesario aplicar cada parche intermedio. **No extraigas ni copies manualmente el parche encima de archivos activos**: ejecuta `INSTALAR_V16_ACUMULADO.bat` con la aplicación cerrada y con respaldo de tus datos.
+
+- Identidad V16.0.2: `VERSION.txt` = `16.0.2`, `PATCH_BUILD` = `16.0.2`, caché estática `?v=16.0.2`. El texto V16.0.1 restante explica la instalación anterior.
+- Comprobación de instalación: `INSTALAR_V16_ACUMULADO.bat --verify-only` solamente **después de instalar V16**.
+- El instalador verifica integridad, estado exacto del origen, cierre de procesos, crea respaldo y revierte archivos si falla.
+- La evidencia de R15 queda como historial. No se declara listo para producción sin Windows real, rollback, GPU y videos reales con tiempos de referencia.
 
 ## Documentación organizada
 
@@ -27,7 +42,8 @@ La raíz conserva este README, los lanzadores, la configuración y los archivos
 necesarios para instalar/ejecutar. Las notas y los informes están agrupados en
 [el índice de documentación](docs/README.md):
 
-- [Guías actuales](docs/guias/): instalación y funciones de V15.8.
+- [Guías actuales](docs/guias/): instalación y funciones (histórico V15.8; la
+  instalación vigente de V16.0.1 es `INSTALAR_V16_0_1.bat`, ver [informes](docs/informes/)).
 - [Informes y pruebas](docs/informes/): validación y aplicación de actualizaciones.
 - [Historial](docs/historial/): notas de versiones anteriores.
 - [Parches históricos](docs/historial/parches/): instrucciones antiguas conservadas
@@ -631,3 +647,99 @@ artefactos locales y no deben copiarse como fuente de datos entre equipos.
 ### V9 · estabilidad del editor y experiencia de revisión
 
 V9 corrige traducciones dinámicas y contraste oscuro, agrega notificaciones flotantes de actividad, evita que una respuesta tardía devuelva el editor a una corrección anterior, corrige el falso aviso de borrador tras un guardado confirmado, permite ajustar/dividir bloques que se superponen con anotaciones manuales sin borrar esas anotaciones y añade descarte múltiple. Guardar una corrección no entrena el OCR por sí solo; el entrenamiento visual se propone explícitamente y se ejecuta por lote. También se añadieron caché de variantes de orientación y agrupación de actualizaciones de Excel. Consulta [LEEME_V9_ESTABILIDAD_UI.md](docs/historial/LEEME_V9_ESTABILIDAD_UI.md).
+
+### R15.9.1 · revisión de auditoría y endurecimiento del registro
+
+R15.9 cierra los tres bloqueadores y los dos medios que la auditoría
+independiente de R15.8 reprodujo (`AUDITORIA_INDEPENDIENTE_R15_8_20261018.md`)
+sin funciones nuevas y sin tocar OCR, Tmax, semáforo ni Excel:
+
+* **ALTO-01** — el verificador de importaciones del instalador compara el
+  `PATCH_BUILD` del árbol con la versión pasada por ARGUMENTO (el literal
+  R15.7 que hacía fallar toda instalación correcta con exit 33 ya no existe);
+  la suite ejecuta el snippet real extraído del instalador.
+* **ALTO-02** — contrato de BASE ÍNTEGRA: el instalador declara su contrato
+  real (parche incremental sobre R15.7/R15.8) y verifica el HASH de cada
+  archivo clave de los releases base antes de copiar; un árbol híbrido
+  aborta sin modificar nada.
+* **ALTO-03** — la sonda guarda un RESPALDO DURABLE del registro (fsync +
+  replace + relectura) ANTES de sustituirlo y el arranque lo recupera
+  (`_leer_registro_o_respaldo`): un corte abrupto durante la sonda ya no
+  puede perder las entradas del historial de anomalías.
+* **MEDIO-04** — la sonda opera a nivel de BYTES: un registro con CRLF o BOM
+  sale con el mismo SHA-256 (antes la restauración en modo texto lo
+  normalizaba).
+* **MEDIO-05** — el soak sólo acepta el terminal de la ejecución pedida: un
+  activo/terminal de otra ejecución (o sin id) es evidencia inconclusa y se
+  sigue esperando.
+* **BAJO-06** — marker del instalador sin duplicados y mensaje de base
+  alineado con el contrato real.
+
+Detalle: [CHANGELOG_R15_9.md](docs/informes/CHANGELOG_R15_9.md),
+[INFORME_R15_9_POR_HALLAZGO.md](docs/informes/INFORME_R15_9_POR_HALLAZGO.md) y
+[MATRIZ_EVIDENCIA_R15_9.md](docs/informes/MATRIZ_EVIDENCIA_R15_9.md).
+
+### R15.8 · cierre del perímetro de recuperación
+
+R15.8 cierra los ocho huecos reproducidos por la revalidación independiente de
+R15.7 (`AUDITORIA_REVALIDADA_R15_7_20261016.md`) sin funciones nuevas y sin
+tocar OCR, Tmax, semáforo ni Excel:
+
+* **ALTO-01** — la sonda de arranque escribe sobre el TARGET REAL del registro
+  (`estado_inconsistente.json`), prueba el reemplazo y restaura el contenido
+  previo verificado; un target no regular/no reemplazable ⇒ MODO RECUPERACIÓN.
+* **ALTO-02** — las rutas heredadas RELATIVAS se resuelven contra
+  `datos["raiz"]` (con confinamiento) y la migración canónica se persiste: un
+  bloqueo pre-upgrade sigue bloqueando al caso en todas las pantallas.
+* **ALTO-03** — guard TRANSVERSAL de recuperación: ningún endpoint
+  POST/PUT/PATCH/DELETE ejecuta en MODO RECUPERACIÓN; el test contractual
+  obliga a declarar la política de cada ruta (exenciones declaradas: el propio
+  flujo de recuperación y pausar/cancelar el pipeline).
+* **ALTO-04 / MEDIO-05** — `revisiones` y `alertas/atender` respetan el
+  bloqueo canónico del caso.
+* **MEDIO-06** — el listado de recuperación deduplica aliases (un incidente =
+  una entrada, con sus `claves`).
+* **MEDIO-07/08** — soak ligado al `ejecucion_id` del POST, acepta la
+  finalización antes del primer sondeo y reinicia su estado por iteración.
+* **BAJO-09/10/11** — README raíz identifica R15.8, mensajes del instalador
+  derivados de una única variable de versión y runbook sin conteo fijo de
+  integridad. Definición formal: «Tmax» = tiempo de apertura publicado.
+
+Detalle: [CHANGELOG_R15_8.md](docs/informes/CHANGELOG_R15_8.md),
+[INFORME_R15_8_POR_HALLAZGO.md](docs/informes/INFORME_R15_8_POR_HALLAZGO.md) y
+[MATRIZ_EVIDENCIA_R15_8.md](docs/informes/MATRIZ_EVIDENCIA_R15_8.md).
+
+### R15.7 · endurecimiento de recuperación y concurrencia
+
+R15.7 cierra los cuatro huecos reproducidos por la auditoría independiente de
+R15.6 (`AUDITORIA_INDEPENDIENTE_R15_6_20261016.md`) sin funciones nuevas y sin
+tocar OCR, Tmax, semáforo ni Excel:
+
+* **ALTO-01** — el éxito de una transacción ya no resuelve inconsistencias: sólo
+  el flujo formal de recuperación levanta un bloqueo.
+* **ALTO-02** — identidad canónica de recursos (`carpeta:<id>`,
+  `carpeta:<id>#imagen:<id>`, `carpeta:<id>#video:<id>`, `externa:<id>`): el
+  bloqueo del caso alcanza todas sus pantallas y los registros R15.6 con rutas
+  se migran conservando el alias.
+* **ALTO-03** — sonda obligatoria de escritura/lectura al arrancar y centinela
+  de recuperación en dos ubicaciones: sin almacén durable el sistema arranca en
+  MODO RECUPERACIÓN aunque no exista centinela.
+* **MEDIO-04** — las tareas posteriores al commit (uniones guardadas,
+  entrenamiento visual) son best-effort y se reportan como
+  `advertencia_aprendizaje`, nunca como error.
+* **MEDIO-05** — CAS estricto en writers humanos de pruebas externas; la UI
+  envía `expected_revision` y recarga ante 409.
+* **BAJO-06/07** — `utilidades/inventario_destino.py` inventaría el árbol
+  destino tras el upgrade y la resolución de recuperación verifica la
+  eliminación del centinela.
+
+Detalle: [CHANGELOG_R15_7.md](docs/informes/CHANGELOG_R15_7.md),
+[INFORME_R15_7_POR_HALLAZGO.md](docs/informes/INFORME_R15_7_POR_HALLAZGO.md) y
+[MATRIZ_EVIDENCIA_R15_7.md](docs/informes/MATRIZ_EVIDENCIA_R15_7.md).
+
+
+### Identidad de revisión del parche de recuperación
+
+La revisión de auditoría de 2026-10-19 se identifica de forma inequívoca como
+`15.10.1-r15.9.1` en `VERSION.txt`, `PATCH_BUILD`, caché frontend y marker
+de instalación. No debe confundirse con los ZIP previos `15.10.1-r15.9`.

@@ -7,6 +7,26 @@ from types import SimpleNamespace
 from aprendizaje import GestorAprendizaje, hash_archivo
 
 
+class _TxStub:
+    """R15.6: stub del coordinador común — este arnés ejercita sólo la ruta
+    de éxito (sin fallos multi-almacén que compensar)."""
+
+    def __init__(self, operacion, recurso=None):
+        pass
+
+    def capturar(self, nombre, capturar, restaurar):
+        return capturar()
+
+    def aplicado(self):
+        pass
+
+    def fallar(self, exc):
+        raise exc
+
+    def exito(self):
+        pass
+
+
 class ReconfirmacionSimbolosTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -59,6 +79,14 @@ class ReconfirmacionSimbolosTest(unittest.TestCase):
             "_bbox_igual": lambda a, b: a == b,
             "normalizar_codigo": lambda s: "" if str(s).strip() == ";" else str(s).strip(),
             "hash_archivo": hash_archivo,
+            # R15.2: guard de pipeline activo; se prueba por separado en
+            # test_v15_10_1_r152_documento_unico.py (aquí no hay pipeline).
+            "_assert_documento_editable": lambda accion="": None,
+            # R15.3 (ALTO-02): región de exclusión CAS+efectos+commit.
+            "contextlib": __import__("contextlib"),
+            # R15.6 (ALTO-02): corregir_lectura migrada al coordinador común.
+            "_assert_recurso_consistente": lambda recurso, accion: None,
+            "TransaccionMultiAlmacen": _TxStub,
         }
         tree = ast.parse((Path(__file__).resolve().parents[1] / "dashboard/backend/app.py").read_text(encoding="utf-8"))
         functions = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in

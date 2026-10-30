@@ -8,8 +8,9 @@ RAIZ = Path(__file__).resolve().parents[1]
 
 
 def test_raiz_conserva_solo_readme_y_txt_funcionales():
+    # V15.9.2 (C6): AGENTS.md debe vivir en la raíz para que Codex lo descubra.
     archivos_md = sorted(p.name for p in RAIZ.glob('*.md'))
-    assert archivos_md == ['README.md']
+    assert archivos_md == ['AGENTS.md', 'README.md']
     for p in RAIZ.glob('*.txt'):
         assert p.name == 'VERSION.txt' or p.name.startswith('requirements')
     assert (RAIZ / 'VERSION.txt').is_file()

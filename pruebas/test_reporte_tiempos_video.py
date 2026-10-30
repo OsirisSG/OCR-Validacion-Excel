@@ -8,12 +8,24 @@ from flujo_empresarial import CLAVES_PLANTILLA
 from reporte_bmg import generar_reporte_bmg
 
 
-def _video(tiempo=20.5, *, estado="confirmado", frame=205, nombre="frontal.avi"):
+# R15 (SUPERSEDE documentado): desde V15.10 una revisión humana sin
+# referencia temporal validada ya NO se publica como apertura: el resolver
+# canónico la degrada a PROPUESTA («revision_humana_temporal_invalida_
+# requiere_resolucion»; «el valor crudo se conserva sin reparacion
+# automatica»). La confirmación del fixture se alinea con el contrato
+# vigente: frame 58 a 10000 fps => 5.8 ms, coherente con el campo manual
+# «5,8 ms» del caso, y con referencia validada.
+_REVISION_VALIDA = {"estado": "confirmado", "frame_index": 58, "tiempo_ms": 5.8,
+                    "referencia_tiempo_valida": True}
+
+
+def _video(tiempo=20.5, *, estado="confirmado", frame=205, nombre="frontal.avi",
+           revision=_REVISION_VALIDA):
     return {
         "id": nombre, "ruta": f"C:/Ensayos/{nombre}", "nombre": nombre, "tipo_camara": "FRONTAL",
         "fps_grabacion": 10000, "fps": 10000, "fps_fuente": "overlay_rec", "frame_cero": 0,
         "overlay_timestamp_inicial_ms": 0, "frame_evento": 62, "tiempo_ms": 6.2,
-        "revision_manual": {"estado": "confirmado", "frame_index": 62, "tiempo_ms": 6.2},
+        "revision_manual": dict(revision),
         "zona_deteccion": {"bbox_norm": [.1, .2, .3, .4]},
         "despliegue_maximo": {
             "estado": estado, "frame_index": frame, "tiempo_ms": tiempo,
@@ -67,8 +79,8 @@ def test_exporta_maximo_separado_del_contrato_con_evidencia_multilingue(tmp_path
     assert evidencia["G2"].value == "overlay_rec"
     assert evidencia["H2"].value == 0
     assert evidencia["I2"].value == 0
-    assert evidencia["J2"].value == 62
-    assert evidencia["K2"].value == 6.2
+    assert evidencia["J2"].value == 58
+    assert evidencia["K2"].value == 5.8
     assert evidencia["M2"].value == 205
     assert evidencia["N2"].value == 20.5
     assert evidencia["O2"].value == .1
@@ -93,7 +105,11 @@ def test_candidato_maximo_solo_aparece_en_evidencia_y_conserva_manual(tmp_path):
     evidencia = libro["Evidencia de tiempos de vídeo"]
     assert evidencia["N2"].value == 20.5
     assert evidencia["S2"].value == "Pendiente de revisión"
-    color = libro["Übersicht Standversuche"]["D16"].fill.fgColor.rgb[-6:].upper()
+    # R15 (SUPERSEDE documentado): el resumen dinámico V15.10 dibuja el caso
+    # 1ST en la fila 7; la posición fija D16 del resumen estático ya no existe.
+    resumen_celda = libro["Übersicht Standversuche"]["D7"]
+    assert resumen_celda.value == "123456"
+    color = resumen_celda.fill.fgColor.rgb[-6:].upper()
     assert color == cargar_config()["colores"]["verde"].lstrip("#").upper()
 
 

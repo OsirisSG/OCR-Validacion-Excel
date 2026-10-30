@@ -776,6 +776,37 @@ def consolidar_caso(caso: dict, evidencias: Iterable[dict],
         ruta = [i for i in items if i.get("fuente") == "ruta_carpeta"]
         lectura_valores = {v for v, xs in por_valor.items()
                            if any(x.get("fuente") in {"ocr", "qr", "manual"} for x in xs)}
+        # R7/H3: una corrección humana expresamente confirmada tiene jerarquía
+        # sobre ruta/OCR, pero dos valores humanos distintos conservan conflicto.
+        manuales_confirmados = [i for i in items
+                                if i.get("fuente") == "manual"
+                                and i.get("confirmacion_manual") is True]
+        valores_manuales = sorted({str(i.get("valor_normalizado"))
+                                    for i in manuales_confirmados})
+        if len(valores_manuales) > 1:
+            conflictos.append(clave)
+            campos[clave] = {
+                "valor": None, "estado": "conflicto", "requiere_revision": True,
+                "decision_v15_10": "CONFLICTO", "candidatos": items,
+                "fuentes": sorted({i.get("imagen") for i in items if i.get("imagen")}),
+            }
+            continue
+        if len(valores_manuales) == 1:
+            valor_manual = valores_manuales[0]
+            alternativas = sorted(v for v in por_valor if v != valor_manual)
+            coincidencias_manual = [i for i in manuales_confirmados
+                                     if str(i.get("valor_normalizado")) == valor_manual]
+            campos[clave] = {
+                "valor": valor_manual, "estado": "extraido_manual",
+                "confianza": 1.0, "inferido": False,
+                "candidatos": items,
+                "fuentes": sorted({i.get("imagen") for i in coincidencias_manual if i.get("imagen")}),
+                "fuente_preferida": "manual",
+                "confirmacion_manual": True,
+                "decision_v15_10": "VERIFICADO_HUMANO",
+                "alternativas_resueltas_por_revision_humana": alternativas,
+            }
+            continue
         if ruta:
             seguro = str(ruta[0]["valor_normalizado"])
             incompatibles = sorted(v for v in lectura_valores if v != seguro)
@@ -783,6 +814,7 @@ def consolidar_caso(caso: dict, evidencias: Iterable[dict],
                 conflictos.append(clave)
                 campos[clave] = {"valor": seguro, "valor_seguro_ruta": seguro,
                                  "estado": "conflicto", "requiere_revision": True,
+                                 "decision_v15_10": "CONFLICTO",
                                  "candidatos": items, "fuentes": [i.get("imagen") for i in items]}
             else:
                 campos[clave] = {"valor": seguro, "estado": "extraido_ruta",
@@ -804,10 +836,23 @@ def consolidar_caso(caso: dict, evidencias: Iterable[dict],
                              "fuente_preferida": ("manual" if "manual" in fuentes else
                                                    "video" if "video" in fuentes else
                                                    "qr" if "qr" in fuentes else "ocr")}
+            if clave == "opening_time_ms":
+                # R7: no perder la referencia física al proyectar evidencia de video
+                # al campo empresarial. Se usa sólo metadata declarada por la evidencia.
+                temporales = [i for i in coincidencias if i.get("fuente") == "video"]
+                if temporales:
+                    temporal = next((i for i in temporales if i.get("referencia_tiempo_valida") is True), temporales[0])
+                    campos[clave]["referencia_tiempo_valida"] = temporal.get("referencia_tiempo_valida") is True
+                    campos[clave]["estado_tiempo"] = temporal.get("estado_tiempo") or (
+                        "VALIDO" if temporal.get("referencia_tiempo_valida") is True else "PENDIENTE")
+                    campos[clave]["raw_time_ms"] = temporal.get("raw_time_ms", valor)
+                    campos[clave]["soporte"] = temporal.get("soporte")
+                    campos[clave]["estado_consenso"] = temporal.get("estado_consenso")
+                    campos[clave]["algoritmo_consenso"] = temporal.get("algoritmo_consenso")
         elif len(por_valor) > 1:
             conflictos.append(clave)
             campos[clave] = {"valor": None, "estado": "conflicto",
-                             "requiere_revision": True, "candidatos": items,
+                             "requiere_revision": True, "decision_v15_10": "CONFLICTO", "candidatos": items,
                              "fuentes": sorted({i.get("imagen") for i in items if i.get("imagen")})}
         else:
             pendientes = [e for e in todos if e.get("clave") == clave

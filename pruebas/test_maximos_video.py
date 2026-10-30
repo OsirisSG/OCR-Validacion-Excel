@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import time
 from types import SimpleNamespace
 
 import cv2
@@ -86,6 +87,12 @@ def test_sha_completo_reutiliza_video_movido_y_detecta_cambio_intermedio_grande(
     stat_previo = copia.stat()
     modificado = bytearray(contenido)
     modificado[len(modificado) // 2] = ord("B")
+    # V15.9.3 (determinismo): la memoización de _firma_completa usa
+    # (ruta, tamaño, mtime_ns, ctime_ns). El test restaura el mtime a
+    # propósito; si escritura+utime caen en el mismo tick del reloj tosco
+    # del kernel (1–4 ms) el ctime_ns no avanza y se serviría la firma
+    # vieja. La pausa garantiza un ctime distinto sin cambiar el contrato.
+    time.sleep(0.01)
     copia.write_bytes(modificado)
     os.utime(copia, ns=(stat_previo.st_atime_ns, stat_previo.st_mtime_ns))
     assert maximos.revision_maximo(copia) is None

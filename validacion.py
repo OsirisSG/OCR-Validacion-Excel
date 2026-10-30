@@ -47,6 +47,7 @@ from flujo_empresarial import (BaseConocimiento, CAMPOS_REQUERIDOS_DEFAULT,
                                extraer_candidatos_texto)
 from ocr_engine import cargar_imagen, extraer_texto, extraer_texto_empresarial
 from utilidades.persistencia import escribir_json_seguro
+from utilidades.persistencia_documento import persistir_documento_completo
 
 _RE_TOKEN_CODIGO = re.compile(r"^([A-Za-z]+)(\d+)$")
 
@@ -279,7 +280,10 @@ def validar_lote(ruta_estructura: str | Path | None = None,
             "parcial": parcial, "carpetas_procesadas": len(resultados),
             "resultados": resultados,
         }
-        escribir_json_seguro(
+        # R15.2 (CRÍTICO-02): escritura del documento sólo por la autoridad
+        # compartida (lock con backend + revisión monotónica + escritura
+        # verificada); el avance por IDs vive en ruta_avances y no aplica.
+        persistir_documento_completo(
             destino, salida_parcial,
             al_error=lambda mensaje: advertencias_persistencia.append(mensaje))
 
@@ -320,7 +324,7 @@ def validar_lote(ruta_estructura: str | Path | None = None,
     }
     if advertencias_persistencia:
         salida["advertencias_persistencia"] = list(dict.fromkeys(advertencias_persistencia))
-    guardado_final = escribir_json_seguro(
+    guardado_final = persistir_documento_completo(
         destino, salida,
         al_error=lambda mensaje: advertencias_persistencia.append(mensaje))
     if not guardado_final:
@@ -530,7 +534,10 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
             "parcial": parcial, "carpetas_procesadas": len(combinados),
             "casos_encontrados": len(combinados), "resultados": list(combinados.values()),
         }
-        escribir_json_seguro(
+        # R15.2 (CRÍTICO-02): escritura del documento sólo por la autoridad
+        # compartida (lock con backend + revisión monotónica + escritura
+        # verificada); el avance por IDs vive en ruta_avances y no aplica.
+        persistir_documento_completo(
             destino, salida_parcial,
             al_error=lambda mensaje: advertencias_persistencia.append(mensaje))
         if gestor_recursos:
@@ -902,7 +909,8 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
             if video_consenso.get("requiere_revision"):
                 alertas.append({
                     "codigo": "VIDEO_APERTURA_REQUIERE_REVISION", "nivel": "warning",
-                    "mensaje": (f"Videos analizados sin consenso 3 de 4; "
+                    "mensaje": (f"Breakout/color pueden estimarse con un video físicamente defendible, "
+                                f"pero no hay consenso multicámara suficiente para publicación reforzada; "
                                 f"soporte actual {video_consenso.get('soporte', 0)}/"
                                 f"{video_consenso.get('total_validos', 0)}."),
                 })
@@ -966,6 +974,7 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
                     any(a.get("codigo") == "ORIENTACION_DUDOSA" for a in alertas) else
                   "procesada")
         fila = {
+            "project_id": caso.get("project_id"),
             "case_key": caso["case_key"], "id": hashlib.sha256(caso["case_key"].encode()).hexdigest()[:16],
             "ruta": caso["ruta"], "ruta_relativa": caso["ruta_relativa"], "nombre": caso["nombre"],
             "identificador": consolidado["test_number"] or caso["nombre"],
@@ -1063,7 +1072,7 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
                                      "error": f"{type(exc).__name__}: {exc}"}
     if advertencias_persistencia:
         salida["advertencias_persistencia"] = list(dict.fromkeys(advertencias_persistencia))
-    guardado_final = escribir_json_seguro(
+    guardado_final = persistir_documento_completo(
         destino, salida,
         al_error=lambda mensaje: advertencias_persistencia.append(mensaje))
     if not guardado_final:

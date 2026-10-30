@@ -81,6 +81,8 @@ def crear_inventario(estructura: dict, ruta_salida: str | Path | None = None,
         "version": VERSION_INVENTARIO,
         "generado_en": datetime.now().isoformat(timespec="seconds"),
         "raiz": estructura["raiz"],
+        # C7: el proyecto del checkpoint viaja con el inventario (P04).
+        "proyecto": estructura.get("proyecto"),
         "perfil": estructura.get("perfil"),
         "tipo_st": estructura.get("tipo_st"),
         "tipos_st": estructura.get("tipos_st", []),
@@ -114,6 +116,7 @@ def estructura_desde_inventario(inventario: dict) -> dict:
     """Reconstruye el contrato mínimo consumido por la Fase B empresarial."""
     return {
         "raiz": inventario["raiz"], "generado_en": inventario.get("generado_en"),
+        "proyecto": inventario.get("proyecto"),
         "total_carpetas": inventario.get("casos_encontrados", 0),
         "patron_dominante": None, "anomalias": [], "carpetas": [],
         "perfil": inventario.get("perfil", "empresarial"),

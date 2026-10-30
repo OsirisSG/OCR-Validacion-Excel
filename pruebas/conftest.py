@@ -22,3 +22,24 @@ def _aislar_datos_video(tmp_path_factory, monkeypatch):
     except ImportError:
         pass
     yield
+
+
+@pytest.fixture(autouse=True)
+def _aislar_centinela_recuperacion(tmp_path_factory, monkeypatch):
+    """R15.7 (ALTO-03): el centinela de recuperación se replica en una segunda
+    ubicación (directorio de estado del usuario). Ninguna prueba debe escribir
+    en el HOME real: la suite lo redirige a un tmp por prueba."""
+    base = tmp_path_factory.mktemp("centinela")
+    try:
+        import dashboard.backend.app as backend
+    except ImportError:
+        yield
+        return
+    monkeypatch.setattr(backend, "RUTA_RECUPERACION_ESPEJO",
+                        base / "recuperacion_requerida.json", raising=False)
+    # R15.8: el guard de recuperación es TRANSVERSAL (dependencia FastAPI de
+    # todos los endpoints mutantes); ningún estado de recuperación de una
+    # prueba puede filtrarse a la siguiente.
+    backend._inconsistencias_activas.clear()
+    backend._modo_recuperacion = None
+    yield

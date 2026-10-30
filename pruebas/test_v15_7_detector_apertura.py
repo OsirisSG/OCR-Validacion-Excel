@@ -72,8 +72,20 @@ class DetectorAperturaV157Tests(unittest.TestCase):
         self.assertLessEqual(r["confianza"], 0.6)
         self.assertTrue(r["advertencia_deteccion"])
 
-    def test_se_detiene_tras_confirmar_y_conserva_total(self):
+    def test_mide_maximo_tras_breakout_y_conserva_total(self):
+        # R13: por defecto no se corta al confirmar breakout porque ahora el
+        # máximo inflado visible es una segunda salida prioritaria.
         r = self._analizar("largo.avi", frame_hinchado=None, frame_bolsa=12, total=80)
+        self.assertEqual(r["frame_evento"], 12)
+        self.assertEqual(r["total_frames"], 80)
+        secuencia = r.get("secuencia_despliegue_r13") or {}
+        self.assertEqual(secuencia.get("frame_breakout"), 12)
+        self.assertIsNotNone(secuencia.get("frame_max_inflado"))
+        self.assertGreaterEqual(secuencia.get("frame_max_inflado"), 12)
+
+    def test_modo_sin_medicion_de_maximo_puede_detenerse_temprano(self):
+        r = self._analizar("rapido.avi", {"medir_llenado_visual": False},
+                           frame_hinchado=None, frame_bolsa=12, total=80)
         self.assertEqual(r["frame_evento"], 12)
         self.assertLess(r["frames_leidos"], 80)
         self.assertEqual(r["total_frames"], 80)

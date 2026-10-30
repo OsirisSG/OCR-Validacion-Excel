@@ -1,4 +1,5 @@
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from aprendizaje import GestorAprendizaje
@@ -17,6 +18,11 @@ class OrientacionesGuardadas(unittest.TestCase):
             self.assertEqual(nuevo.orientaciones_regionales(ruta),{'a'*64:90,'b'*64:0})
             nuevo.guardar_orientacion_regional(ruta,'a'*64,None)
             self.assertEqual(nuevo.orientaciones_regionales(ruta),{'b'*64:0})
+            # V15.9.4 (determinismo): hash_archivo cachea por (ruta, tamaño,
+            # mtime_ns). La reescritura cambia el contenido con el MISMO
+            # tamaño; sin pausa, mtime_ns puede no avanzar (granularidad del
+            # reloj tosco, 1–4 ms) y se serviría el hash viejo.
+            time.sleep(0.01)
             ruta.write_bytes(b'imagen reemplazada')
             self.assertEqual(nuevo.orientaciones_regionales(ruta),{})
 

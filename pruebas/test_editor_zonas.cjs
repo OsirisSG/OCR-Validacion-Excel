@@ -1,4 +1,5 @@
 // Verificación de estructura y eventos React/htm; no sustituye una prueba visual.
+// V15.10.1: el harness carga visor_precision.js antes de app.js, igual que index.html.
 const fs = require('fs');
 const vm = require('vm');
 const path = require('path');
@@ -14,18 +15,25 @@ const ctx = vm.createContext({
       if (!(i in states)) states[i] = typeof initial === 'function' ? initial() : initial;
       return [states[i], v => { states[i] = typeof v === 'function' ? v(states[i]) : v; }];
     },
-    useEffect: () => {}, useRef: value => ({current: value}),
+    useEffect: () => {}, useLayoutEffect: () => {}, useRef: value => ({current: value}),
     useMemo: f => f(), useCallback: f => f,
   },
   ReactDOM: {createRoot: () => ({render: () => {}})},
   document: {getElementById: () => ({})},
+  console,
 });
 vm.runInContext(fs.readFileSync(path.join(base, 'vendor/htm.umd.js'), 'utf8'), ctx);
+vm.runInContext(fs.readFileSync(path.join(base, 'visor_precision.js'), 'utf8'), ctx);
+// En navegador globalThis === window; en vm.Context no necesariamente. Igualamos el harness.
+if (!ctx.window.VMatrixVisorPrecision && ctx.VMatrixVisorPrecision) {
+  ctx.window.VMatrixVisorPrecision = ctx.VMatrixVisorPrecision;
+}
+assert(ctx.window.VMatrixVisorPrecision, 'visor_precision.js no expuso VMatrixVisorPrecision');
 vm.runInContext(fs.readFileSync(path.join(base, 'app.js'), 'utf8'), ctx);
 function all(node) {
   if (!node || typeof node !== 'object') return [];
   if (Array.isArray(node)) return node.flatMap(all);
-  return [node, ...node.children.flatMap(all)];
+  return [node, ...(node.children || []).flatMap(all)];
 }
 const props = {item: {id:'foto', resultado_ocr:{dimensiones:[500,300], lineas_texto:[
   {texto:'10.04', bbox:[10,10,40,20]}, {texto:'.25', bbox:[55,10,20,20]}]}},

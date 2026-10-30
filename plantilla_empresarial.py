@@ -379,7 +379,17 @@ def _actualizar_resumen(libro, ultima_fila: int) -> None:
 
 
 def generar_desde_plantilla(ruta_plantilla: str | Path, ruta_salida: str | Path,
-                            resultados: list[dict]) -> Path:
+                            resultados: list[dict],
+                            identidad_proyecto: dict | None = None,
+                            idioma: str = "es") -> Path:
+    """Escribe la salida desde la plantilla (que permanece INMUTABLE).
+
+    V15.9.2 (C7): ``identidad_proyecto`` es la identidad autoritativa de la
+    ejecución; se escribe sólo en celdas de metadatos identificadas del libro
+    de SALIDA (bloque en Resumen + celda de proyecto declarada por etiqueta,
+    si la plantilla la tiene). Sin campo identificable se emite advertencia y
+    se bloquea el reporte identificado; nunca se suplanta el título antiguo.
+    """
     contrato = cargar_contrato(ruta_plantilla)
     libro = load_workbook(ruta_plantilla)
     hoja = libro[HOJA_CAPTURA]
@@ -443,12 +453,73 @@ def generar_desde_plantilla(ruta_plantilla: str | Path, ruta_salida: str | Path,
         for celda in fila:
             celda.alignment = Alignment(vertical="top", wrap_text=True)
 
+    # V15.9.2 (C7): identidad autoritativa en celdas identificadas de la SALIDA.
+    from utilidades.identidad_excel import aplicar_identidad_a_salida
+    meta_identidad = aplicar_identidad_a_salida(
+        libro, identidad_proyecto, idioma=idioma,
+        hojas_busqueda=[HOJA_CAPTURA, "Resumen"], hoja_resumen="Resumen")
+
     # Excel/LibreOffice deben recalcular el resumen al abrir la salida.
     libro.calculation.fullCalcOnLoad = True
     libro.calculation.forceFullCalc = True
     libro.calculation.calcMode = "auto"
 
     ruta_salida = Path(ruta_salida)
-    ruta_salida.parent.mkdir(parents=True, exist_ok=True)
-    libro.save(ruta_salida)
-    return ruta_salida
+    # V15.9.3 (CRIT-03): un reporte IDENTIFICADO cuya identidad no se pudo
+    # verificar (plantilla sin celda de proyecto mapeable) NO se publica: se
+    # guarda un BORRADOR NO PUBLICABLE en ubicación diferenciada y el destino
+    # oficial no se crea ni se reemplaza. No se lanza excepción: dentro del
+    # pipeline abortaría la fase y se perdería la persistencia de los
+    # resultados OCR ya calculados; el operador ve el borrador y la
+    # advertencia escrita en la hoja Resumen.
+    if identidad_proyecto and meta_identidad.get("publicable") is False:
+        destino = ruta_salida.with_name(
+            f"{ruta_salida.stem}.borrador_no_publicable{ruta_salida.suffix or '.xlsx'}")
+    else:
+        destino = ruta_salida
+    _guardar_atomico(libro, destino)
+    return destino
+
+
+def _guardar_atomico(libro, destino: Path) -> None:
+    """V15.9.3 (ALTA-05): guardado atómico del libro de trabajo.
+
+    Un fallo a mitad de escritura (disco lleno, permisos, proceso cortado)
+    nunca debe dejar un archivo parcial en el destino ni destruir el
+    resultado anterior: se escribe en un temporal de la misma carpeta, se
+    reabre para validarlo y sólo entonces se reemplaza con ``os.replace``
+    (atómico en POSIX y Windows). Ante cualquier fallo se elimina el
+    temporal y la excepción se propaga.
+    """
+    import os
+    import time
+
+    from openpyxl import load_workbook
+    destino = Path(destino)
+    destino.parent.mkdir(parents=True, exist_ok=True)
+    temporal = destino.with_name(
+        f".{destino.name}.{os.getpid()}.{time.time_ns()}.tmp.xlsx")
+    try:
+        libro.save(temporal)
+        if not temporal.is_file() or temporal.stat().st_size == 0:
+            raise RuntimeError(
+                f"El guardado generó un temporal vacío: {temporal.name}")
+        prueba = load_workbook(temporal, read_only=True)
+        try:
+            hojas = list(prueba.sheetnames)
+        finally:
+            prueba.close()
+        if not hojas:
+            raise RuntimeError("El .xlsx temporal no contiene ninguna hoja.")
+        os.replace(temporal, destino)
+    finally:
+        if temporal.exists():
+            try:
+                temporal.unlink()
+            except OSError:
+                pass
+    # P10: escritura verificada; no se declara éxito con un libro ausente/vacío.
+    if not destino.is_file() or destino.stat().st_size == 0:
+        raise RuntimeError(
+            f"La escritura del Excel falló: {destino} no existe o quedó vacío. "
+            "La plantilla original no se modificó; reintenta la exportación.")

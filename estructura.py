@@ -166,11 +166,21 @@ def mapear_estructura(ruta_raiz: str | Path, config: dict | None = None,
             otra.startswith(prefijo) for otra in con_archivos if otra != c["ruta"])
         c["es_hoja"] = (sum(c["conteos"].values()) > 0) and not tiene_descendiente_con_archivos
 
+    # V15.9.2 (C7): identidad autoritativa de la ejecución. Prioridad:
+    # proyecto declarado por el usuario > config empresarial legacy > nombre
+    # de carpeta (legacy, siempre pendiente). La plantilla Excel nunca es
+    # fuente de identidad.
+    from utilidades.identidad import resolver_identidad_proyecto
+    _emp_cfg = config.get("empresarial", {}) or {}
+    identidad_proyecto = resolver_identidad_proyecto(
+        declarado=_emp_cfg.get("proyecto"), raiz=ruta_raiz,
+        configurado=_emp_cfg.get("proyecto_id"))
     empresarial = descubrir_casos(
         ruta_raiz, tipo_st_manual=tipo_st, al_descubrir=al_descubrir_caso,
-        proyecto_configurado=(config.get("empresarial", {}) or {}).get("proyecto_id"))
+        proyecto_configurado=identidad_proyecto["project_id"])
     return {
         "raiz": str(ruta_raiz),
+        "proyecto": identidad_proyecto,
         "generado_en": datetime.now().isoformat(timespec="seconds"),
         "total_carpetas": len(carpetas),
         "patron_dominante": patron_dominante,

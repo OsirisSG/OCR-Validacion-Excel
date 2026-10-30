@@ -23,6 +23,29 @@ cliente = TestClient(app)
 
 
 @pytest.fixture
+def estado_con_datos(monkeypatch, tmp_path):
+    """V15.9.3: /api/estado hermético, sin depender del JSON real del repo.
+
+    La prueba de contrato exigía ``hay_datos=True``, que en un clon limpio
+    fallaba porque ``validacion_resultados.json`` es un artefacto de
+    ejecución (no versionado). Se apunta ``RUTA_VALIDACION`` a un resultado
+    mínimo temporal y se limpia la caché del backend antes y después; el
+    fallo por datos ausentes ya no puede enmascararse.
+    """
+    validacion = tmp_path / "validacion_resultados.json"
+    validacion.write_text(json.dumps({"resultados": [{
+        "nombre": "CASO_MINIMO", "case_key": "CASO_MINIMO", "videos": [],
+        "campos": {"test_number": {"valor": "1001", "estado": "confirmado"}},
+    }]}), encoding="utf-8")
+    monkeypatch.setattr(backend, "RUTA_VALIDACION", validacion)
+    backend._cache.update({"mtime": None, "datos": None})
+    try:
+        yield validacion
+    finally:
+        backend._cache.update({"mtime": None, "datos": None})
+
+
+@pytest.fixture
 def lote_dashboard_sintetico(monkeypatch, tmp_path):
     """Seis carpetas y ocho externas autocontenidas, independientes del ZIP."""
     import cv2
@@ -85,7 +108,7 @@ def lote_dashboard_sintetico(monkeypatch, tmp_path):
     return documento
 
 
-def test_estado_config_y_frontend():
+def test_estado_config_y_frontend(estado_con_datos):
     estado = cliente.get("/api/estado")
     assert estado.status_code == 200
     assert estado.json()["hay_datos"] is True

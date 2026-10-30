@@ -701,6 +701,9 @@ td.numero { font-variant-numeric: tabular-nums; }
 .estado-texto { display: inline-block; padding: 4px 8px; border-radius: 6px; font-size: .78rem; white-space: normal; }
 .texto-corregido { color: #b9f6cf; background: #133c2b; border: 1px solid #39825a; }
 .texto-pendiente { color: #ffe0a6; background: #3c2d16; border: 1px solid #8a672b; }
+.texto-provisional { color: #cfe8ff; background: #17304a; border: 1px dashed #5aa7e8; }
+.token-fila.token-provisional { border-color: #5aa7e8; background: color-mix(in srgb, #5aa7e8 10%, transparent); }
+.caja-region.caja-provisional { border: 2px dashed #5aa7e8; background: rgba(90,167,232,.14); }
 .estado-bloque-seleccionado { display: flex; flex-wrap: wrap; gap: 8px; grid-column: 1 / -1; }
 .caja-region.caja-corregida { border: 3px solid #48e598; background: rgba(22, 163, 74, .20); color: #fff; font-weight: bold; text-shadow: 0 1px 3px #000; padding: 0; overflow: visible; }
 .caja-borrador-dimension { border: 2px dashed #ffbf47; color: #fff; background: rgba(255,191,71,.1); pointer-events: none; font-weight: bold; }
@@ -895,6 +898,9 @@ html[data-tema="oscuro"] .estado-miniatura.estado-pendiente,
 html[data-tema="oscuro"] .revision-por_revisar,
 html[data-tema="oscuro"] .texto-pendiente {
   color: #fde68a; background: rgba(120, 53, 15, .34); border-color: #f59e0b;
+}
+html[data-tema="oscuro"] .texto-provisional {
+  color: #bfdbfe; background: rgba(30, 64, 175, .28); border-color: #60a5fa;
 }
 html[data-tema="oscuro"] .rotacion-manual,
 html[data-tema="oscuro"] .vista-previa-rotacion,
@@ -1287,4 +1293,176 @@ html[data-tema="oscuro"] .logo-grafico {
   margin-top: 14px;
   padding-top: 12px;
   border-top: 1px solid var(--borde, #64748b);
+}
+
+/* ============================ V15.9 =====================================
+   Diálogo de rangos previo a «Procesar carpeta», matriz completa con
+   posiciones vacantes y zoom/lupa de inspección del video. */
+.dialogo-rangos {
+  width: min(560px, 94vw);
+  max-height: 88vh;
+  overflow: auto;
+  padding: 18px 20px;
+  border-radius: 14px;
+  background: var(--superficie, #101827);
+  border: 1px solid var(--borde, #334155);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, .45);
+}
+.dialogo-rangos-vista-previa { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+.dialogo-rangos-vista-previa .chip { color: #0b1220; font-weight: 700; }
+.dialogo-rangos-campos { display: flex; flex-wrap: wrap; gap: 12px; margin: 10px 0; }
+.dialogo-rangos-campos label { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; }
+.dialogo-rangos-campos .campo { width: 150px; }
+.dialogo-rangos-combinacion { margin: 6px 0; }
+.dialogo-rangos-guardar { display: flex; align-items: center; gap: 8px; margin: 8px 0; font-size: 12.5px; }
+.dialogo-rangos-acciones { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 14px; }
+
+/* Matriz: posición esperada sin caso (gris tenue, distinto del gris de valor
+   no confiable) y grupo «Sin clasificar» navegable al Listado. */
+.matriz-celda-vacante {
+  background: #d4d4d8;
+  border: 1px dashed #a1a1aa;
+  border-radius: 6px;
+  opacity: .85;
+}
+.leyenda-apertura .matriz-celda-vacante,
+.matriz-celda-vacante { display: inline-block; }
+.matriz-columna-cupos { display: block; opacity: .75; font-size: 10.5px; }
+.matriz-sin-clasificar-lista { display: flex; flex-wrap: wrap; gap: 6px; }
+.matriz-celda-fuera { min-width: 44px; min-height: 29px; border: 1px solid var(--borde, #334155); }
+
+/* Zoom de inspección general (independiente del modo ROI) y lupa temporal. */
+.video-inspector-barra {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.video-inspector-barra .boton-compacto { min-height: 28px; padding: 4px 9px; font-size: 11.5px; }
+.video-inspector-overlays {
+  display: inline-flex;
+  gap: 10px;
+  margin-left: auto;
+  font-size: 11.5px;
+  opacity: .92;
+}
+.video-inspector-overlays label { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
+.video-inspector-marco {
+  width: 100%;
+  overflow: auto;
+  max-height: 68vh;
+  border-radius: 10px;
+  background: #050b14;
+}
+.video-inspector-marco:fullscreen { max-height: none; border-radius: 0; background: #000; }
+.video-lupa-temporal {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: flex-start;
+  margin-top: 10px;
+  padding: 8px;
+  border: 1px solid var(--borde, #334155);
+  border-radius: 10px;
+}
+.video-lupa-panel {
+  margin: 0;
+  width: 150px;
+}
+.video-lupa-panel img {
+  width: 150px;
+  height: 100px;
+  object-fit: cover;
+  overflow: hidden;
+  display: block;
+  border-radius: 7px;
+  border: 1px solid var(--borde, #334155);
+  background: #050b14;
+}
+.video-lupa-panel figcaption { font-size: 10.5px; opacity: .85; margin-top: 3px; }
+.video-lupa-nota { flex: 1 1 180px; font-size: 11px; opacity: .8; }
+
+/* V15.9.1 · A1 (revertir ROI) y A2 (pan + pantalla completa con controles) */
+.video-zona-overlay.anterior{border:2px dotted #38bdf8;background:rgba(56,189,248,.07)}
+.video-zona-overlay.anterior span{background:rgba(7,89,133,.92)}
+.video-roi-revertir{display:flex;gap:8px;align-items:center;flex-wrap:wrap;min-height:30px}
+.video-roi-revertir small{flex-basis:100%}
+/* Pan por arrastre: sólo cuando hay zoom y no se está dibujando la ROI. */
+.video-inspector-marco.pan-activo{cursor:grab}
+.video-inspector-marco.pan-activo:active{cursor:grabbing}
+.video-inspector-marco.pan-activo .video-frame-zona-lienzo{cursor:inherit}
+/* Pantalla completa sobre el visor completo (barra de controles incluida). */
+.video-airbag-preview:fullscreen{display:flex;flex-direction:column;background:#050b14;padding:8px}
+.video-airbag-preview:fullscreen .video-inspector-barra{flex:0 0 auto}
+.video-airbag-preview:fullscreen .video-inspector-marco{flex:1 1 auto;max-height:none;width:100%}
+
+/* V15.9.2 (C7): paso previo con DOS bloques: proyecto + rangos de apertura. */
+.dialogo-previo { width: min(620px, 94vw); }
+.dialogo-proyecto-bloque {
+  padding: 12px 14px;
+  margin: 10px 0 14px;
+  border-radius: 10px;
+  border: 1px solid var(--borde, #334155);
+  background: color-mix(in srgb, var(--superficie, #101827) 82%, #3b82f6 18%);
+}
+.dialogo-proyecto-bloque label {
+  display: flex; flex-direction: column; gap: 4px;
+  font-size: 12.5px; margin: 8px 0;
+}
+.dialogo-proyecto-sugerencias {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 8px 0;
+}
+.chip-sugerencia {
+  cursor: pointer; border: 1px dashed var(--borde, #64748b);
+  background: transparent; color: inherit; font-size: 11.5px;
+  padding: 3px 8px; border-radius: 999px;
+}
+.chip-sugerencia:hover { border-style: solid; }
+.dialogo-rangos-bloque { margin-top: 4px; }
+.identidad-pendiente {
+  color: #b45309; font-weight: 600;
+}
+@media (max-width: 520px) {
+  .dialogo-previo { width: 96vw; padding: 14px; }
+  .dialogo-proyecto-bloque { padding: 10px; }
+}
+
+/* R13 · visor técnico: pan contenido y estable, sin arrastrar la página. */
+.video-inspector-marco {
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable both-edges;
+  scroll-behavior: auto;
+}
+.video-inspector-marco.pan-activo {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+
+/* R15.6 (MEDIO-05): aviso de recuperación — bloqueos durables visibles. */
+.estado-recuperacion {
+  border: 2px solid #b3261e;
+  background: #fdecea;
+  color: #410e0b;
+}
+.estado-recuperacion .entrada-inconsistencia {
+  display: grid;
+  gap: 4px;
+  padding: 6px 0;
+  border-top: 1px solid rgba(179, 38, 30, 0.35);
+}
+.estado-recuperacion .boton-resolver-inconsistencia {
+  justify-self: start;
+  border: 1px solid #b3261e;
+  background: #fff;
+  color: #b3261e;
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+  font-weight: 600;
+}
+.estado-recuperacion .boton-resolver-inconsistencia[disabled] {
+  opacity: 0.55;
+  cursor: wait;
 }

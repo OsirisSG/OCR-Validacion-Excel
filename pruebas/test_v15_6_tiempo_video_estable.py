@@ -73,13 +73,38 @@ class VideoV156TiempoEstableTests(unittest.TestCase):
         self.assertTrue(all(x["fps_grabacion"] == 5000.0 for x in items))
 
     def test_no_devuelve_negativos(self):
+        """R15 (SUPERSEDE documentado del contrato V15.6).
+
+        V15.6 exigía ``tiempo_ms >= 0`` mediante recorte/clamp del valor
+        crudo. La doctrina vigente (R10-R13, «no inventar certeza») prohíbe
+        fabricar un 0.0 que nadie observó: el resolver CONSERVA el raw
+        negativo (auditable en ``tiempo_crudo_ms``) y la normalización lo
+        marca NO_POSITIVO sin publicarlo (``tiempo_ms is None`` + motivo
+        visible). Nunca aparece un tiempo inventado ni se pierde el raw.
+        """
         r = resolver_tiempo_metadata(
             frame_index=0, fps=5000,
             timestamp_actual_ms=-0.2,
             timestamp_inicial_ms=-4.0,
             precision_overlay_ms=0.1,
         )
-        self.assertGreaterEqual(float(r["tiempo_ms"] or 0), 0.0)
+        # Capa 1 (resolver): el crudo negativo se conserva íntegro, sin clamp.
+        self.assertEqual(r["tiempo_ms"], -0.2)
+        self.assertEqual(r["tiempo_crudo_ms"], -0.2)
+        # Capa 2 (normalización): no se publica ningún tiempo no positivo.
+        item = {
+            "ruta": "x_FRONTAL.AVI", "nombre": "x_FRONTAL.AVI", "frame_evento": 0,
+            "fps": 5000, "fps_grabacion": 5000, "fps_fuente": "overlay_rec",
+            "overlay_texto": "Rec5000 fps", "tiempo_overlay_ms": -0.2,
+            "overlay_timestamp_inicial_ms": -4.0, "precision_overlay_ms": 0.1,
+            "timestamp_actual_ms": -0.2, "timestamp_inicial_ms": -4.0,
+        }
+        self.assertTrue(normalizar_item_temporal_video(item))
+        # No publica ningún tiempo no positivo: la clave publicable se retira.
+        self.assertNotIn("tiempo_ms", item)
+        self.assertEqual(item["estado_tiempo"], "NO_POSITIVO")
+        self.assertEqual(item["tiempo_crudo_ms"], -0.2)
+        self.assertIn("estrictamente mayor que cero", item["motivo_rechazo"])
 
     def test_frontend_tiene_fps_overlay_y_panel_estable(self):
         raiz = Path(__file__).resolve().parents[1]

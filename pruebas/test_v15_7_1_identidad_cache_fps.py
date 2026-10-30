@@ -22,7 +22,8 @@ def _video(tmp_path, nombre="081_LATERAL.AVI", carpeta="252581 RDW NOM RT/VIDEOS
 
 def test_revision_sobrevive_a_copiar_la_carpeta(tmp_path):
     original = _video(tmp_path / "lote")
-    va.guardar_revision_video(original, case_key="c", frame_index=10, tiempo_ms=2.0)
+    va.guardar_revision_video(original, case_key="c", frame_index=10, tiempo_ms=2.0,
+                              referencia_tiempo_valida=True, fuente_tiempo="fps_adquisicion")
     copia = tmp_path / "copia" / "RT" / "252581 RDW NOM RT" / "VIDEOS" / original.name
     copia.parent.mkdir(parents=True)
     shutil.copy2(original, copia)
@@ -46,8 +47,10 @@ def test_revision_antigua_se_reconoce_por_id_y_nombre(tmp_path):
 
 def test_volver_a_confirmar_no_duplica_revisiones(tmp_path):
     ruta = _video(tmp_path)
-    va.guardar_revision_video(ruta, case_key="c", frame_index=10, tiempo_ms=2.0)
-    va.guardar_revision_video(ruta, case_key="c", frame_index=11, tiempo_ms=2.2)
+    va.guardar_revision_video(ruta, case_key="c", frame_index=10, tiempo_ms=2.0,
+                              referencia_tiempo_valida=True, fuente_tiempo="fps_adquisicion")
+    va.guardar_revision_video(ruta, case_key="c", frame_index=11, tiempo_ms=2.2,
+                              referencia_tiempo_valida=True, fuente_tiempo="fps_adquisicion")
     data = va.cargar_revisiones()["revisiones"]
     assert len(data) == 1
     assert next(iter(data.values()))["frame_index"] == 11

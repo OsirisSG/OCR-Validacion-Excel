@@ -28,6 +28,7 @@ from inventario import cargar_inventario, crear_inventario, estructura_desde_inv
 from recursos import detectar_recursos
 from validacion import validar_lote, validar_lote_empresarial
 from utilidades.persistencia import escribir_json_seguro
+from utilidades.persistencia_documento import persistir_documento_completo
 
 
 def _bloqueo_pipeline(func):
@@ -61,6 +62,30 @@ def _bloqueo_pipeline(func):
     return protegido
 
 
+def _persistir_validacion(validacion: dict) -> bool:
+    """V15.9.1 (A6): guarda la validación ya enriquecida en TODOS los perfiles.
+
+    Antes de esta corrección sólo el perfil empresarial reescribía el JSON tras
+    la exportación, de modo que la instantánea de criterios de la ejecución y
+    los metadatos añadidos se perdían en el recorrido legacy. La escritura es
+    atómica y segura: nunca deja un archivo parcial y, si falla, conserva la
+    versión previa y anota la advertencia en memoria. Devuelve True si guardó.
+    """
+    destino = validacion.get("archivo_salida")
+    if not destino:
+        validacion.setdefault("advertencias_persistencia", []).append(
+            "Sin archivo_salida definido; la instantánea de la ejecución no se guardó.")
+        return False
+    # R15.2 (CRÍTICO-02): el documento sólo se escribe por la autoridad
+    # compartida: lock con el backend, revisión heredada del disco (nunca
+    # desaparece ni retrocede) y escritura atómica verificada.
+    guardado = persistir_documento_completo(
+        destino, validacion,
+        al_error=lambda mensaje: validacion.setdefault(
+            "advertencias_persistencia", []).append(str(mensaje)))
+    return bool(guardado)
+
+
 @_bloqueo_pipeline
 def ejecutar_pipeline(ruta_raiz: str | Path, config: dict | None = None,
                       al_progreso: Callable[[str, str, dict | None], None] | None = None,
@@ -82,9 +107,16 @@ def ejecutar_pipeline(ruta_raiz: str | Path, config: dict | None = None,
                       idiomas_exportacion: list[str] | None = None,
                       ejecucion_id: str | None = None,
                       perfil_rendimiento: str | None = None,
-                      contenido: str = "todo") -> dict:
+                      contenido: str = "todo",
+                      criterios_apertura: dict | None = None,
+                      proyecto: dict | None = None) -> dict:
     """Corre las Fases 0-3 y retorna un dict con artefactos y resumen por fase."""
     config = deepcopy(config or cargar_config())
+    # V15.9.2 (C7): el proyecto declarado por el usuario aplica SOLO a esta
+    # ejecución: ``config`` es una copia local y nunca se escribe la
+    # configuración global ni se cambia el proyecto elegido por otra fuente.
+    if isinstance(proyecto, dict) and proyecto:
+        config.setdefault("empresarial", {})["proyecto"] = dict(proyecto)
     from gestor_recursos import normalizar_perfil, obtener_gestor_recursos
     perfil_rendimiento = normalizar_perfil(
         perfil_rendimiento or config.get("fase1", {}).get("rendimiento", {}).get("perfil_sop", "alto"))
@@ -125,6 +157,21 @@ def ejecutar_pipeline(ruta_raiz: str | Path, config: dict | None = None,
     if modo_ejecucion == "reanudar":
         ruta_inventario = ruta_inventario or RAIZ_PROYECTO / "inventario_proyecto.json"
         inventario = cargar_inventario(ruta_inventario, ruta_raiz)
+        # P04 (C7): la reanudación conserva el proyecto inicial del checkpoint.
+        # Cambiarlo no se acepta en silencio: exige migración explícita.
+        proyecto_checkpoint = (inventario or {}).get("proyecto") or {}
+        if proyecto_checkpoint.get("project_id") and isinstance(proyecto, dict) and proyecto:
+            from utilidades.identidad import resolver_identidad_proyecto
+            declarada = resolver_identidad_proyecto(declarado=proyecto)
+            if (declarada["project_id"] != proyecto_checkpoint["project_id"]
+                    and not proyecto.get("migracion_explicita")):
+                raise ValueError(
+                    f"El checkpoint pertenece al proyecto "
+                    f"«{proyecto_checkpoint.get('nombre_proyecto') or proyecto_checkpoint['project_id']}» "
+                    f"y se intenta reanudar con "
+                    f"«{declarada.get('nombre_proyecto') or declarada['project_id']}». "
+                    "El cambio exige migración explícita (con historial y respaldo); "
+                    "no se acepta en silencio.")
         estructura = estructura_desde_inventario(inventario)
         total_archivos_inv = (inventario.get("fotografias", 0) if contenido != "videos" else 0) + \
                              (inventario.get("videos", 0) if contenido != "fotos" else 0)
@@ -140,6 +187,22 @@ def ejecutar_pipeline(ruta_raiz: str | Path, config: dict | None = None,
         if "al_descubrir_caso" in parametros_mapeo:
             extras_mapeo["al_descubrir_caso"] = caso_detectado
         estructura = mapear_estructura(ruta_raiz, config, **extras_mapeo)
+    # C7: instantánea de identidad autoritativa de ESTA ejecución.
+    from datetime import datetime as _dt_identidad
+    from utilidades.identidad import resolver_identidad_proyecto
+    identidad = estructura.get("proyecto")
+    if not isinstance(identidad, dict) or not identidad.get("project_id"):
+        identidad = resolver_identidad_proyecto(
+            declarado=proyecto, raiz=ruta_raiz,
+            configurado=(config.get("empresarial", {}) or {}).get("proyecto_id"),
+            checkpoint=(inventario or {}).get("proyecto"))
+    resumen["proyecto_ejecucion"] = {
+        **identidad,
+        "ejecucion_id": ejecucion_id,
+        "fecha": _dt_identidad.now().isoformat(timespec="seconds"),
+        "responsable": identidad.get("responsable")
+        or (proyecto.get("usuario") if isinstance(proyecto, dict) else None),
+    }
     ruta_estructura = guardar_estructura(estructura)
     if estructura.get("casos_empresariales") and estructura.get("requiere_seleccion_tipo_st"):
         raise ValueError(
@@ -289,6 +352,9 @@ def ejecutar_pipeline(ruta_raiz: str | Path, config: dict | None = None,
         "aprendizaje": validacion.get("aprendizaje"),
     }
 
+    # C7: la identidad autoritativa se persiste con los resultados y viaja a
+    # los generadores Excel (ES/EN/DE) para identificación coherente (P07).
+    validacion["proyecto_ejecucion"] = dict(resumen["proyecto_ejecucion"])
     progreso("fase3", "Generando el Excel maestro", {"porcentaje": 95, "eta_segundos": None})
     t_excel = time.monotonic()
     if control:
@@ -339,7 +405,15 @@ def ejecutar_pipeline(ruta_raiz: str | Path, config: dict | None = None,
     extras_excel = ({"datos_validacion": validacion}
                     if "datos_validacion" in firma_excel else {})
     soporta_idioma = "idioma" in firma_excel
+    # V15.9: la instantánea de rangos de la ejecución viaja con los datos y
+    # colorea el Excel igual que la matriz mostrada durante el procesamiento.
+    if criterios_apertura:
+        validacion["criterios_apertura_ejecucion"] = dict(criterios_apertura)
+        if "criterios_apertura" in firma_excel:
+            extras_excel["criterios_apertura"] = dict(criterios_apertura)
     archivos_excel: dict[str, str] = {}
+    archivos_borrador: dict[str, str] = {}
+    from utilidades.identidad_excel import es_borrador_no_publicable
     # `validacion` no se modifica entre idiomas: las tres salidas nacen de una
     # única instantánea posterior al OCR y a las correcciones vigentes.
     for idioma in idiomas:
@@ -347,32 +421,69 @@ def ejecutar_pipeline(ruta_raiz: str | Path, config: dict | None = None,
         extras_iter = dict(extras_excel)
         if soporta_idioma:
             extras_iter["idioma"] = idioma
-        ruta_excel = (generar_excel(None, destino, config,
-                                   ruta_plantilla=ruta_plantilla, **extras_iter)
-                      if ruta_plantilla else generar_excel(
-                          None, destino, config, **extras_iter))
-        archivos_excel[idioma] = str(ruta_excel)
-    ruta_excel = Path(archivos_excel[idiomas[0]])
+        ruta_generada = (generar_excel(None, destino, config,
+                                      ruta_plantilla=ruta_plantilla, **extras_iter)
+                         if ruta_plantilla else generar_excel(
+                             None, destino, config, **extras_iter))
+        # V15.9.4 (ALTA-N6): un borrador bloqueado por identidad NO cuenta
+        # como Excel oficial: se registra aparte y se anuncia por separado.
+        if es_borrador_no_publicable(ruta_generada):
+            archivos_borrador[idioma] = str(ruta_generada)
+        else:
+            archivos_excel[idioma] = str(ruta_generada)
+    ruta_excel = Path(archivos_excel.get(idiomas[0])
+                      or next(iter(archivos_excel.values()), None)
+                      or next(iter(archivos_borrador.values())))
     validacion["idiomas_exportacion"] = idiomas
     validacion["archivos_excel"] = archivos_excel
     validacion["nombre_excel_base"] = str(ruta_base)
+    if archivos_borrador:
+        validacion["archivos_excel_borrador"] = archivos_borrador
+    validacion["excel_publicable"] = bool(archivos_excel) and not archivos_borrador
+    # V15.9.5 (ALTA-N9): tres estados distintos — confirmado/publicable,
+    # sin asignar/pendiente y bloqueado por contradicción. «Sin asignar»
+    # publica como PENDIENTE (decisión confirmada), nunca como identidad
+    # de proyecto verificada.
+    pendiente_sin_asignar = bool(
+        (validacion.get("proyecto_ejecucion") or {}).get("sin_asignar"))
+    validacion["excel_pendiente_sin_asignar"] = (pendiente_sin_asignar
+                                                 and bool(archivos_excel))
     if validacion.get("perfil") == "empresarial":
-        validacion["archivo_excel"] = str(ruta_excel)
-        validacion["archivos_excel"] = archivos_excel
-        validacion["idiomas_exportacion"] = idiomas
+        # ``archivo_excel`` sólo apunta a una salida OFICIAL publicada.
+        if idiomas[0] in archivos_excel:
+            validacion["archivo_excel"] = str(Path(archivos_excel[idiomas[0]]))
         validacion["ruta_plantilla"] = str(ruta_plantilla) if ruta_plantilla else None
-        guardado_validacion = escribir_json_seguro(validacion["archivo_salida"], validacion)
-        if not guardado_validacion:
-            validacion.setdefault("advertencias_persistencia", []).append(
-                guardado_validacion.error)
+    # V15.9.1 (A6): la instantánea de criterios de ESTA ejecución (y el resto
+    # de metadatos añadidos tras el OCR) se persiste en TODOS los perfiles.
+    _persistir_validacion(validacion)
     gestor_recursos.registrar_etapa("exportacion_excel", time.monotonic() - t_excel)
     resumen["fases"]["fase3"] = {
         "artifacto": str(ruta_excel), "archivos": archivos_excel,
+        "borradores": archivos_borrador,
+        "publicable": bool(archivos_excel) and not archivos_borrador,
         "idiomas": idiomas, "plantilla": seleccion_plantilla}
     resumen["duracion_segundos"] = round(time.time() - t0, 1)
     resumen["metricas_rendimiento"] = gestor_recursos.snapshot(forzar=True)
-    progreso("completado", "Resultados y Excel actualizados", {
+    # V15.9.4 (ALTA-N6): OCR terminado NO implica Excel publicado. El mensaje
+    # final distingue la exportación bloqueada y entrega las rutas borrador.
+    if archivos_borrador and not archivos_excel:
+        mensaje_final = ("OCR terminado; exportación Excel BLOQUEADA (identidad "
+                         "del proyecto no verificable): borrador no publicable")
+    elif archivos_borrador:
+        mensaje_final = ("Resultados actualizados; exportación Excel BLOQUEADA "
+                         "en algún idioma (borrador no publicable)")
+    elif pendiente_sin_asignar and archivos_excel:
+        mensaje_final = ("Resultados actualizados; Excel publicado como "
+                         "PENDIENTE («Sin asignar» por decisión del usuario; "
+                         "identidad de proyecto NO verificada)")
+    else:
+        mensaje_final = "Resultados y Excel actualizados"
+    progreso("completado", mensaje_final, {
         "porcentaje": 100, "eta_segundos": 0, "restantes": 0,
+        "archivos_borrador": archivos_borrador or None,
+        "excel_publicable": bool(archivos_excel) and not archivos_borrador,
+        "excel_pendiente_sin_asignar": bool(
+            validacion.get("excel_pendiente_sin_asignar")),
     })
     return resumen
 

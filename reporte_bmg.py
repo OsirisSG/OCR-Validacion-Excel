@@ -2,8 +2,11 @@
 
 Mantiene el aspecto del libro de referencia (Resumen / Versuchsmatrix) y usa
 los campos consolidados del flujo empresarial. La matriz del resumen muestra
-el estado del tiempo de apertura:
-  verde <= 6 ms; amarillo > 6 y <= 7 ms; rojo > 7 ms; gris desconocido.
+el estado del tiempo de apertura con el MISMO motor de reglas que el dashboard
+(``utilidades.matriz_apertura``): verde ≤ V, amarillo > V y ≤ A, rojo > A y
+gris con motivo para valores no confiables o pendientes. V15.9 dibuja todas
+las posiciones esperadas: las vacantes llevan relleno gris tenue y nunca se
+inventan IDs ni tiempos.
 """
 
 from __future__ import annotations
@@ -23,6 +26,15 @@ from openpyxl.utils import get_column_letter
 
 from configuracion import evaluar_criterio
 from flujo_empresarial import CLAVES_PLANTILLA
+from utilidades.encabezados_institucionales import textos_institucionales
+from utilidades.matriz_apertura import (
+    COLUMNAS_MATRIZ,
+    celda_caso,
+    criterio_desde_limites,
+    evaluar_apertura,
+    limites_desde_criterio,
+    validar_limites,
+)
 
 HOJA_RESUMEN = "Übersicht Standversuche"
 HOJA_LISTA = "Versuchsmatrix"
@@ -43,16 +55,40 @@ ORDEN_LISTA = {
     ("RT", "NOM"): 6,
 }
 
-# Orden visual de la matriz resumen (izquierda -> derecha).
-COLUMNAS_MATRIZ = [
-    {"col": "D", "temperature_condition": "HT", "inflator_type": "UGL", "esperados": 5},
-    {"col": "E", "temperature_condition": "HT", "inflator_type": "OGL", "esperados": 5},
-    {"col": "F", "temperature_condition": "HT", "inflator_type": "NOM", "esperados": 10},
-    {"col": "G", "temperature_condition": "RT", "inflator_type": "NOM", "esperados": 10},
-    {"col": "H", "temperature_condition": "NT", "inflator_type": "NOM", "esperados": 10},
-    {"col": "I", "temperature_condition": "NT", "inflator_type": "OGL", "esperados": 5},
-    {"col": "J", "temperature_condition": "NT", "inflator_type": "UGL", "esperados": 5},
-]
+# Orden visual de la matriz resumen (izquierda -> derecha) y cantidades
+# esperadas: definición única en utilidades.matriz_apertura (compartida con el
+# dashboard). ``col`` conserva la letra de columna de la plantilla BMG.
+
+# Gris tenue para posiciones esperadas SIN caso: se distingue del gris de
+# "valor no confiable" (gris estándar de la paleta) por relleno y por comentario.
+COLOR_VACANTE = "#D9D9D9"
+
+MOTIVOS_GRIS = {
+    "sin_tiempo": {"es": "Sin tiempo medido", "en": "No measured time",
+                   "de": "Keine gemessene Zeit"},
+    "pendiente_revision": {"es": "Pendiente de revisión", "en": "Pending review",
+                           "de": "Prüfung ausstehend"},
+    "conflicto": {"es": "Conflicto entre fuentes", "en": "Conflict between sources",
+                  "de": "Widerspruch zwischen Quellen"},
+    "valor_no_finito": {"es": "Valor no finito descartado", "en": "Non-finite value discarded",
+                        "de": "Unendlicher Wert verworfen"},
+    "valor_negativo": {"es": "Valor negativo descartado", "en": "Negative value discarded",
+                       "de": "Negativer Wert verworfen"},
+    "valor_no_positivo": {"es": "Tiempo final debe ser > 0", "en": "Final time must be > 0",
+                           "de": "Endzeit muss > 0 sein"},
+    "no_positivo": {"es": "Tiempo final debe ser > 0", "en": "Final time must be > 0",
+                     "de": "Endzeit muss > 0 sein"},
+    "no_finito": {"es": "Tiempo final no finito descartado", "en": "Non-finite final time discarded",
+                  "de": "Nicht endliche Endzeit verworfen"},
+    "no_interpretable": {"es": "Tiempo final no interpretable", "en": "Final time not interpretable",
+                          "de": "Endzeit nicht interpretierbar"},
+    "referencia_invalida": {"es": "Referencia temporal inválida", "en": "Invalid time reference",
+                             "de": "Ungültige Zeitreferenz"},
+    "sin_medicion": {"es": "Sin medición", "en": "No measurement", "de": "Keine Messung"},
+    "sin_caso": {"es": "Posición esperada sin caso asignado",
+                 "en": "Expected position without assigned case",
+                 "de": "Erwartete Position ohne zugeordneten Fall"},
+}
 
 
 TEXTOS = {
@@ -60,6 +96,19 @@ TEXTOS = {
     "en": {"overview":"Overview results","opening":"Opening time","expected":"Expected quantity","found":"Found","processed":"Processed","unclassified":"Cases outside matrix classification","unknown":"Unknown / pending","state":"State","trace":"Traceability","dictionary":"Data dictionary","project":"Project","stage":"Stage","case":"Case","component":"Component","field":"Field","image":"Image","region":"Original region","original":"Original OCR text","corrected":"Corrected text","orientation":"Orientation","rule":"Rule","source":"Source","version":"Processing version","header":"Header","origin_rule":"Origin / rule","status":"Source status","pending":"Pending source or manual confirmation","test_temperature":"Test temperature","generator_type":"Generator type","ok_test":"OK test","ma_test":"Conditional test","nio_test":"NOK test"},
     "de": {"overview":"Übersicht Ergebnisse","opening":"Öffnungszeit","expected":"Erwartete Anzahl","found":"Gefunden","processed":"Verarbeitet","unclassified":"Fälle außerhalb der Matrixklassifikation","unknown":"Unbekannt / ausstehend","state":"Status","trace":"Rückverfolgbarkeit","dictionary":"Datenwörterbuch","project":"Projekt","stage":"Stufe","case":"Fall","component":"Komponente","field":"Feld","image":"Bild","region":"Originalbereich","original":"Original OCR-Text","corrected":"Korrigierter Text","orientation":"Orientierung","rule":"Regel","source":"Quelle","version":"Verarbeitungsversion","header":"Überschrift","origin_rule":"Quelle / Regel","status":"Quellenstatus","pending":"Quelle oder manuelle Bestätigung ausstehend","test_temperature":"Prüftemperatur","generator_type":"Generatortyp","ok_test":"OK Test","ma_test":"m.A. Test","nio_test":"N.i.O Test"},
 }
+# V15.9: leyenda ampliada con la posición vacante y los motivos del gris.
+for _idioma, _extra in (
+    ("es", {"vacant": "Vacante (posición esperada sin caso)",
+            "reason": "Motivo", "criteria_origin": "Origen del criterio",
+            "cause": "Causa", "count": "Casos"}),
+    ("en", {"vacant": "Vacant (expected position without case)",
+            "reason": "Reason", "criteria_origin": "Criteria origin",
+            "cause": "Cause", "count": "Cases"}),
+    ("de", {"vacant": "Frei (erwartete Position ohne Fall)",
+            "reason": "Grund", "criteria_origin": "Ursprung der Kriterien",
+            "cause": "Ursache", "count": "Fälle"}),
+):
+    TEXTOS[_idioma].update(_extra)
 
 HEADERS = {
     "week":{"es":"Semana","en":"Week","de":"Woche"},
@@ -128,6 +177,8 @@ TEXTOS_VIDEO = {
         "review": "Revisión del máximo", "pending": "Pendiente de revisión", "confirmed": "Confirmado",
         "conflict": "Conflicto entre vídeos", "no_data": "Sin dato", "invalid": "Evidencia no válida",
         "confirmed_by": "Confirmado por", "confirmed_at": "Confirmado en", "warnings": "Advertencias", "method": "Método del máximo",
+        "opening_raw": "Tiempo crudo de apertura ms", "opening_time_state": "Estado del tiempo de apertura",
+        "opening_rejection": "Motivo de rechazo de apertura",
         "maximum_rule": "Máximo despliegue visible confirmado manualmente. Entre vídeos confirmados se usa el mayor tiempo si coinciden dentro de un fotograma; si discrepan queda vacío. Separado de apertura e inflado completo.",
     },
     "en": {
@@ -142,6 +193,8 @@ TEXTOS_VIDEO = {
         "review": "Maximum review", "pending": "Pending review", "confirmed": "Confirmed",
         "conflict": "Conflict between videos", "no_data": "No data", "invalid": "Invalid evidence",
         "confirmed_by": "Confirmed by", "confirmed_at": "Confirmed at", "warnings": "Warnings", "method": "Maximum method",
+        "opening_raw": "Raw opening time ms", "opening_time_state": "Opening time state",
+        "opening_rejection": "Opening rejection reason",
         "maximum_rule": "Manually confirmed maximum visible deployment. Among confirmed videos, the latest time is used if times agree within one frame; disagreement leaves the field blank. Separate from opening and full inflation.",
     },
     "de": {
@@ -156,6 +209,8 @@ TEXTOS_VIDEO = {
         "review": "Prüfung des Maximums", "pending": "Prüfung ausstehend", "confirmed": "Bestätigt",
         "conflict": "Widerspruch zwischen Videos", "no_data": "Keine Angabe", "invalid": "Ungültiger Nachweis",
         "confirmed_by": "Bestätigt durch", "confirmed_at": "Bestätigt am", "warnings": "Hinweise", "method": "Methode des Maximums",
+        "opening_raw": "Rohzeit der Öffnung ms", "opening_time_state": "Status der Öffnungszeit",
+        "opening_rejection": "Ablehnungsgrund der Öffnung",
         "maximum_rule": "Manuell bestätigte maximale sichtbare Entfaltung. Unter bestätigten Videos wird die späteste Zeit übernommen, wenn sie innerhalb eines Bildes übereinstimmen; sonst bleibt das Feld leer. Getrennt von Öffnung und vollständiger Aufblasung.",
     },
 }
@@ -298,6 +353,24 @@ def _tiempo_ms(valor):
     return numero if numero is not None and numero >= 0 else None
 
 
+def _tiempo_apertura_final(valor):
+    numero = _numero(valor)
+    return numero if numero is not None and numero > 0 else None
+
+
+def _tiempo_crudo_finito(valor):
+    """Tiempo de evidencia con signo; nunca usar como apertura publicable."""
+    return _numero(valor)
+
+
+def _raw_tiempo_excel(valor):
+    """Raw de auditoría firmado; no finitos/ilegibles se guardan como texto."""
+    numero = _tiempo_crudo_finito(valor)
+    if numero is not None:
+        return numero
+    return None if valor is None else str(valor)
+
+
 def _frame_valido(valor):
     numero = _tiempo_ms(valor)
     return int(numero) if numero is not None and numero.is_integer() else None
@@ -377,13 +450,34 @@ def _ordenar_etapa(resultados: Iterable[dict]) -> list[dict]:
 
 
 def _estado_apertura(resultado: dict, reglas: dict) -> tuple[str, float | None]:
-    valor = _tiempo_ms(_campo_confiable(resultado, "opening_time_ms"))
-    if valor is None:
-        return "gris", None
+    """(estado, valor) del semáforo de apertura.
+
+    V15.9 comparte el evaluador con el dashboard (``utilidades.matriz_apertura``);
+    el contrato numérico se conserva: sin valor confiable se reporta (\"gris\", None).
+    """
+    dato = _campo_confiable_dict(resultado, "opening_time_ms")
     criterio = (reglas.get("criterios") or {}).get("tiempo_apertura_ms") or {
         "verde": "<= 6", "amarillo": "6-7", "rojo": "> 7"
     }
-    return evaluar_criterio(criterio, valor) or "gris", valor
+    estado, valor, motivo = evaluar_apertura(dato, criterio)
+    if motivo in {"sin_tiempo", "pendiente_revision", "conflicto",
+                  "valor_no_finito", "valor_negativo", "valor_no_positivo"}:
+        return "gris", None
+    return estado, valor
+
+
+def _campo_confiable_dict(resultado: dict, clave: str):
+    """El ``dato`` completo de ``campos`` (para distinguir motivos del gris) o None.
+
+    Misma fuente que ``_campo_confiable``: sólo ``campos[clave]``; un valor
+    plano se envuelve como ``{"valor": ...}`` para el evaluador compartido.
+    """
+    dato = (resultado.get("campos") or {}).get(clave)
+    if isinstance(dato, dict):
+        return dato
+    if dato in (None, ""):
+        return None
+    return {"valor": dato}
 
 
 def _relleno(hex_color: str) -> PatternFill:
@@ -391,11 +485,23 @@ def _relleno(hex_color: str) -> PatternFill:
 
 
 def _escribir_fila(hoja, fila: int, resultado: dict, idioma: str = "es") -> None:
+    canonico = resultado.get("resultado_caso_canonico")
+    if ("campos" in resultado or "videos" in resultado or "video_apertura" in resultado
+            or not isinstance(canonico, dict)):
+        from utilidades.resultado_caso import resolver_resultado_caso
+        canonico = resolver_resultado_caso(resultado)
+    apertura = (canonico.get("apertura") or {}) if isinstance(canonico, dict) else {}
     for indice, clave in enumerate(CLAVES_PLANTILLA, start=1):
         valor = _campo(resultado, clave)
+        if clave == "opening_time_ms":
+            # Sólo publica como dato de plantilla un tiempo confirmado por una
+            # persona. Los consensos heurísticos quedan en «Apertura V15.10».
+            valor = (apertura.get("tiempo_ms")
+                     if apertura.get("estado") in {"VERIFICADO_HUMANO", "AUTO_VERIFICABLE"} else None)
         celda = hoja.cell(fila, indice)
         if clave in {"opening_time_ms", "forvia_measurement_ms", "full_inflation_time_ms", "delay_ms"}:
-            valor = _tiempo_ms(valor)
+            valor = (_tiempo_apertura_final(valor) if clave == "opening_time_ms"
+                     else _tiempo_ms(valor))
             celda.number_format = "0.000"
         celda.value = valor
     valor_maximo, estado = _resumen_maximo(resultado)
@@ -462,16 +568,85 @@ def _copiar_lista_a_rangos(libro, resultados: list[dict], idioma: str = "es") ->
         _poblar_lista(libro[HOJA_RANGOS], resultados, idioma)
 
 
+def _limpiar_bloques_historicos_matriz(hoja) -> None:
+    """Limpia IDs/colores de la matriz precargada de la plantilla institucional.
+
+    La plantilla BMG trae ejemplos/histórico en D:J (1ST filas 7-16 y 2ST
+    filas 33-42). Esos valores son formato de referencia, NO datos de la
+    ejecución. Se limpian una sola vez antes de dibujar los casos actuales,
+    conservando bordes, tamaños, merges y estilos estructurales.
+    """
+    for inicio, fin in ((7, 16), (33, 42)):
+        for fila in range(inicio, fin + 1):
+            for col in range(4, 11):
+                celda = hoja.cell(fila, col)
+                celda.value = None
+                celda.hyperlink = None
+                celda.comment = None
+                celda.fill = PatternFill(fill_type=None)
+
+
+def _aplicar_titulos_proyecto_institucionales(libro, identidad_proyecto: dict | None, idioma: str,
+                                             resultados: list[dict] | None = None) -> None:
+    """Proyecta identidad elegida + textos institucionales OCR/localizados.
+
+    El proyecto sigue viniendo EXCLUSIVAMENTE de la selección del usuario. Los
+    términos técnicos de cabecera se recuperan de OCR cuando existen y las
+    palabras de presentación se localizan según ES/EN/DE.
+    """
+    if identidad_proyecto and not identidad_proyecto.get("sin_asignar"):
+        from utilidades.identidad_excel import nombre_visible
+        nombre = nombre_visible(identidad_proyecto, idioma)
+        for hoja_nombre, coordenada in (
+            (HOJA_RESUMEN, "A1"),
+            (HOJA_LISTA, "A2"),
+            (HOJA_RANGOS, "A2"),
+        ):
+            if hoja_nombre in libro.sheetnames:
+                libro[hoja_nombre][coordenada].value = nombre
+
+    info = textos_institucionales(resultados or [], idioma)
+    if HOJA_RESUMEN in libro.sheetnames:
+        ws = libro[HOJA_RESUMEN]
+        ws["B3"] = info["linea_bmg"]
+        ws["B4"] = info["linea_cop"]
+        fuente_txt = (f"Fuente: {info.get('fuente')}; textos OCR: {info.get('fuentes_ocr', 0)}; "
+                      f"programa VW: {info.get('programa_vw') or 'no observado'}; "
+                      f"programa: {info.get('programa_x') or 'fallback'}")
+        ws["B3"].comment = Comment(fuente_txt, "OCR encabezado")
+        ws["B4"].comment = Comment(
+            f"COP BFA observado en OCR: {'sí' if info.get('cop_bfa_observado') else 'no; texto institucional de fallback'}. "
+            f"Idioma de presentación: {idioma}.", "OCR encabezado")
+    # Fila de grupos de la tabla detallada: no dejar mezcla DE/EN/ES.
+    grupos = info["grupos"]
+    for hoja_nombre in (HOJA_LISTA, HOJA_RANGOS):
+        if hoja_nombre not in libro.sheetnames:
+            continue
+        ws = libro[hoja_nombre]
+        for celda, clave in (("C6","grupo_prueba"),("G6","grupo_pab"),
+                             ("O6","grupo_panel_zsb"),("U6","grupo_sub"),
+                             ("AI6","grupo_airbag"),("AO6","grupo_panel")):
+            ws[celda] = grupos[clave]
+
+
 def _poblar_matriz(hoja, tipo_st: str, resultados: list[dict], fila_inicio: int,
                    mapa_filas: dict[str, int], colores: dict, reglas: dict, idioma: str = "es") -> int:
-    """Dibuja un bloque de matriz completo; crece sin truncar y mueve 2ST si hace falta."""
+    """Dibuja casos reales en la plantilla; la hoja aditiva lista cada caso sin cupos.
+
+    V15.10 conserva el contrato visual BMG, pero ya no colorea ni etiqueta
+    posiciones vacías como si fueran casos. El número esperado queda como
+    metadato de referencia en el pie; sólo los IDs existentes ocupan celdas.
+    """
     mapa_color={"verde":colores.get("verde","#00B050"),"amarillo":colores.get("amarillo","#FFD966"),"rojo":colores.get("rojo","#FF0000"),"gris":colores.get("gris","#A6A6A6")}
+    criterio=(reglas.get("criterios") or {}).get("tiempo_apertura_ms") or {"verde":"<= 6","amarillo":"6-7","rojo":"> 7"}
     etapa=[r for r in resultados if str(r.get("tipo_st") or "").upper()==tipo_st]
     grupos=[]
     for spec in COLUMNAS_MATRIZ:
         grupo=[r for r in etapa if str(r.get("temperature_condition") or _campo(r,"temperature_condition") or "").upper()==spec["temperature_condition"] and str(r.get("inflator_type") or _campo(r,"inflator_type") or "").upper()==spec["inflator_type"]]
         grupos.append((spec,sorted(grupo,key=_test_sort,reverse=True)))
-    alto=max([10,*[len(g) for _,g in grupos]])
+    # Altura por casos presentes, no por el cupo histórico de la plantilla.
+    cupos={spec["id"]: len(grupo) for spec,grupo in grupos}
+    alto=max(cupos.values(), default=0)
 
     # Replica estilos de la plantilla para filas añadidas dinámicamente.
     fuente_titulo = 6 if tipo_st == "1ST" else 32
@@ -487,16 +662,67 @@ def _poblar_matriz(hoja, tipo_st: str, resultados: list[dict], fila_inicio: int,
             c=hoja.cell(r,col); c.value=None; c.hyperlink=None; c.comment=None
             if col>=4: c.fill=PatternFill(fill_type=None)
 
+    def _comentario_celda(celda):
+        estado = celda.get("estado")
+        tiempo = (celda.get("opening_time_ms") if estado != "gris"
+                  else celda.get("tiempo_pendiente_ms"))
+        motivo = celda.get("motivo_estado")
+        razon = MOTIVOS_GRIS.get(motivo, MOTIVOS_GRIS["sin_tiempo"])[idioma if idioma in {"es","en","de"} else "es"]
+        if celda.get("tiempo_es_estimado") and tiempo is not None:
+            etiqueta_est = {
+                "es": "Estimación automática de apertura (color calculado; publicación pendiente)",
+                "en": "Automatic opening estimate (calculated color; publication pending)",
+                "de": "Automatische Öffnungsschätzung (berechnete Farbe; Veröffentlichung ausstehend)",
+            }.get(idioma, "Estimación automática de apertura")
+            detalle = f"{etiqueta_est}: {tiempo:g} ms"
+        else:
+            detalle = (razon if tiempo is None else
+                       f"{razon if estado == 'gris' else _t(idioma, 'opening')}: {tiempo:g} ms")
+        lineas = [detalle, f"{_t(idioma, 'state')}: {estado}"]
+        if estado == "gris" and celda.get("decision_apertura") in {"PROPUESTA", "CONFLICTO"}:
+            pendiente_txt = {"es": "Pendiente de revisión", "en": "Pending review", "de": "Prüfung ausstehend"}.get(idioma, "Pendiente de revisión")
+            if pendiente_txt not in lineas:
+                lineas.append(pendiente_txt)
+        if celda.get("decision_apertura"):
+            lineas.append(f"Decisión: {celda['decision_apertura']}")
+        if celda.get("estado_tiempo"):
+            lineas.append(f"Estado temporal: {celda['estado_tiempo']}")
+        if celda.get("motivo_rechazo"):
+            lineas.append(f"Rechazo: {celda['motivo_rechazo']}")
+        if celda.get("raw_time_ms") is not None:
+            lineas.append(f"Tiempo crudo: {celda['raw_time_ms']} ms")
+        if celda.get("fuente_evidencia"):
+            lineas.append(f"Fuente: {celda['fuente_evidencia']}")
+        if celda.get("color_fuente"):
+            lineas.append(f"Fuente color: {celda['color_fuente']}")
+        if celda.get("auto_color_soporte") is not None and celda.get("tiempo_es_estimado"):
+            lineas.append(f"Soporte automático: {celda['auto_color_soporte']} video(s)")
+        if celda.get("auto_color_score_max") is not None and celda.get("tiempo_es_estimado"):
+            lineas.append(f"Evidencia visual máxima: {float(celda['auto_color_score_max']):.3f}")
+        if celda.get("duracion_llenado_estimada_ms") is not None:
+            etiqueta_llenado = {
+                "es": "Duración de llenado visual estimada",
+                "en": "Estimated visual filling duration",
+                "de": "Geschätzte visuelle Fülldauer",
+            }.get(idioma, "Duración de llenado visual estimada")
+            lineas.append(f"{etiqueta_llenado}: {float(celda['duracion_llenado_estimada_ms']):.3f} ms")
+        if celda.get("razones_apertura"):
+            lineas.append("Evidencia: " + "; ".join(str(x) for x in celda["razones_apertura"]))
+        return "\n".join(lineas)
+
     for spec,grupo in grupos:
-        arranque=fila_inicio+max(0,alto-len(grupo))
+        col_letra=spec["col"]
+        arranque=fila_inicio
         for indice,resultado in enumerate(grupo):
-            fila=arranque+indice; c=hoja[f"{spec['col']}{fila}"]
+            fila=arranque+indice; c=hoja[f"{col_letra}{fila}"]
             numero=resultado.get("test_number") or _campo(resultado,"test_number") or resultado.get("identificador")
-            c.value=numero; estado,tiempo=_estado_apertura(resultado,reglas); c.fill=_relleno(mapa_color[estado])
+            c.value=numero
+            celda=celda_caso(resultado,criterio)
+            estado=celda.get("estado","gris")
+            c.fill=_relleno(mapa_color.get("gris","#A6A6A6") if estado=="gris" else mapa_color[estado])
             detalle=mapa_filas.get(_identidad(resultado))
             if detalle: c.hyperlink=f"#'{HOJA_LISTA}'!C{detalle}"
-            desc=_t(idioma,"unknown") if tiempo is None else f"{_t(idioma,'opening')}: {tiempo:g} ms"
-            c.comment=Comment(f"{desc}\n{_t(idioma,'state')}: {estado}","OCR Versuchsmatrix")
+            c.comment=Comment(_comentario_celda(celda),"OCR Versuchsmatrix")
 
     pie=fila_inicio+alto
     # Conserva el pie visual de la plantilla y añade conteos reales separados de
@@ -527,35 +753,115 @@ def _poblar_matriz(hoja, tipo_st: str, resultados: list[dict], fila_inicio: int,
         procesadas=sum(1 for r in grupo if str(r.get("estado") or r.get("estado_pipeline") or "").lower() not in {"error","fallido","pendiente"})
         hoja.cell(fila_procesada,col).value=procesadas
 
-    # Ningún caso desaparece del resumen: los grupos nuevos, incompletos o no
-    # reconocidos se muestran en gris con vínculo al detalle.
-    combinaciones={(s["temperature_condition"],s["inflator_type"]) for s in COLUMNAS_MATRIZ}
-    fuera=[r for r in etapa if (
-        str(r.get("temperature_condition") or _campo(r,"temperature_condition") or "").upper(),
-        str(r.get("inflator_type") or _campo(r,"inflator_type") or "").upper()) not in combinaciones]
-    fin=fila_procesada+1
-    if fuera:
-        hoja.cell(fin,2).value=_t(idioma,"unclassified")
-        hoja.cell(fin,2).font=Font(bold=True)
-        fin += 1
-        for resultado in sorted(fuera,key=_test_sort):
-            numero=resultado.get("test_number") or _campo(resultado,"test_number") or resultado.get("identificador")
-            temp=str(resultado.get("temperature_condition") or _campo(resultado,"temperature_condition") or "—")
-            gen=str(resultado.get("inflator_type") or _campo(resultado,"inflator_type") or "—")
-            hoja.cell(fin,2).value=numero
-            hoja.cell(fin,3).value=temp
-            hoja.cell(fin,4).value=gen
-            hoja.cell(fin,2).fill=_relleno(mapa_color["gris"])
-            detalle=mapa_filas.get(_identidad(resultado))
-            if detalle: hoja.cell(fin,2).hyperlink=f"#'{HOJA_LISTA}'!C{detalle}"
-            fin += 1
-    return fin
+    # V15.9.1 (B3): los casos fuera de etapa/categorización ya no se dibujan
+    # dentro de cada etapa; existe UN bloque único global («Sin clasificar»)
+    # detrás del bloque 2ST, idéntico al del dashboard (paridad de IDs).
+    return fila_procesada + 1
 
 
-def _crear_leyenda_matriz(hoja, fila: int, colores: dict, idioma: str) -> None:
-    items=[("verde",_t(idioma,"ok_test")),("amarillo",_t(idioma,"ma_test")),("rojo",_t(idioma,"nio_test")),("gris",_t(idioma,"unknown"))]
-    for off,(estado,texto) in enumerate(items):
-        c=hoja.cell(fila+off,2); c.value=texto
+def _poblar_sin_clasificar(hoja, resultados: list[dict], fila_inicio: int,
+                           mapa_filas: dict[str, int], colores: dict,
+                           reglas: dict, idioma: str = "es") -> int:
+    """V15.9.1 (B3): bloque único con TODOS los casos fuera de la matriz.
+
+    Usa la MISMA agrupación que el dashboard (``agrupar_casos`` de
+    ``utilidades.matriz_apertura``): etapas 3RD/LEGACY/sin etapa y
+    combinaciones temperatura/generador fuera de columnas. Cada fila lleva el
+    ID real (nunca inventado), causa trazable, semáforo y vínculo al Listado.
+    Devuelve la siguiente fila libre (== ``fila_inicio`` si no hay casos).
+    """
+    from utilidades.matriz_apertura import agrupar_casos, causa_sin_clasificar
+    _sin_columnas, fuera = agrupar_casos(resultados)
+    if not fuera:
+        return fila_inicio
+    mapa_color={"verde":colores.get("verde","#00B050"),"amarillo":colores.get("amarillo","#FFD966"),
+                "rojo":colores.get("rojo","#FF0000"),"gris":colores.get("gris","#A6A6A6")}
+    criterio=(reglas.get("criterios") or {}).get("tiempo_apertura_ms") or {"verde":"<= 6","amarillo":"6-7","rojo":"> 7"}
+    fila=fila_inicio
+    hoja.cell(fila,2).value=_t(idioma,"unclassified")
+    hoja.cell(fila,2).font=Font(bold=True)
+    hoja.cell(fila,3).value=f"{_t(idioma,'count')}: {len(fuera)}"
+    fila += 1
+    for col, clave in ((2,"case"),(3,"stage"),(4,"test_temperature"),
+                       (5,"generator_type"),(6,"cause"),(7,"opening"),(8,"state")):
+        c=hoja.cell(fila,col); c.value=_t(idioma,clave); c.font=Font(bold=True)
+    fila += 1
+    for resultado in sorted(fuera, key=_test_sort):
+        numero=resultado.get("test_number") or _campo(resultado,"test_number") or resultado.get("identificador")
+        etapa=str(resultado.get("tipo_st") or _campo(resultado,"tipo_st") or "—")
+        temp=str(resultado.get("temperature_condition") or _campo(resultado,"temperature_condition") or "—")
+        gen=str(resultado.get("inflator_type") or _campo(resultado,"inflator_type") or "—")
+        celda=celda_caso(resultado,criterio)
+        estado=celda.get("estado","gris")
+        tiempo=(celda.get("opening_time_ms") if estado!="gris"
+                else celda.get("tiempo_pendiente_ms"))
+        motivo=celda.get("motivo_estado")
+        hoja.cell(fila,2).value=numero
+        hoja.cell(fila,3).value=etapa
+        hoja.cell(fila,4).value=temp
+        hoja.cell(fila,5).value=gen
+        hoja.cell(fila,6).value=causa_sin_clasificar({
+            "tipo_st": resultado.get("tipo_st") or _campo(resultado,"tipo_st"),
+            "temperature_condition": resultado.get("temperature_condition") or _campo(resultado,"temperature_condition"),
+            "inflator_type": resultado.get("inflator_type") or _campo(resultado,"inflator_type")})
+        hoja.cell(fila,7).value=None if tiempo is None else round(float(tiempo),1)
+        celda_estado=hoja.cell(fila,8); celda_estado.value=estado
+        celda_estado.fill=_relleno(mapa_color.get(estado,mapa_color["gris"]))
+        lineas_comentario=[]
+        if celda.get("tiempo_es_estimado") and tiempo is not None:
+            lineas_comentario.append(f"Estimación automática de apertura: {float(tiempo):g} ms; color calculado, publicación pendiente")
+        if estado=="gris":
+            razon=MOTIVOS_GRIS.get(motivo,MOTIVOS_GRIS["sin_tiempo"])[idioma if idioma in {"es","en","de"} else "es"]
+            lineas_comentario.append(razon)
+        if celda.get("decision_apertura"):
+            lineas_comentario.append(f"Decisión: {celda['decision_apertura']}")
+        if celda.get("estado_tiempo"):
+            lineas_comentario.append(f"Estado temporal: {celda['estado_tiempo']}")
+        if celda.get("motivo_rechazo"):
+            lineas_comentario.append(f"Rechazo: {celda['motivo_rechazo']}")
+        if celda.get("raw_time_ms") is not None:
+            lineas_comentario.append(f"Tiempo crudo: {celda['raw_time_ms']} ms")
+        if celda.get("fuente_evidencia"):
+            lineas_comentario.append(f"Fuente: {celda['fuente_evidencia']}")
+        lineas_comentario.append(f"{_t(idioma,'state')}: {estado}")
+        if lineas_comentario:
+            celda_estado.comment=Comment("\n".join(lineas_comentario),"OCR Versuchsmatrix")
+        detalle=mapa_filas.get(_identidad(resultado))
+        if detalle: hoja.cell(fila,2).hyperlink=f"#'{HOJA_LISTA}'!C{detalle}"
+        fila += 1
+    return fila
+
+
+def _crear_leyenda_matriz(hoja, fila: int, colores: dict, idioma: str, reglas: dict | None = None) -> None:
+    """Leyenda explícita del MISMO criterio usado para pintar las celdas."""
+    criterio=((reglas or {}).get("criterios") or {}).get("tiempo_apertura_ms") or {"verde":"<= 6","amarillo":"6-7","rojo":"> 7"}
+    try:
+        verde_max, amarillo_max = limites_desde_criterio(criterio)
+    except (TypeError, ValueError):
+        verde_max, amarillo_max = 6.0, 7.0
+    if idioma == "en":
+        textos={
+            "verde": f"Green ≤ {verde_max:g} ms",
+            "amarillo": f"Yellow > {verde_max:g} and ≤ {amarillo_max:g} ms",
+            "rojo": f"Red > {amarillo_max:g} ms",
+            "gris": "Grey: pending / conflict / no reliable time",
+        }
+    elif idioma == "de":
+        textos={
+            "verde": f"Grün ≤ {verde_max:g} ms",
+            "amarillo": f"Gelb > {verde_max:g} und ≤ {amarillo_max:g} ms",
+            "rojo": f"Rot > {amarillo_max:g} ms",
+            "gris": "Grau: ausstehend / Konflikt / keine zuverlässige Zeit",
+        }
+    else:
+        textos={
+            "verde": f"Verde ≤ {verde_max:g} ms",
+            "amarillo": f"Amarillo > {verde_max:g} y ≤ {amarillo_max:g} ms",
+            "rojo": f"Rojo > {amarillo_max:g} ms",
+            "gris": "Gris: pendiente / conflicto / sin tiempo confiable",
+        }
+    for off,estado in enumerate(("verde","amarillo","rojo","gris")):
+        c=hoja.cell(fila+off,2); c.value=textos[estado]
         c.fill=_relleno(colores.get(estado, {"verde":"#00B050","amarillo":"#FFD966","rojo":"#FF0000","gris":"#A6A6A6"}[estado]))
         c.font=Font(color="000000",bold=(estado=="gris"))
 
@@ -621,7 +927,8 @@ def _crear_evidencia_video(libro, resultados: list[dict], idioma: str) -> None:
     claves = ("video", "camera", "fps", "fps_source", "zero", "initial_ms", "opening_frame",
               "opening_ms", "opening_review", "maximum_frame", "maximum_ms", "resolution",
               "source", "opening_roi", "maximum_roi", "review", "confirmed_by", "confirmed_at",
-              "method", "warnings", "opening_source", "opening_resolution")
+              "method", "warnings", "opening_source", "opening_resolution", "opening_raw",
+              "opening_time_state", "opening_rejection")
     ws.append([_t(idioma, "project"), _t(idioma, "stage"), _t(idioma, "case"),
                *[_tv(idioma, clave) for clave in claves]])
     for celda in ws[1]:
@@ -634,12 +941,93 @@ def _crear_evidencia_video(libro, resultados: list[dict], idioma: str) -> None:
                 continue
             dato = _datos_maximo(video)
             revision = video.get("revision_manual") or {}
-            apertura_confirmada = revision.get("estado") == "confirmado"
+            revision_confirmada = revision.get("estado") == "confirmado"
             sin_apertura = revision.get("estado") == "sin_evento"
+            try:
+                frame_revision_valido = (revision.get("frame_index") is not None
+                                         and int(revision.get("frame_index")) >= 0)
+            except (TypeError, ValueError, OverflowError):
+                frame_revision_valido = False
+            tiempo_revision_crudo = _tiempo_crudo_finito(
+                revision.get("raw_time_ms", revision.get("tiempo_ms")))
+            referencia_revision_valida = (revision.get("referencia_tiempo_valida") is True
+                                          if "referencia_tiempo_valida" in revision
+                                          else revision.get("estado_tiempo") == "VALIDO")
+            evento_censurado = bool(
+                video.get("evento_al_inicio") or video.get("censurado_por_izquierda")
+                or str(video.get("estado") or "").casefold() == "evento_al_inicio"
+                or str(video.get("estado_evento") or "").casefold() == "evento_al_inicio")
+            apertura_confirmada = bool(
+                not evento_censurado
+                and revision_confirmada and tiempo_revision_crudo is not None
+                and tiempo_revision_crudo > 0 and frame_revision_valido
+                and referencia_revision_valida
+                and revision.get("estado_tiempo") not in {
+                    "NO_FINITO", "NO_POSITIVO", "REFERENCIA_INVALIDA", "PENDIENTE"})
+            apertura_invalida = evento_censurado or (revision_confirmada and not apertura_confirmada)
             apertura_frame = None if sin_apertura else _frame_valido(
-                revision.get("frame_index") if apertura_confirmada else video.get("frame_evento"))
-            apertura_ms = None if sin_apertura else _tiempo_ms(
-                revision.get("tiempo_ms") if apertura_confirmada else video.get("tiempo_ms"))
+                revision.get("frame_index") if revision_confirmada else video.get("frame_evento"))
+            if revision_confirmada:
+                apertura_raw = revision.get("raw_time_ms")
+                if apertura_raw is None:
+                    apertura_raw = revision.get("tiempo_ms")
+            else:
+                apertura_raw = video.get("tiempo_crudo_ms")
+                if apertura_raw is None:
+                    apertura_raw = video.get("tiempo_ms")
+                if apertura_raw is None:
+                    apertura_raw = video.get("tiempo_ms_sospechoso")
+            apertura_estado_tiempo = "SIN_EVENTO" if sin_apertura else "PENDIENTE"
+            apertura_rechazo = ""
+            apertura_raw_num = _tiempo_crudo_finito(apertura_raw)
+            video_referencia_valida = (video.get("referencia_tiempo_valida") is True
+                                       if "referencia_tiempo_valida" in video
+                                       else video.get("estado_tiempo") == "VALIDO")
+            if evento_censurado:
+                apertura_estado_tiempo = "CENSURADO"
+                apertura_rechazo = (revision.get("motivo_rechazo") or video.get("motivo_rechazo")
+                                    or "El evento está censurado al inicio del clip; falta evidencia previa del nacimiento.")
+            elif revision_confirmada:
+                if apertura_raw_num is None:
+                    try:
+                        valor_raw = float(str(apertura_raw).strip().casefold().replace(",", "."))
+                        apertura_estado_tiempo = "NO_FINITO" if not math.isfinite(valor_raw) else "NO_INTERPRETABLE"
+                    except (TypeError, ValueError, OverflowError):
+                        apertura_estado_tiempo = "NO_INTERPRETABLE"
+                elif apertura_raw_num <= 0:
+                    apertura_estado_tiempo = "NO_POSITIVO"
+                elif not frame_revision_valido or not referencia_revision_valida or revision.get("estado_tiempo") in {
+                        "NO_FINITO", "NO_POSITIVO", "NO_INTERPRETABLE", "REFERENCIA_INVALIDA", "PENDIENTE"}:
+                    apertura_estado_tiempo = "REFERENCIA_INVALIDA"
+                else:
+                    apertura_estado_tiempo = "VALIDO"
+                if not apertura_confirmada:
+                    apertura_rechazo = revision.get("motivo_rechazo") or {
+                        "NO_POSITIVO": "El tiempo final de apertura debe ser estrictamente mayor que cero.",
+                        "NO_FINITO": "El tiempo final de apertura debe ser finito.",
+                        "NO_INTERPRETABLE": "El tiempo crudo no se interpreta como milisegundos.",
+                        "REFERENCIA_INVALIDA": "La referencia temporal no está validada; no se publica.",
+                    }.get(apertura_estado_tiempo, "La revisión de apertura está pendiente.")
+            elif apertura_raw is not None:
+                if apertura_raw_num is None:
+                    try:
+                        valor_raw = float(str(apertura_raw).strip().casefold().replace(",", "."))
+                        apertura_estado_tiempo = "NO_FINITO" if not math.isfinite(valor_raw) else "NO_INTERPRETABLE"
+                    except (TypeError, ValueError, OverflowError):
+                        apertura_estado_tiempo = "NO_INTERPRETABLE"
+                elif apertura_raw_num <= 0:
+                    apertura_estado_tiempo = "NO_POSITIVO"
+                elif not video_referencia_valida:
+                    apertura_estado_tiempo = "REFERENCIA_INVALIDA"
+                    apertura_rechazo = video.get("motivo_rechazo") or "La referencia temporal del candidato no está validada."
+            if apertura_estado_tiempo in {"NO_POSITIVO", "NO_FINITO", "NO_INTERPRETABLE"} and not apertura_rechazo:
+                apertura_rechazo = (video.get("motivo_rechazo") or
+                                    revision.get("motivo_rechazo") or {
+                                        "NO_POSITIVO": "El tiempo final de apertura debe ser estrictamente mayor que cero.",
+                                        "NO_FINITO": "El tiempo final de apertura debe ser finito.",
+                                        "NO_INTERPRETABLE": "El tiempo crudo no se interpreta como milisegundos.",
+                                    }.get(apertura_estado_tiempo, "Tiempo no publicable."))
+            apertura_ms = apertura_raw_num if apertura_confirmada else None
             ruta = str(video.get("ruta") or video.get("nombre") or "").strip()
             fps = _numero(dato.get("fps") or video.get("fps_grabacion") or video.get("fps"))
             if fps is not None and fps <= 0:
@@ -654,7 +1042,8 @@ def _crear_evidencia_video(libro, resultados: list[dict], idioma: str) -> None:
                 estado_maximo = "no_data"
             avisos = []
             for valor in (video.get("advertencia_fps"), video.get("advertencia_tiempo"),
-                          video.get("advertencia_deteccion"), dato.get("advertencias")):
+                          video.get("advertencia_deteccion"), revision.get("motivo_rechazo"),
+                          dato.get("advertencias")):
                 if valor:
                     avisos.append(_texto_evidencia(valor))
             if estado_maximo == "invalid":
@@ -668,33 +1057,197 @@ def _crear_evidencia_video(libro, resultados: list[dict], idioma: str) -> None:
                 ruta, video.get("tipo_camara") or zona_apertura.get("tipo_camara") or "",
                 fps, video.get("fps_fuente") or "", _frame_valido(video.get("frame_cero")),
                 _numero(timestamp_inicial), apertura_frame, apertura_ms,
-                _tv(idioma, "no_event" if sin_apertura else "confirmed" if apertura_confirmada else "pending" if apertura_frame is not None else "no_data"),
+                _tv(idioma, "no_event" if sin_apertura else "invalid" if apertura_invalida
+                    else "confirmed" if apertura_confirmada else "pending" if apertura_frame is not None else "no_data"),
                 _frame_valido(dato.get("frame_index")), _tiempo_ms(dato.get("tiempo_ms")), _resolucion_maximo(video),
                 dato.get("fuente_tiempo") or "", _texto_evidencia(zona_apertura.get("bbox_norm")),
                 _texto_evidencia(dato.get("bbox_norm")), _tv(idioma, estado_maximo),
                 dato.get("usuario") or "", dato.get("confirmado_en") or "", dato.get("metodo") or "", "\n".join(avisos),
                 "revision_manual" if apertura_confirmada or sin_apertura else video.get("fuente_tiempo") or "",
                 _tiempo_ms(video.get("resolucion_nativa_ms")),
+                _raw_tiempo_excel(apertura_raw), apertura_estado_tiempo, apertura_rechazo,
             ])
             fila = ws.max_row
             if ruta:
                 ws.cell(fila, 4).hyperlink = ruta
                 ws.cell(fila, 4).style = "Hyperlink"
-            for columna in (6, 9, 11, 14, 15, 25):
+            for columna in (6, 9, 11, 14, 15, 25, 26):
                 ws.cell(fila, columna).number_format = "0.000"
             for columna in (8, 10, 13):
                 ws.cell(fila, columna).number_format = "0"
-            for columna in (17, 18, 23):
+            for columna in (17, 18, 23, 28):
                 ws.cell(fila, columna).alignment = Alignment(wrap_text=True, vertical="top")
             if estado_maximo in {"pending", "invalid"}:
                 ws.cell(fila, 19).fill = _relleno("#FFD966")
+            if apertura_invalida:
+                ws.cell(fila, 27).fill = _relleno("#FFD966")
     ws.freeze_panes = "A2"
     ws.auto_filter.ref = ws.dimensions
-    for columna in range(1, 26):
+    for columna in range(1, 29):
         ws.column_dimensions[get_column_letter(columna)].width = {
             3: 38, 4: 55, 17: 30, 18: 30, 21: 28, 23: 65,
+            26: 22, 27: 24, 28: 64,
         }.get(columna, 22)
 
+
+
+def _crear_matriz_apertura_dinamica(libro, resultados: list[dict], mapa_filas: dict[str, int],
+                                      reglas: dict, idioma: str = "es",
+                                      identidad_proyecto: dict | None = None) -> None:
+    """Hoja aditiva de apertura con una fila por caso existente, sin cupos/vacantes."""
+    from utilidades.resultado_caso import resolver_resultado_caso
+
+    nombre = "Apertura V15.10"
+    if nombre in libro.sheetnames:
+        del libro[nombre]
+    ws = libro.create_sheet(nombre)
+    encabezados = {
+        "es": ["Proyecto", "Etapa", "Case key", "Número de prueba", "Temperatura",
+               "Generador", "Decisión V15.10", "Apertura confirmada ms", "Tiempo propuesto ms",
+               "Intervalo ms", "Resolución ms", "Incertidumbre ms", "Fuente", "Estado tiempo",
+               "Tiempo crudo ms", "Motivo rechazo", "Soporte cámaras", "Motivo / evidencia", "Ir al detalle",
+               "Máximo inflado estimado ms", "Duración breakout→máximo ms",
+               "Soporte máximo", "Anomalías máximo",
+               # R15.1 (MEDIO-09): columnas NUEVAS al final — el contrato de
+               # posiciones legacy (1-23) no se mueve.
+               "Estado máximo inflado", "Máximo visible NO CONFIRMADO ms"],
+        "en": ["Project", "Stage", "Case key", "Test number", "Temperature", "Inflator",
+               "V15.10 decision", "Confirmed opening ms", "Proposed time ms", "Interval ms",
+               "Resolution ms", "Uncertainty ms", "Source", "Time status", "Raw time ms",
+               "Rejection reason", "Camera support", "Reason / evidence", "Open detail",
+               "Estimated maximum inflation ms", "Breakout→maximum duration ms",
+               "Maximum support", "Maximum anomalies",
+               "Maximum inflation status", "Visible maximum NOT CONFIRMED ms"],
+        "de": ["Projekt", "Stufe", "Case key", "Versuchsnummer", "Temperatur", "Generator",
+               "V15.10-Entscheidung", "Bestätigte Öffnung ms", "Vorgeschlagene Zeit ms",
+               "Intervall ms", "Auflösung ms", "Unsicherheit ms", "Quelle", "Zeitstatus",
+               "Rohzeit ms", "Ablehnungsgrund", "Kameraunterstützung", "Grund / Evidenz", "Details öffnen",
+               "Geschätzte maximale Entfaltung ms", "Dauer Breakout→Maximum ms",
+               "Maximum-Unterstützung", "Maximum-Anomalien",
+               "Status maximale Entfaltung", "Sichtbares Maximum NICHT BESTÄTIGT ms"],
+    }
+    # R15.1 (MEDIO-09): etiqueta de estado explícita del máximo agregado.
+    etiquetas_estado_max = {
+        "es": {"maximo_inflado_estimado": "Confirmado (estimado defendible)",
+               "maximo_visible_observado_no_confirmado": "NO CONFIRMADO (máximo visible observado)",
+               "sin_maximo_defendible": "Sin máximo defendible"},
+        "en": {"maximo_inflado_estimado": "Confirmed (defensible estimate)",
+               "maximo_visible_observado_no_confirmado": "NOT CONFIRMED (observed visible maximum)",
+               "sin_maximo_defendible": "No defensible maximum"},
+        "de": {"maximo_inflado_estimado": "Bestätigt (vertretbare Schätzung)",
+               "maximo_visible_observado_no_confirmado": "NICHT BESTÄTIGT (beobachtetes sichtbares Maximum)",
+               "sin_maximo_defendible": "Kein vertretbares Maximum"},
+    }.get(idioma, {"maximo_inflado_estimado": "Confirmado (estimado defendible)",
+                   "maximo_visible_observado_no_confirmado": "NO CONFIRMADO (máximo visible observado)",
+                   "sin_maximo_defendible": "Sin máximo defendible"})
+    ws.append(encabezados.get(idioma, encabezados["es"][:]))
+    for cell in ws[1]:
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = _relleno("#1D4ED8")
+        cell.alignment = Alignment(wrap_text=True, vertical="center")
+
+    criterios = (reglas.get("criterios") or {}).get("tiempo_apertura_ms") or {
+        "verde": "<= 6", "amarillo": "6-7", "rojo": "> 7"}
+    colores = {"verde": "#00B050", "amarillo": "#FFD966", "rojo": "#FF0000", "gris": "#A6A6A6"}
+    orden = {"1ST": 0, "2ST": 1}
+    filas = sorted(resultados, key=lambda r: (
+        orden.get(str(r.get("tipo_st") or "").upper(), 2),
+        str(r.get("temperature_condition") or _campo(r, "temperature_condition") or ""),
+        str(r.get("inflator_type") or _campo(r, "inflator_type") or ""),
+        str(_campo(r, "test_number") or r.get("identificador") or _identidad(r))))
+    for resultado in filas:
+        canonico = resultado.get("resultado_caso_canonico")
+        if ("campos" in resultado or "videos" in resultado or "video_apertura" in resultado
+                or not isinstance(canonico, dict)):
+            canonico = resolver_resultado_caso(resultado)
+        apertura = canonico.get("apertura") if isinstance(canonico.get("apertura"), dict) else {}
+        decision = str(apertura.get("estado") or "NO_OBSERVADO")
+        confirmado = (_tiempo_apertura_final(apertura.get("tiempo_ms"))
+                      if decision in {"VERIFICADO_HUMANO", "AUTO_VERIFICABLE"} else None)
+        propuesto = (_tiempo_apertura_final(apertura.get("tiempo_propuesto_ms"))
+                     if decision in {"PROPUESTA", "CONFLICTO"} else None)
+        intervalo = apertura.get("intervalo_tiempo_ms")
+        motivos = list(apertura.get("motivos") or [])
+        revisiones_invalidas = apertura.get("revisiones_temporales_invalidas")
+        revisiones_invalidas = revisiones_invalidas if isinstance(revisiones_invalidas, list) else []
+        revision_invalida = next((x for x in revisiones_invalidas if isinstance(x, dict)), {})
+        campos_resultado = resultado.get("campos") if isinstance(resultado.get("campos"), dict) else {}
+        campo_tiempo = campos_resultado.get("opening_time_ms") if isinstance(campos_resultado.get("opening_time_ms"), dict) else {}
+        estado_tiempo = revision_invalida.get("estado_tiempo") or apertura.get("estado_tiempo") or (
+            "VALIDO" if decision in {"VERIFICADO_HUMANO", "AUTO_VERIFICABLE"} else
+            "CONFLICTO" if decision == "CONFLICTO" else
+            "PENDIENTE" if decision == "PROPUESTA" else "SIN_MEDICION")
+        raw_time_ms = revision_invalida.get("raw_time_ms")
+        if raw_time_ms is None:
+            raw_time_ms = apertura.get("tiempo_crudo_ms")
+        if raw_time_ms is None:
+            raw_time_ms = campo_tiempo.get("raw_time_ms")
+        if raw_time_ms is not None:
+            try:
+                if not math.isfinite(float(raw_time_ms)):
+                    raw_time_ms = str(raw_time_ms)
+            except (TypeError, ValueError, OverflowError):
+                raw_time_ms = str(raw_time_ms)
+        motivo_rechazo = revision_invalida.get("motivo") or campo_tiempo.get("motivo_rechazo") or ""
+        if apertura.get("estado_operativo") == "sin_apertura_confirmada_manual":
+            motivos.append("sin_apertura_confirmada_manualmente")
+        soporte = apertura.get("soporte_independiente")
+        proyecto = (resultado.get("project_id") or resultado.get("proyecto")
+                    or (identidad_proyecto or {}).get("project_id")
+                    or (identidad_proyecto or {}).get("nombre_proyecto") or "")
+        etapa = resultado.get("tipo_st") or ""
+        numero = _campo(resultado, "test_number") or resultado.get("identificador") or ""
+        temp = resultado.get("temperature_condition") or _campo(resultado, "temperature_condition") or ""
+        gen = resultado.get("inflator_type") or _campo(resultado, "inflator_type") or ""
+        case_key = _identidad(resultado)
+        fuente = (apertura.get("fuente") or campo_tiempo.get("fuente_preferida")
+                  or campo_tiempo.get("fuente") or revision_invalida.get("fuente")
+                  or revision_invalida.get("video") or "")
+        fila = ws.max_row + 1
+        ws.append([
+            proyecto, etapa, case_key, numero, temp, gen, decision,
+            _tiempo_apertura_final(confirmado), _tiempo_apertura_final(propuesto),
+            json.dumps(intervalo, ensure_ascii=False) if intervalo is not None else "",
+            _numero(apertura.get("resolucion_ms")), _numero(apertura.get("incertidumbre_ms")),
+            fuente, estado_tiempo, raw_time_ms if raw_time_ms is not None else "",
+            motivo_rechazo, soporte if soporte is not None else "",
+            "; ".join(str(x) for x in dict.fromkeys(motivos)), "Abrir caso",
+            _numero(apertura.get("tiempo_max_inflado_estimado_ms")),
+            _numero(apertura.get("duracion_hasta_max_inflado_ms")),
+            apertura.get("max_inflado_soporte") if apertura.get("max_inflado_soporte") is not None else "",
+            "; ".join(str(x) for x in (apertura.get("max_inflado_anomalias") or [])),
+            etiquetas_estado_max.get(str(apertura.get("max_inflado_estado") or ""), ""),
+            _numero(apertura.get("tiempo_max_inflado_no_confirmado_ms")),
+        ])
+        if decision in {"VERIFICADO_HUMANO", "AUTO_VERIFICABLE"} and confirmado is not None:
+            color, valor, _motivo = evaluar_apertura(confirmado, criterios)
+            ws.cell(fila, 7).fill = _relleno(colores.get(color, colores["gris"]))
+            ws.cell(fila, 8).fill = _relleno(colores.get(color, colores["gris"]))
+        else:
+            ws.cell(fila, 7).fill = _relleno(colores["gris"])
+            ws.cell(fila, 9).fill = _relleno(colores["gris"])
+        detalle = mapa_filas.get(_identidad(resultado))
+        if detalle:
+            ws.cell(fila, 19).hyperlink = f"#'{HOJA_LISTA}'!C{detalle}"
+            ws.cell(fila, 19).style = "Hyperlink"
+        comentario = "\n".join(str(x) for x in motivos) or "Sin evidencia suficiente; no se declara tiempo confirmado."
+        comentario_traza = [f"Decisión: {decision}", f"Estado temporal: {estado_tiempo}"]
+        if motivo_rechazo:
+            comentario_traza.append(f"Rechazo: {motivo_rechazo}")
+        if raw_time_ms is not None:
+            comentario_traza.append(f"Tiempo crudo: {raw_time_ms} ms")
+        if fuente:
+            comentario_traza.append(f"Fuente: {fuente}")
+        comentario_traza.extend((comentario, "score/probabilidad calibrada: no disponible"))
+        ws.cell(fila, 7).comment = Comment("\n".join(comentario_traza), "V-Matrix")
+        for col in (8, 9, 11, 12, 15, 20, 21):
+            ws.cell(fila, col).number_format = "0.000"
+        for col in range(1, 24):
+            ws.cell(fila, col).alignment = Alignment(vertical="top", wrap_text=(col in {10, 15, 16, 18, 23}))
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = ws.dimensions
+    for col, width in enumerate((22, 10, 38, 20, 16, 16, 28, 21, 20, 27, 16, 18, 24, 18, 18, 46, 17, 68, 18, 24, 28, 16, 48), 1):
+        ws.column_dimensions[get_column_letter(col)].width = width
 
 
 def _guardar_atomico(libro, destino: Path, intentos: int=6) -> None:
@@ -713,28 +1266,92 @@ def _guardar_atomico(libro, destino: Path, intentos: int=6) -> None:
 
 
 def generar_reporte_bmg(ruta_plantilla: str | Path, ruta_salida: str | Path,
-                        resultados: list[dict], config: dict, reglas: dict, idioma: str="es") -> Path:
-    """Genera un único Excel 1ST+2ST, dinámico, traducido y trazable."""
+                        resultados: list[dict], config: dict, reglas: dict, idioma: str="es",
+                        criterios_apertura: dict | None = None,
+                        identidad_proyecto: dict | None = None) -> Path:
+    """Genera un único Excel 1ST+2ST, dinámico, traducido y trazable.
+
+    ``criterios_apertura`` (V15.9) es la instantánea de la ejecución
+    ``{"verde_max": …, "amarillo_max": …, "origen": …}``: cuando se pasa, el
+    semáforo de ESTE Excel usa esos límites y no una preferencia posterior,
+    de modo que pantalla y libro no divergen. Sin instantánea se usan las
+    reglas vigentes (compatibilidad).
+    """
     idioma=(idioma or "es").lower()
     if idioma not in {"es","en","de"}: raise ValueError("Idioma de exportación no válido: es, en o de.")
+    if criterios_apertura is not None:
+        try:
+            verde, amarillo = validar_limites(criterios_apertura.get("verde_max"),
+                                              criterios_apertura.get("amarillo_max"))
+        except (ValueError, TypeError) as exc:
+            raise ValueError(f"Los límites de apertura de la ejecución no son válidos: {exc}") from exc
+        reglas = {**reglas,
+                  "criterios": {**(reglas.get("criterios") or {}),
+                                "tiempo_apertura_ms": criterio_desde_limites(verde, amarillo)}}
     # Las revisiones se incorporan a una copia: exportar nunca muta resultados
     # compartidos con el reanálisis o el escritor de validación.
     from maximos_video import incorporar_maximos
     resultados = copy.deepcopy(resultados)
     for resultado in resultados:
         incorporar_maximos(resultado)
+        # R7: compatibilidad con resultados previos que perdieron project_id
+        # al construir la fila final de validación. La identidad elegida por el
+        # usuario es la fuente autoritativa de esta ejecución.
+        if identidad_proyecto:
+            if not resultado.get("project_id"):
+                resultado["project_id"] = identidad_proyecto.get("project_id")
+            if not resultado.get("nombre_proyecto"):
+                resultado["nombre_proyecto"] = identidad_proyecto.get("nombre_proyecto")
     libro=load_workbook(Path(ruta_plantilla))
     faltantes={HOJA_RESUMEN,HOJA_LISTA}-set(libro.sheetnames)
     if faltantes: raise ValueError(f"La plantilla BMG no contiene las hojas requeridas: {sorted(faltantes)}")
     mapa=_poblar_lista(libro[HOJA_LISTA],resultados,idioma)
     _copiar_lista_a_rangos(libro,resultados,idioma)
     resumen=libro[HOJA_RESUMEN]
+    # R7: eliminar datos históricos precargados ANTES de dibujar cualquier
+    # etapa, para que una corrida de 1-2 filas no deje IDs de la plantilla.
+    _limpiar_bloques_historicos_matriz(resumen)
+    _aplicar_titulos_proyecto_institucionales(libro, identidad_proyecto, idioma, resultados)
     fin1=_poblar_matriz(resumen,"1ST",resultados,7,mapa,config.get("colores",{}),reglas,idioma)
     inicio2=max(33,fin1+4)
     fin2=_poblar_matriz(resumen,"2ST",resultados,inicio2,mapa,config.get("colores",{}),reglas,idioma)
-    _crear_leyenda_matriz(resumen,fin2+1,config.get("colores",{}),idioma)
+    # V15.9.1 (B3): bloque único global de casos fuera de etapa/categorización
+    # (3RD, LEGACY, sin etapa, combinaciones fuera de columnas) con paridad de
+    # IDs respecto al dashboard y al Listado.
+    inicio_sc=fin2+2
+    fin_sc=_poblar_sin_clasificar(resumen,resultados,inicio_sc,mapa,config.get("colores",{}),reglas,idioma)
+    fila_leyenda=fin_sc+1 if fin_sc>inicio_sc else fin2+1
+    _crear_leyenda_matriz(resumen,fila_leyenda,config.get("colores",{}),idioma,reglas)
     _crear_trazabilidad(libro,resultados,idioma)
     _crear_diccionario(libro,idioma)
     _crear_evidencia_video(libro,resultados,idioma)
+    _crear_matriz_apertura_dinamica(libro,resultados,mapa,reglas,idioma,identidad_proyecto)
+    # V15.10: fuente de consulta aditiva; cada fila es un caso existente,
+    # mientras la plantilla y sus hojas institucionales permanecen intactas.
+    # V15.9.2 (C7): identidad autoritativa del proyecto en la SALIDA (la
+    # plantilla BMG permanece intacta; sólo celdas identificadas).
+    # V15.9.5 (CRIT-N7): se examinan TODAS las hojas visibles del entregable
+    # (resumen, matriz, rangos, trazabilidad, evidencia…), no sólo las
+    # mapeadas. Única exención documentada: la hoja de diccionario de datos,
+    # documentación ESTATICA de campos generada por esta misma función (sus
+    # textos describen reglas OCR, p. ej. «Proyecto o pizarra explícitos…», y
+    # no son identidad del reporte). La exención queda escrita en el bloque
+    # de identidad.
+    # V15.10.1 R3: la plantilla no es la fuente de identidad. Si el usuario
+    # eligió explícitamente el proyecto y la plantilla simplemente carece de
+    # una celda de proyecto mapeable, se publica con trazabilidad. Las
+    # contradicciones reales/estructurales siguen bloqueando.
+    from utilidades.identidad_excel_publicacion import aplicar_identidad_a_salida_publicable
+    meta_identidad = aplicar_identidad_a_salida_publicable(
+        libro, identidad_proyecto, idioma=idioma,
+        hojas_busqueda=[HOJA_RESUMEN, HOJA_LISTA], hoja_resumen=HOJA_RESUMEN,
+        hojas_exentas=[_t(idioma, "dictionary")[:31]])
     libro.calculation.fullCalcOnLoad=True; libro.calculation.forceFullCalc=True; libro.calculation.calcMode="auto"
-    destino=Path(ruta_salida); _guardar_atomico(libro,destino); return destino
+    # V15.9.3 (CRIT-03): identidad no verificada ⇒ BORRADOR NO PUBLICABLE en
+    # ubicación diferenciada; el destino oficial no se crea ni se reemplaza.
+    # Se devuelve la ruta del borrador (sin excepción: abortar la fase 3 del
+    # pipeline perdería la persistencia de los resultados OCR de la corrida).
+    destino = Path(ruta_salida)
+    if identidad_proyecto and meta_identidad.get("publicable") is False:
+        destino = destino.with_name(f"{destino.stem}.borrador_no_publicable{destino.suffix or '.xlsx'}")
+    _guardar_atomico(libro,destino); return destino

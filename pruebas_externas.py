@@ -215,9 +215,29 @@ def evaluar(config: dict | None = None,
         "cobertura_texto": round(fragmentos_ok / fragmentos, 4) if fragmentos else None,
         "resultados": resultados,
     }
-    salida.parent.mkdir(parents=True, exist_ok=True)
-    escribir_json_seguro(salida, documento, lanzar=True)
+    _commit_documento_completo(salida, documento)
     return documento
+
+
+def _commit_documento_completo(salida: Path, documento: dict) -> None:
+    """R15.6 (ALTO-04): commit de regeneración completa bajo la autoridad
+    del documento externo.
+
+    Lock por ruta (no se intercala con commits humanos) y ``revision_documento``
+    monotónica: la regeneración NUNCA hace retroceder la revisión.
+    """
+    from utilidades import persistencia_documento as _pdoc
+    salida.parent.mkdir(parents=True, exist_ok=True)
+    with _pdoc.lock_documento(salida):
+        base = 0
+        try:
+            previo = _pdoc.leer_fresco(salida)
+            base = int(previo.get("revision_documento") or 0)
+        except (_pdoc.DocumentoAusente, _pdoc.FormatoInvalido):
+            base = 0
+        documento["revision_documento"] = max(
+            base, int(documento.get("revision_documento") or 0)) + 1
+        escribir_json_seguro(salida, documento, lanzar=True)
 
 
 def cargar(config: dict | None = None) -> dict:

@@ -70,26 +70,55 @@ class TiempoUnicoTests(unittest.TestCase):
         self.assertAlmostEqual(r["tiempo_ms"], 2.2, places=3)
 
     def test_revision_negativa_guardada_se_repara(self):
+        """R15 (SUPERSEDE documentado del contrato V15.7).
+
+        V15.7 «reparaba» una revisión humana negativa reescribiéndola a 2.0
+        ms (``tiempo_reparado``). Desde V15.10 los datos humanos NUNCA se
+        reescriben (plan R15: cero pérdida de datos manuales; «no inventar
+        certeza»): el valor histórico se conserva intacto, se marca
+        NO_POSITIVO con motivo visible y no se publica.
+        """
         item = _video("081_LATERAL.AVI", 11, revision={
             "estado": "confirmado", "frame_index": 10, "tiempo_ms": -122.8})
         normalizar_videos_caso([item], {})
         rev = item["revision_manual"]
-        self.assertEqual(rev["tiempo_ms"], 2.0)
-        self.assertTrue(rev["tiempo_reparado"])
-        self.assertEqual(rev["tiempo_original_ms"], -122.8)
+        self.assertEqual(rev["tiempo_ms"], -122.8)
+        self.assertEqual(rev["raw_time_ms"], -122.8)
+        self.assertEqual(rev["estado_tiempo"], "NO_POSITIVO")
+        self.assertIn("no es positivo", rev["motivo_rechazo"])
+        self.assertNotIn("tiempo_reparado", rev)
 
     def test_revision_con_8_fps_se_repara(self):
+        """R15 (SUPERSEDE documentado del contrato V15.7).
+
+        V15.7 recalculaba a 2.2 ms una revisión humana sospechosa de haber
+        sido guardada con fps de archivo (8 fps => 1375.0). La doctrina
+        vigente no reescribe datos humanos: conserva 1375.0 como raw, lo
+        marca REFERENCIA_INVALIDA y lo deja para revisión manual explícita.
+        """
         item = _video("x_LATERAL.AVI", 11, revision={
             "estado": "confirmado", "frame_index": 11, "tiempo_ms": 1375.0})
         normalizar_videos_caso([item], {})
-        self.assertEqual(item["revision_manual"]["tiempo_ms"], 2.2)
+        rev = item["revision_manual"]
+        self.assertEqual(rev["tiempo_ms"], 1375.0)
+        self.assertEqual(rev["raw_time_ms"], 1375.0)
+        self.assertEqual(rev["estado_tiempo"], "REFERENCIA_INVALIDA")
+        self.assertIn("revisión manual", rev["motivo_rechazo"])
 
     def test_confirmacion_coherente_no_se_reescribe(self):
+        """R15 (SUPERSEDE documentado): la confirmación coherente sigue sin
+        reescribirse; la comparación es de SUBCONJUNTE porque V15.10 enriquece
+        la revisión con claves de auditoría temporal (``raw_time_ms``,
+        ``estado_tiempo``, ``motivo_rechazo``) sin alterar los datos humanos.
+        """
         item = _video("x_LATERAL.AVI", 14, revision={
             "estado": "confirmado", "frame_index": 11, "tiempo_ms": 2.2})
         normalizar_videos_caso([item], {})
-        self.assertEqual(item["revision_manual"], {
-            "estado": "confirmado", "frame_index": 11, "tiempo_ms": 2.2})
+        rev = item["revision_manual"]
+        esperado = {"estado": "confirmado", "frame_index": 11, "tiempo_ms": 2.2}
+        self.assertEqual({k: rev[k] for k in esperado}, esperado)
+        self.assertEqual(rev["estado_tiempo"], "VALIDO")
+        self.assertEqual(rev["raw_time_ms"], 2.2)
 
 
 class ConsensoPrimeraAparicionTests(unittest.TestCase):
@@ -100,6 +129,12 @@ class ConsensoPrimeraAparicionTests(unittest.TestCase):
         self.assertEqual(c["estado"], "primera_aparicion")
         self.assertEqual(c["tiempo_ms"], 2.4)
         self.assertIn("SCHEIBE", c["camaras_excluidas"])
+        # V15.9.1: tres cámaras principales coinciden dentro de tolerancia →
+        # confirmado limpio y publicable; SCHEIBE jamás define el tiempo.
+        self.assertEqual(c["estado_consenso"], "confirmado")
+        self.assertEqual(c["soporte"], 3)
+        self.assertNotEqual(c["camara_referencia"], "SCHEIBE")
+        self.assertFalse(c["requiere_revision"])
         self.assertTrue(consenso_valido(c))
 
     def test_deteccion_aislada_mas_temprana_pide_revision(self):
@@ -119,9 +154,20 @@ class ConsensoPrimeraAparicionTests(unittest.TestCase):
         self.assertEqual(c["tiempo_ms"], 2.0)
 
     def test_nunca_negativo(self):
+        """R15 (SUPERSEDE documentado del contrato V15.7).
+
+        V15.7 exigía ``tiempo_ms >= 0`` (en la práctica, clamp a 0.0). La
+        doctrina vigente (plan R15, caso sintético B: «sin breakout ⇒ NO
+        DETECTADO, nunca 0 ms») prohíbe inventar un tiempo: dos vídeos en
+        frame 0 sin evidencia suficiente producen ``sin_datos`` con
+        ``tiempo_ms is None`` y revisión requerida; jamás un 0 fabricado.
+        """
         items = [_video("n_DETAIL.AVI", 0), _video("n_FRONTAL.AVI", 0)]
         c = consenso_videos(items, {})
-        self.assertGreaterEqual(c["tiempo_ms"], 0.0)
+        self.assertIsNone(c["tiempo_ms"])
+        self.assertEqual(c["estado"], "sin_datos")
+        self.assertEqual(c["estado_consenso"], "sin_evento")
+        self.assertTrue(c["requiere_revision"])
 
 
 def _escribir_avi(ruta: Path, desplazamiento: int = 0) -> None:

@@ -1,7 +1,9 @@
 # Documentación del proyecto
 
-Versión **V15.8.1**: organización de guías, informes, historial y parches, sobre
-las funciones de V15.8. Sin cambios en el motor OCR ni en los datos del usuario.
+Versión **V15.9.0**: rangos de apertura antes de procesar, ROI/microzona,
+zoom del visor, matriz completa y consenso 3-de-4 sobre las funciones de
+V15.8.1. Sin cambios en los límites de medición ni en los identificadores
+del Excel.
 
 Para instalar o iniciar el programa, comienza por el [README principal](../README.md).
 La reorganización sólo cambia la ubicación de notas e informes: no mueve código,
@@ -9,12 +11,15 @@ dependencias, datos, aprendizaje ni archivos de salida.
 
 ## Guías actuales
 
+- [Funciones y uso de V15.9: rangos, ROI, zoom, matriz y consenso](guias/LEEME_V15_9_APERTURA_ROI_ZOOM_MATRIZ.md).
 - [Funciones y uso de V15.8: etiquetas, ruptura, máximo visible y rangos](guias/LEEME_V15_8_GUIA_RUPTURA_MAXIMO.md).
 - [Instalación multiplataforma y diagnóstico CPU/GPU](instalacion_multiplataforma.md).
 - [Notas de instalación V15 del paquete original](guias/LEEME_INSTALACION_V15.txt).
 
 ## Informes y validación
 
+- [Cambios y pruebas de V15.9](informes/RESULTADOS_PRUEBAS_V15_9.md).
+- [Aplicación de V15.9 a la carpeta del proyecto y respaldo](informes/ACTUALIZACION_CARPETA_V15_9.md).
 - [Cambios y pruebas de V15.8](informes/RESULTADOS_PRUEBAS_V15_8.md).
 - [Aplicación de V15.8 a la carpeta del proyecto y respaldo](informes/ACTUALIZACION_CARPETA_V15_8.md).
 - [Informes de versiones anteriores](informes/).

@@ -18,11 +18,22 @@ def _fila(campo=None, correcciones=None):
 
 def test_consenso_valido_rellena_la_casilla():
     fila = _fila()
-    _aplicar_consenso_video_a_fila(fila, {"estado": "primera_aparicion", "tiempo_ms": 1.6, "soporte": 2})
+    _aplicar_consenso_video_a_fila(fila, {"estado": "primera_aparicion", "tiempo_ms": 1.6,
+                                          "soporte": 3, "total_principales": 4})
     dato = fila["campos"]["opening_time_ms"]
     assert dato["valor"] == "1.6"
     assert dato["estado"] == "extraido_video"
     assert "opening_time_ms" not in fila["campos_faltantes"]
+
+
+def test_consenso_legado_incompleto_no_rellena_v15_9_3():
+    """CRIT-01: metadatos sin ``total_principales`` no publican la casilla."""
+    fila = _fila()
+    _aplicar_consenso_video_a_fila(fila, {"estado": "primera_aparicion",
+                                          "tiempo_ms": 1.6, "soporte": 2})
+    dato = fila["campos"]["opening_time_ms"]
+    assert dato["valor"] is None
+    assert "opening_time_ms" in fila["campos_faltantes"]
 
 
 def test_sin_consenso_borra_solo_un_valor_que_venia_de_video():

@@ -192,10 +192,18 @@ def generar_excel(ruta_validacion: str | Path | None = None,
                   reglas: dict | None = None,
                   ruta_plantilla: str | Path | None = None,
                   datos_validacion: dict | None = None,
-                  idioma: str = "es") -> Path:
-    """Genera resultado_maestro.xlsx. Retorna la ruta del archivo creado."""
+                  idioma: str = "es",
+                  criterios_apertura: dict | None = None) -> Path:
+    """Genera resultado_maestro.xlsx. Retorna la ruta del archivo creado.
+
+    ``criterios_apertura`` (V15.9): instantánea ``{"verde_max", "amarillo_max",
+    "origen"}`` de la ejecución; el reporte BMG la usa para que el semáforo del
+    libro coincida con el mostrado durante esa ejecución.
+    """
     config = config or cargar_config()
     reglas = reglas or cargar_reglas()
+    if criterios_apertura is None and isinstance(datos_validacion, dict):
+        criterios_apertura = datos_validacion.get("criterios_apertura_ejecucion")
     f3 = config.get("fase3", {})
     ruta_validacion = Path(ruta_validacion) if ruta_validacion else RAIZ_PROYECTO / "validacion_resultados.json"
     ruta_salida = Path(ruta_salida) if ruta_salida else RAIZ_PROYECTO / f3.get("archivo_salida", "resultado_maestro.xlsx")
@@ -230,7 +238,11 @@ def generar_excel(ruta_validacion: str | Path | None = None,
             plantilla = RAIZ_PROYECTO / plantilla
         if not plantilla.is_file():
             raise FileNotFoundError(f"No se encontró la plantilla Excel: {plantilla}")
-        return generar_desde_plantilla(plantilla, ruta_salida, datos.get("resultados", []))
+        # V15.9.2 (C7): la identidad autoritativa de la ejecución viaja con
+        # los datos validados; la plantilla sólo aporta el contrato de formato.
+        return generar_desde_plantilla(
+            plantilla, ruta_salida, datos.get("resultados", []),
+            identidad_proyecto=datos.get("proyecto_ejecucion"), idioma=idioma)
 
     # Reporte BMG 1ST + 2ST: usa el libro de referencia sin alterar el
     # generador empresarial genérico. Una plantilla explícita siempre tiene prioridad.
@@ -242,7 +254,9 @@ def generar_excel(ruta_validacion: str | Path | None = None,
             plantilla_bmg = RAIZ_PROYECTO / plantilla_bmg
         if plantilla_bmg.is_file():
             return generar_reporte_bmg(
-                plantilla_bmg, ruta_salida, datos.get("resultados", []), config, reglas, idioma=idioma)
+                plantilla_bmg, ruta_salida, datos.get("resultados", []), config, reglas, idioma=idioma,
+                criterios_apertura=criterios_apertura,
+                identidad_proyecto=datos.get("proyecto_ejecucion"))
 
     try:
         from pruebas_externas import cargar as cargar_externas

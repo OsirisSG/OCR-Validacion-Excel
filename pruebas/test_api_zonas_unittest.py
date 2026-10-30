@@ -16,6 +16,26 @@ class HTTPError(Exception):
         super().__init__(detail)
 
 
+class _TxStub:
+    """R15.6: stub del coordinador común — sin almacenes reales que
+    compensar en este arnés (el sqlite es en memoria y efímero)."""
+
+    def __init__(self, operacion, recurso=None):
+        pass
+
+    def capturar(self, nombre, capturar, restaurar):
+        return capturar()
+
+    def aplicado(self):
+        pass
+
+    def fallar(self, exc):
+        raise exc
+
+    def exito(self):
+        pass
+
+
 class ApiZonasTest(unittest.TestCase):
     def setUp(self):
         self.con = sqlite3.connect(":memory:")
@@ -31,6 +51,9 @@ class ApiZonasTest(unittest.TestCase):
             def listar_anotaciones(self, *args): return []
             def actualizar_revision(self, *args, **kwargs): pass
             def filtrar_no_texto(self, ocr, ruta): return aplicar(con, "hash", ocr)
+            # R15.6: primitivas de compensación del coordinador común.
+            def snapshot_evidencias_imagen(self, *args, **kwargs): return None
+            def restaurar_evidencias_imagen(self, snap): return True
         item = {"id": "imagen", "ruta": "foto.jpg", "resultado_ocr": self.ocr}
         self.env = {"SolicitudZona": SimpleNamespace, "_zona_lock": threading.Lock(),
                     "_pipeline_hilo": None, "HTTPException": HTTPError,
@@ -41,11 +64,22 @@ class ApiZonasTest(unittest.TestCase):
                     "_resolver_imagen": lambda *args: Path("foto.jpg"),
                     "hash_archivo": lambda p: "hash", "_aplicar_correcciones_publicas": lambda o,c:o,
                     "_regenerar_excel": lambda r: r.update(excel_pendiente=True),
-                    "rotar_imagen_libre": lambda im,g:im, "_orientacion_base_publica": lambda o:0}
+                    "rotar_imagen_libre": lambda im,g:im, "_orientacion_base_publica": lambda o:0,
+                    # R15.6: nombres nuevos del handler migrado al coordinador.
+                    "_assert_recurso_consistente": lambda recurso, accion: None,
+                    "TransaccionMultiAlmacen": _TxStub}
+        # R15.6 (ALTO-08): el handler usa el guard uniforme; el stub replica
+        # el check de hilo vivo sobre el propio entorno del arnés.
+        self.env["_assert_pipeline_inactivo"] = self._guard_pipeline_stub
         tree = ast.parse((Path(__file__).resolve().parents[1]/"dashboard/backend/app.py").read_text(encoding="utf-8"))
         fun = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "editar_zona")
         fun.decorator_list = []
         exec(compile(ast.Module(body=[fun], type_ignores=[]), "handler", "exec"), self.env)
+
+    def _guard_pipeline_stub(self, accion="editar zonas", **kw):
+        hilo = self.env.get("_pipeline_hilo")
+        if hilo is not None and hilo.is_alive():
+            raise HTTPError(409, f"Termina o detén el procesamiento antes de {accion}.")
 
     def llamar(self, **kwargs):
         data = dict(prueba_id="caso", imagen_id="imagen", bbox=[10,10,40,15],

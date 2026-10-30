@@ -16,6 +16,7 @@ métricas se reutilizan para calibrar la sensibilidad por tipo de cámara.
 """
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import math
@@ -73,8 +74,20 @@ def _leer_json(ruta: Path, defecto: Any) -> Any:
     return defecto
 
 
+class ErrorPersistenciaAprendizaje(RuntimeError):
+    """La escritura del aprendizaje falló: nada de esto es recuperable en silencio.
+
+    V15.9.2 (C3): los datos supervisados por humanos (ROI, historial, ejemplos
+    de evento) nunca pueden reportar éxito sin una escritura verificada.
+    """
+
+
 def _guardar_json(ruta: Path, data: Any) -> None:
-    escribir_json_seguro(ruta, data, lanzar=False, compacto=False)
+    resultado = escribir_json_seguro(ruta, data, lanzar=False, compacto=False)
+    if not resultado:
+        raise ErrorPersistenciaAprendizaje(
+            f"No se pudo guardar {Path(ruta).name}: {getattr(resultado, 'error', None) or 'escritura fallida'}. "
+            "El estado anterior permanece intacto; no se ha aplicado ningún cambio.")
 
 
 def cargar_aprendizajes() -> dict:
@@ -219,12 +232,136 @@ def guardar_zona_aprendida(ruta_video: str | Path, bbox_norm: list[float], *,
     data = cargar_aprendizajes()
     # Reenseñar el mismo video reemplaza el ejemplo anterior; no acumula basura.
     ident = firma_video.identidad(ruta)
+    previo = next((p for p in data["perfiles"]
+                   if firma_video.coincide(p, ident, "firma_video")), None)
+    # V15.9.1 (A1): la ROI desplazada se conserva en el historial para poder
+    # REVERTIRLA después (incluso tras recalcular o reiniciar). Máximo 8 pasos.
+    historial = [h for h in ((previo or {}).get("historial_roi") or []) if isinstance(h, dict)]
+    bbox_previa = previo.get("bbox_norm") if previo else None
+    if isinstance(bbox_previa, (list, tuple)) and len(bbox_previa) == 4:
+        historial.insert(0, {"bbox_norm": list(bbox_previa),
+                             "usuario": previo.get("usuario"),
+                             "actualizado_en": previo.get("actualizado_en"),
+                             "frame_confirmado": previo.get("frame_confirmado"),
+                             "motivo": "reemplazada_por_nueva_roi"})
+    perfil["historial_roi"] = historial[:8]
     anteriores = [p for p in data["perfiles"] if not firma_video.coincide(p, ident, "firma_video")]
     anteriores.append(perfil)
     data["perfiles"] = anteriores[-500:]
     data["actualizado_en"] = ahora
     _guardar_json(RUTA_APRENDIZAJE, data)
     return perfil
+
+
+def historial_zona_aprendida(ruta_video: str | Path) -> list[dict]:
+    """ROI previas guardadas para este video (la más reciente primero)."""
+    ruta = Path(ruta_video).resolve()
+    ident = firma_video.identidad(ruta)
+    data = cargar_aprendizajes()
+    perfil = next((p for p in data["perfiles"]
+                   if firma_video.coincide(p, ident, "firma_video")), None)
+    if perfil is None:
+        return []
+    return [h for h in (perfil.get("historial_roi") or []) if isinstance(h, dict)]
+
+
+def revertir_zona_aprendida(ruta_video: str | Path, *, usuario: str = "dashboard",
+                            indice: int = 0) -> dict:
+    """V15.9.1 (A1): restaura una ROI previa del historial de este video.
+
+    La ROI desplazada por la reversión también entra al historial, de modo que
+    revertir nunca es una operación destructiva ni irreversible. Devuelve el
+    perfil actualizado; lanza ``ValueError`` si no hay nada que restaurar.
+    """
+    ruta = Path(ruta_video).resolve()
+    data = cargar_aprendizajes()
+    ident = firma_video.identidad(ruta)
+    perfil = next((p for p in data["perfiles"]
+                   if firma_video.coincide(p, ident, "firma_video")), None)
+    if perfil is None:
+        raise ValueError("Este video no tiene zona aprendida que revertir.")
+    historial = [h for h in (perfil.get("historial_roi") or []) if isinstance(h, dict)]
+    idx = int(indice)
+    if idx < 0 or idx >= len(historial):
+        raise ValueError("No hay una ROI anterior en el historial para restaurar.")
+    entrada = historial.pop(idx)
+    bbox = _bbox_normalizada(entrada.get("bbox_norm"))
+    ahora = datetime.now().isoformat(timespec="seconds")
+    historial.insert(0, {"bbox_norm": list(perfil.get("bbox_norm") or []),
+                         "usuario": perfil.get("usuario"),
+                         "actualizado_en": perfil.get("actualizado_en"),
+                         "frame_confirmado": perfil.get("frame_confirmado"),
+                         "motivo": "reemplazada_por_reversion"})
+    perfil["bbox_norm"] = bbox
+    perfil["usuario"] = usuario
+    perfil["actualizado_en"] = ahora
+    perfil["revertido_en"] = ahora
+    perfil["historial_roi"] = historial[:8]
+    data["actualizado_en"] = ahora
+    _guardar_json(RUTA_APRENDIZAJE, data)
+    return perfil
+
+
+def perfil_zona_aprendida(ruta_video: str | Path) -> dict | None:
+    """Snapshot profundo del perfil de zona actual del video (o None).
+
+    V15.9.2 (C4): se toma ANTES de cualquier mutación para poder deshacer la
+    operación completa si un paso posterior (reanálisis, JSON) falla.
+    """
+    ruta = Path(ruta_video).resolve()
+    ident = firma_video.identidad(ruta)
+    data = cargar_aprendizajes()
+    perfil = next((p for p in data["perfiles"]
+                   if firma_video.coincide(p, ident, "firma_video")), None)
+    return copy.deepcopy(perfil) if perfil else None
+
+
+def eliminar_zona_aprendida(ruta_video: str | Path) -> bool:
+    """R15.3 (ALTO-02): elimina el perfil de zona del video (compensación).
+
+    Helper transaccional interno: se usa únicamente cuando el commit del
+    documento falló y debe deshacerse una ROI aprendida que no tenía perfil
+    previo (snapshot None). Escritura verificada; devuelve False si el video
+    no tenía perfil (nada que compensar).
+    """
+    ruta = Path(ruta_video).resolve()
+    ident = firma_video.identidad(ruta)
+    data = cargar_aprendizajes()
+    originales = len(data["perfiles"])
+    data["perfiles"] = [p for p in data["perfiles"]
+                        if not firma_video.coincide(p, ident, "firma_video")]
+    if len(data["perfiles"]) == originales:
+        return False
+    data["actualizado_en"] = datetime.now().isoformat(timespec="seconds")
+    _guardar_json(RUTA_APRENDIZAJE, data)
+    return True
+
+
+def restaurar_perfil_zona(ruta_video: str | Path, snapshot: dict) -> dict:
+    """V15.9.2 (C4): restaura un perfil de zona desde un snapshot previo.
+
+    Rollback transaccional con escritura verificada (C3): si el JSON no se
+    puede guardar, lanza ``ErrorPersistenciaAprendizaje`` y el estado anterior
+    permanece intacto.
+    """
+    if not isinstance(snapshot, dict) or not snapshot.get("id"):
+        raise ValueError("Snapshot de perfil inválido; no se puede restaurar.")
+    ruta = Path(ruta_video).resolve()
+    ident = firma_video.identidad(ruta)
+    data = cargar_aprendizajes()
+    perfiles, reemplazado = [], False
+    for p in data["perfiles"]:
+        if not reemplazado and firma_video.coincide(p, ident, "firma_video"):
+            perfiles.append(copy.deepcopy(snapshot))
+            reemplazado = True
+        else:
+            perfiles.append(p)
+    if not reemplazado:
+        perfiles.append(copy.deepcopy(snapshot))
+    data["perfiles"] = perfiles[-500:]
+    data["actualizado_en"] = datetime.now().isoformat(timespec="seconds")
+    _guardar_json(RUTA_APRENDIZAJE, data)
+    return snapshot
 
 
 def _ruta_referencia(perfil: dict) -> Path | None:
@@ -372,6 +509,9 @@ def _zona_manual_bloqueada(perfil: dict, tipo_nombre: str | None, total: int,
         "transformada_por_similitud": False,
         "autoalineacion_activa": False,
         "total_aprendizajes": total,
+        # V15.9.1 (A1): ROI previas para el flujo «Revertir ROI anterior».
+        "historial_roi": [h for h in (perfil.get("historial_roi") or [])
+                          if isinstance(h, dict)],
     }
 
 
@@ -419,7 +559,28 @@ def seleccionar_zona_aprendida(ruta_video: str | Path, primer_frame: np.ndarray,
     if not resultados:
         return {"activa": False, "tipo_camara": tipo_nombre, "fuente": "sin_referencias_validas",
                 "bbox_norm": None, "confianza": 0.0, "total_aprendizajes": len(perfiles)}
-    resultados.sort(key=lambda x: (x[0], str(x[1].get("actualizado_en") or "")), reverse=True)
+    # V15.9: ranking compuesto auditable. Además de la similitud visual se
+    # ponderan el tipo de cámara, los puntos coincidentes, la consistencia
+    # geométrica (inliers) y el soporte de ejemplos previos del perfil.
+    def _score_ranking(score_i: float, perfil_i: dict, comp_i: dict) -> float:
+        tipo_ok = 1.0 if (tipo_nombre and str(perfil_i.get("tipo_camara")) == tipo_nombre) else 0.55
+        puntos = min(1.0, (int(comp_i.get("buenos") or 0) / 40.0))
+        geometria = float(comp_i.get("inlier_ratio") or 0.0)
+        ejemplos = min(1.0, (int(perfil_i.get("ejemplos") or 0) or
+                             int(perfil_i.get("total_aprendizajes") or 0)) / 5.0)
+        calidad = min(1.0, max(0.0, float(perfil_i.get("calidad") or 0.5)))
+        return round(0.45 * score_i + 0.15 * tipo_ok + 0.15 * puntos +
+                     0.15 * geometria + 0.05 * ejemplos + 0.05 * calidad, 4)
+
+    resultados.sort(key=lambda x: (_score_ranking(x[0], x[1], x[2]),
+                                   str(x[1].get("actualizado_en") or "")), reverse=True)
+    ranking = [{"perfil_id": p.get("id"), "tipo_camara": p.get("tipo_camara"),
+                "similitud_visual": round(s, 4),
+                "score_ranking": _score_ranking(s, p, c),
+                "matches_orb": int(c.get("buenos") or 0),
+                "inlier_ratio": round(float(c.get("inlier_ratio") or 0.0), 4),
+                "referencia_nombre": p.get("nombre_origen")}
+               for s, p, c in resultados[:3]]
 
     # 2) Mismo archivo copiado o movido (la firma cambia con la ruta): mismo
     # nombre y escena prácticamente idéntica también cuenta como ROI propia.
@@ -443,6 +604,7 @@ def seleccionar_zona_aprendida(ruta_video: str | Path, primer_frame: np.ndarray,
             "bbox_norm": None, "confianza": round(score, 4),
             "perfil_candidato": perfil.get("id"), "tipo_candidato": perfil.get("tipo_camara"),
             "total_aprendizajes": len(perfiles),
+            "ranking_candidatos": ranking,
         }
     original = list(perfil["bbox_norm"])
     sugerida, transformada = _transformar_bbox(original, comp)
@@ -451,6 +613,17 @@ def seleccionar_zona_aprendida(ruta_video: str | Path, primer_frame: np.ndarray,
     bbox = sugerida if (autoalinear and sugerida) else original
     fuente = "nombre_archivo" if exacto_nombre else "similitud_visual"
     confianza = max(score, 0.78 if exacto_nombre else 0.0)
+    # Comparación región anterior vs candidata para el flujo «Aceptar sugerencia
+    # / Ajustar / Bloquear / Revertir» sin sorpresas al hacer zoom.
+    comparacion_regiones = None
+    if sugerida:
+        comparacion_regiones = {
+            "desplazamiento_norm": [round(sugerida[0] - original[0], 4),
+                                    round(sugerida[1] - original[1], 4)],
+            "escala_aprox": round(
+                ((sugerida[2] - sugerida[0]) * (sugerida[3] - sugerida[1])) /
+                max(1e-9, (original[2] - original[0]) * (original[3] - original[1])), 4),
+        }
     return {
         "activa": True,
         "bloqueada": not (autoalinear and sugerida),
@@ -463,12 +636,19 @@ def seleccionar_zona_aprendida(ruta_video: str | Path, primer_frame: np.ndarray,
         "fuente": fuente,
         "confianza": round(float(min(1.0, confianza)), 4),
         "similitud_visual": round(score, 4),
+        "score_ranking": _score_ranking(score, perfil, comp),
+        "ranking_candidatos": ranking,
+        "comparacion_regiones": comparacion_regiones,
         "perfil_id": perfil.get("id"),
         "referencia_nombre": perfil.get("nombre_origen"),
         "transformada_por_similitud": bool(autoalinear and sugerida),
         "autoalineacion_activa": autoalinear,
         "matches_orb": int(comp.get("buenos") or 0),
+        "inlier_ratio": round(float(comp.get("inlier_ratio") or 0.0), 4),
         "total_aprendizajes": len(perfiles),
+        # V15.9.1 (A1): ROI previas para el flujo «Revertir ROI anterior».
+        "historial_roi": [h for h in (perfil.get("historial_roi") or [])
+                          if isinstance(h, dict)],
     }
 
 

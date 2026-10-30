@@ -39,12 +39,21 @@ def test_gestor_registra_rendimiento_sin_inventar_gpu():
     assert "gpu_porcentaje" in snap and "vram_porcentaje" in snap
 
 
-def test_prefetch_cpu_es_acotado_y_recupera_resultado(tmp_path):
+def test_prefetch_cpu_es_acotado_y_recupera_resultado(tmp_path, monkeypatch):
     rutas = []
     for indice in range(2):
         ruta = tmp_path / f"{indice}.jpg"
         ruta.write_bytes(b"x" * 128)
         rutas.append(ruta)
+    # V15.9.3: la prueba ejercita el ACOTADO DE COLA (max_pendientes) y el
+    # backpressure, no la carga real del sistema: bajo una suite completa el
+    # gestor de recursos podía ver CPU/RAM presionados y el primer preparar
+    # devolvía False de forma no determinista. Se aíslan las sondas de presión.
+    import gestor_recursos
+    monkeypatch.setattr(gestor_recursos.GestorRecursos, "cpu_bajo_presion",
+                        lambda self: False)
+    monkeypatch.setattr(gestor_recursos.GestorRecursos, "ram_bajo_presion",
+                        lambda self: False)
     preparador = PreparadorImagenes(lambda ruta: f"preparada:{Path(ruta).name}", workers=1, max_pendientes=1)
     try:
         assert preparador.preparar(rutas[0]) is True

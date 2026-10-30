@@ -7,6 +7,26 @@ from copy import deepcopy
 from aprendizaje import GestorAprendizaje, hash_archivo
 
 
+class _TxStub:
+    """R15.6: stub del coordinador común — este arnés ejercita sólo la ruta
+    de éxito (sin fallos multi-almacén que compensar)."""
+
+    def __init__(self, operacion, recurso=None):
+        pass
+
+    def capturar(self, nombre, capturar, restaurar):
+        return capturar()
+
+    def aplicado(self):
+        pass
+
+    def fallar(self, exc):
+        raise exc
+
+    def exito(self):
+        pass
+
+
 class ReconfirmacionTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -41,7 +61,14 @@ class ReconfirmacionTest(unittest.TestCase):
              '_fila_publica':lambda f:{'revision':{'estado':'parcial'}},
              '_resolver_raiz_datos':lambda d:Path(self.tmp.name),'_resolver_imagen':lambda *a:self.ruta,
              '_regenerar_excel':lambda r:None,'_bbox_igual':lambda a,b:a==b,
-             'normalizar_codigo':lambda s:s,'hash_archivo':hash_archivo}
+             'normalizar_codigo':lambda s:s,'hash_archivo':hash_archivo,
+             # R15.2: guard de pipeline; probado en r152_documento_unico.
+             '_assert_documento_editable':lambda accion='':None,
+             # R15.3 (ALTO-02): región de exclusión CAS+efectos+commit.
+             'contextlib':__import__('contextlib'),
+             # R15.6 (ALTO-02): corregir_lectura migrada al coordinador común.
+             '_assert_recurso_consistente': lambda recurso, accion: None,
+             'TransaccionMultiAlmacen': _TxStub}
         tree=ast.parse((Path(__file__).resolve().parents[1]/'dashboard/backend/app.py').read_text(encoding='utf-8'))
         functions=[n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name in
                    ('corregir_lectura','_buscar_unidad_ocr','_orientacion_regional_pendiente','_aplicar_correcciones_publicas')]

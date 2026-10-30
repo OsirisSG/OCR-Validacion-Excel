@@ -184,15 +184,21 @@ def test_dos_camaras_automaticas_no_borran_revision_pendiente():
     consenso = va.consenso_videos(_camaras_candidatas(), {"video_airbag": {}})
     assert consenso["estado"] == "primera_aparicion"
     assert consenso["requiere_revision"] is True
-    evidencia = va.evidencia_apertura_desde_consenso({"case_key": "c"}, consenso)
-    assert evidencia["requiere_confirmacion_manual"] is True
-    assert evidencia["confirmacion_manual"] is False
+    # V15.9.1 (B1): una propuesta sin respaldo suficiente ya no se publica
+    # «con bandera de revisión»: directamente no genera evidencia hasta que
+    # haya confirmación (3 cámaras o revisión humana). La señal pendiente se
+    # conserva en el consenso y en el tooltip del dashboard.
+    assert consenso["estado_consenso"] == "propuesto"
+    assert va.consenso_valido(consenso) is False
+    assert va.evidencia_apertura_desde_consenso({"case_key": "c"}, consenso) is None
+    assert consenso["tiempo_ms"] == 2.0  # la medida sigue visible como propuesta
 
 
 def test_confirmacion_humana_prevalece_sobre_flags_automaticos():
     items = _camaras_candidatas()
     items[0]["revision_manual"] = {"estado": "confirmado", "frame_index": 10,
-                                    "tiempo_ms": 2.0}
+                                    "tiempo_ms": 2.0, "referencia_tiempo_valida": True,
+                                    "estado_tiempo": "VALIDO"}
     consenso = va.consenso_videos(items, {"video_airbag": {}})
     assert consenso["estado"] == "confirmado_manual"
     assert consenso["requiere_revision"] is False

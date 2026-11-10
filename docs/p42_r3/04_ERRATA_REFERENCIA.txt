@@ -1,0 +1,56 @@
+===============================================================================
+ERRATA DE LA REFERENCIA · Book-10-Examples_CORREGIDO.xlsx
+Una celda, un espacio. Confirmado por el usuario el 2026-10-29.
+===============================================================================
+
+LA CELDA
+--------
+   caso 222504 · columna module_serial_number
+
+   el LIBRO  (V16.0.52) .......... 671 ZRZ0539983E
+   el CÓDIGO (DataMatrix) ........ 671 ZRZ0539983E
+   la REFERENCIA ................. 671ZRZ0539983E     ← le falta el espacio
+
+QUIÉN TIENE RAZÓN Y CON QUÉ SE SOSTIENE
+---------------------------------------
+1. El DataMatrix del módulo de 222504 se decodifica en 7 fotos distintas y siempre
+   devuelve el payload:
+       #2GJ880204J    ##813016342#100425*671 ZRZ0539983E*=
+   La serie va entre asteriscos y **trae el espacio**. Lo pone la máquina que
+   imprimió la etiqueta, no nuestro OCR.
+
+2. El mismo patrón aparece en los 10 casos (`*671 ZRZ…*`): el formato del campo es
+   `671` + espacio + 11 caracteres = 15 con espacio, 14 sin él.
+
+3. El OCR del propio libro coincide: `671 ZRZ0539983E` con 25 votos frente a las
+   variantes sin espacio, que son lecturas parciales.
+
+4. Los otros 9 casos de la columna ya llevan el espacio en la referencia; sólo
+   éste no. Es una errata, no un criterio distinto.
+
+QUÉ SE HACE
+-----------
+· El libro **no se toca**: ya estaba bien.
+· La referencia se queda como está en el archivo original (no se edita un patrón
+  para que nos apruebe; eso sería hacer trampa).
+· Se anota aquí, y al medir se cuenta como **cerrada**, no como discrepancia:
+
+      cierre contra la referencia original ....... 199/200 (99,5 %)
+      cierre con la errata aplicada .............. 200/200 (100 %)
+
+CÓMO SE COMPRUEBA EN UN MINUTO
+------------------------------
+   python verificar_contra_codigo.py --libro versionV16_0_52.xlsx \
+       --referencia Book-10-Examples_CORREGIDO.xlsx \
+       --dm-tablero dm.json --dm-modulo datos/modulo_dm.json
+   → «222504 module_serial_number: el libro y el código coinciden; la referencia no»
+
+   Y en la ventana `codigo_vs_libro.html` está el recorte de la etiqueta del módulo
+   con las tres columnas: código, libro y referencia.
+
+NOTA PARA QUIEN LLEVE EL LIBRO
+------------------------------
+Si la referencia se usa para validar otros lotes, conviene corregir esa celda en el
+original; si no, cada lote nuevo volverá a marcar la misma discrepancia y acabará
+pareciendo ruido del sistema en lugar de una errata del patrón.
+===============================================================================

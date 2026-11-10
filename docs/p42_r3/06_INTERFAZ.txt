@@ -1,0 +1,43 @@
+===============================================================================
+06 · LA INTERFAZ DE CONFIRMACIÓN (actualizada 2026-10-29)
+===============================================================================
+
+QUÉ ES
+------
+`confirmar_p42.html` es la pantalla donde una persona confirma una duda: una etiqueta,
+sus opciones y «Otro». Se genera con `revisar_dudas.py` y se abre con doble clic: no
+necesita servidor, ni red, ni instalar nada (las fotos van dentro, en WebP).
+
+Aquí va una copia ya generada de los 6 casos de serie, para que se pueda abrir y ver
+sin volver a correr nada. Si quieres la tuya con las dudas actuales:
+
+    python revisar_dudas.py --evidencia evidencia_tablero_p42.json \
+        --referencia Book-10-Examples_CORREGIDO.xlsx \
+        --decisiones decisiones_p42.json --fotos <carpeta de fotos> \
+        --salida confirmar.html
+
+  · `--imagenes-de confirmar.html`  reutiliza los recortes de una ejecución anterior
+                                     cuando las fotos originales ya no están.
+
+QUÉ CAMBIÓ EN LA INTERFAZ
+-------------------------
+  · 337 KB en vez de 960 KB (los recortes pasan a WebP 1280, q80).
+  · Las opciones son el control y el dato: cada fila pinta el valor carácter a carácter
+    y marca en ámbar la posición exacta que cambia. Debajo, la frase calculada
+    («Solo cambia en el carácter 15 de 15»).
+  · Accesible con teclado de verdad: role=radio, flechas, 1-9, Espacio/Enter,
+    foco visible, anuncios aria-live. axe-core: 0 violaciones.
+  · Se puede volver atrás (← Anterior, Alt+←) y la respuesta anterior sigue marcada.
+  · Esqueleto con umbral de 120 ms (no parpadea), error de imagen diseñado,
+    estado vacío, progreso real por segmentos. Sin esperas ni porcentajes fingidos.
+  · Móvil: el caso entero cabe sin desplazar y la barra de acciones se pega abajo.
+  · prefers-reduced-motion: todo el movimiento se apaga.
+
+El informe completo, con la auditoría medida y lo que queda pendiente, está en
+`vmatrix/ui_ux/REPORTE_UI_UX.md` (no va dentro de este parche).
+
+LO QUE NO CAMBIA
+----------------
+El JSON de decisiones que descarga la página es idéntico: mismos campos y mismos
+valores de `fuente_decision`. `rellenar_tablero_p42.py` lo lee igual.
+===============================================================================

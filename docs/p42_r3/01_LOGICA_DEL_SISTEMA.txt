@@ -1,0 +1,260 @@
+===============================================================================
+V-MATRIX · P42 · LÓGICA DEL SISTEMA, DE PRINCIPIO A FIN
+Cómo se determina cada dato, por qué se decide así y qué se hace cuando no se
+sabe. Este documento es el que hay que leer antes de tocar el libro.
+Versión: V16.0.52 · 2026-10-29
+===============================================================================
+
+--------------------------------------------------------------------------------
+0. LA IDEA EN TRES FRASES
+--------------------------------------------------------------------------------
+El sistema mira fotos de un tablero de airbag y escribe cuatro datos en el libro:
+número de parte, serie, fecha y nivel de ingeniería. No adivina: cada valor sale de
+una fuente concreta que se puede señalar con el dedo, y cuando no hay fuente el
+libro queda vacío y el caso va a una cola para que lo mire una persona.
+Todo lo demás —el orden de las fuentes, los mínimos, las dudas, la trazabilidad—
+existe para que esa frase sea verdad también dentro de seis meses, cuando nadie se
+acuerde de por qué una celda dice lo que dice.
+
+--------------------------------------------------------------------------------
+1. LAS CUATRO FUENTES, Y EN QUÉ ORDEN MANDAN
+--------------------------------------------------------------------------------
+No todas las fuentes valen lo mismo. El orden no es una preferencia: es lo que
+hemos medido en 1 281 fotos y 10 casos.
+
+  (1) EL DATAMATRIX DE LA ETIQUETA DEL TABLERO  · la mejor
+      Lleva la serie y el número de parte dentro del propio código, con corrección
+      de errores. Decodificarlo cuesta ~10 ms y no pasa por OCR, así que no
+      confunde una O con un cero. Es la fuente de la serie y del número de parte.
+
+  (2) EL GRABADO EN EL PLÁSTICO  · buena, pero frágil
+      El número de parte va moldeado en el plástico (regla del usuario: el `N/P:`
+      impreso en la etiqueta NO vale). Se lee por bandas finas y se contrasta con
+      catálogo. Es la fuente preferente del número de parte cuando se lee; cuando
+      no, se recurre al DataMatrix y se anota que se hizo así.
+
+  (3) EL OCR DE LA ETIQUETA  · sirve para fecha y nivel
+      La fecha va impresa en un sticker y el nivel en una estampa de color. Aquí sí
+      hay OCR, con todo lo que eso implica: se exigen dos lecturas iguales (o la
+      regla de la foto única, §5) y se filtra por la clase de pegatina.
+
+  (4) LA REFERENCIA (`Book-10-Examples_*.xlsx`)  · NO decide
+      La referencia sirve para medirnos, nunca para rellenar. Si la usáramos para
+      decidir, el sistema aprobaría siempre y no valdría nada. De hecho, en este
+      lote la referencia tenía un error (le falta un espacio en la serie del
+      módulo de 222504) y el código es el que tenía razón.
+
+  Regla que resume el orden: **si el código habla, manda el código; si no habla,
+  manda el plástico; si no, el OCR con testigos; y si nada habla, vacío.**
+
+--------------------------------------------------------------------------------
+2. LA ETIQUETA DEL TABLERO Y SU DATAMATRIX
+--------------------------------------------------------------------------------
+El payload decodificado de un caso real:
+
+  052# 2GJ 857 003 G#       #812506467#19052500*052 3KVJ008R6E1*=
+
+  · `052` ............ prefijo de formato del emisor
+  · `2GJ 857 003 G` .. número de parte (se publica como `2GJ.857.003.G`)
+  · `812506467` ...... sello interno del emisor
+  · `190525 00` ...... campo de fecha del emisor (NO es la fecha del tablero)
+  · `052 3KVJ008R6E1`  serie del tablero: 3 dígitos + cuerpo + cola
+
+Tres cosas que hay que tener claras y que costaron una revisión entera:
+
+  a) NO es ISO/IEC 15434. Los bytes empiezan por `052#` y no llevan la envoltura
+     `[)>` + RS ni separadores GS/EOT. Llamarlo así fue un error nuestro.
+  b) El DataMatrix **no hace OCR**: reconstruye los datos del patrón. Por eso no
+     hay ninguna base para suponer que el emisor “leyó mal” el glifo impreso.
+  c) La corrección de errores protege el transporte del símbolo, **no** el
+     significado del campo. Que el código se lea perfecto no garantiza que el
+     campo de negocio sea el que espera el libro.
+
+Lo que se guarda de cada lectura: `payload_text` completo, `payload_hex`, `formato`,
+versión del decodificador, la cola cruda y su clase. Se exige que el símbolo sea
+DataMatrix y `valid`: un QR con el mismo texto no vale (y zxing devuelve el nombre
+como “Data Matrix”, con espacio: comparar literalmente hacía que el filtro no
+filtrara nada).
+
+  · Si en la misma foto hay dos códigos con valores distintos → `conflicto`: se
+    conservan los dos, el campo queda en duda y no se elige por orden.
+  · Si la cola trae caracteres fuera de [A-Z0-9] o una forma rara, **no se
+    transforma**: se clasifica (`limpia` / `simbolo` / `ambigua`). Clasificar no es
+    transformar, y esa diferencia es la que separa un dato de una invención.
+
+--------------------------------------------------------------------------------
+3. EL NÚMERO DE PARTE GRABADO EN EL PLÁSTICO
+--------------------------------------------------------------------------------
+Se buscan bandas finas de texto grabado, se amplían y se leen por separado, y el
+resultado se contrasta con el catálogo de partes conocidas. Sin catálogo no se
+publica: un grabado parecido no es un grabado.
+
+Cuando el grabado no da lectura, hay dos caminos y el usuario eligió el segundo:
+  · antes: se tomaba el número de parte del DataMatrix sin decirlo (mal);
+  · ahora: se toma del DataMatrix **sólo si el usuario lo autoriza** (A6), y queda
+    anotado en la traza como `datamatrix_payload_np` con la marca
+    `autorizado_por: usuario_A6`. En este lote son 2 celdas (252581 y 252590).
+
+--------------------------------------------------------------------------------
+4. LA FECHA: DONDE MÁS SE PUEDE METER LA PATA
+--------------------------------------------------------------------------------
+En un solo caso hay fechas de tres sitios distintos, y no significan lo mismo:
+
+  · el sticker del tablero   → la fecha que va al libro (lleva hora y un N/P)
+  · el sticker del módulo    → su propia fecha, un mes antes
+  · etiquetas de proveedor   → fechas de suministro («Lieferant : Farbe:», «MAT»)
+
+Por eso, antes de votar, cada lectura se clasifica por la pegatina de la que sale:
+`tablero` / `modulo` / `proveedor` / `desconocida`. Sólo compiten entre sí las de
+la misma clase, y la clase `tablero` manda sobre las demás.
+
+El discriminador es barato y no depende del idioma:
+  tablero   → lleva hora (`12:38:17 PM`) y un código de parte largo
+  modulo    → contiene `2GJ…`, `ZRZ…`, `880204`
+  proveedor → contiene `Lieferant`, `Farbe`, `MAT`, lote o cantidad
+
+Cómo se lee: se localiza el código que va pegado al sticker, se recorta a su
+alrededor (a 2,5 y a 4 veces su tamaño), se amplía a ~1.200 px y se hace OCR a 0° y
+a 180°. La fecha se interpreta con patrones numéricos y con mes en letras, y se
+descarta lo que no es plausible (años fuera de rango, imposibles de calendario).
+
+Regla del usuario (2026-10-29): **si en el caso hay una sola foto del sticker del
+tablero, esa lectura basta.** No es una excepción cómoda: cuando sólo hay una, no
+hay nada con qué contradecirla, y su firma (hora + N/P) no la produce ninguna de
+las otras pegatinas. Si hay dos o más, votan entre ellas.
+
+--------------------------------------------------------------------------------
+5. EL NIVEL DE INGENIERÍA
+--------------------------------------------------------------------------------
+Va en una estampa de color (rosa en el tablero; la amarilla es del módulo y no
+vale). Se lee el texto de la estampa, se corrige el giro de 180° si viene al revés
+(la estampa puede venir invertida y hay un mapa de caracteres para deshacerlo) y se
+compara con los niveles conocidos (`03S`, `02S`…). Si no hay estampa legible, el
+campo no se escribe. En este lote: 10/10.
+
+--------------------------------------------------------------------------------
+6. CONSENSO, DUDAS Y MÍNIMOS (el corazón del asunto)
+--------------------------------------------------------------------------------
+Cada campo se cierra por **voto por valor completo**: se agrupan las lecturas por su
+texto exacto, gana el valor más repetido y se exige un mínimo de lecturas iguales.
+
+  · Antes se votaba **posición a posición**, y fabricaba valores: `R6E` + `R6E1`
+    daba un valor que nadie había leído; `11/04` + `06/05` + `17/05` daba `11/05`.
+    En 232561 el sistema publicaba una fecha inventada. Ya no existe ese código.
+  · Mínimos: serie 2 lecturas iguales; fecha 2 (salvo la regla de la foto única);
+    número de parte 1 cuando viene del grabado o del código autorizado.
+
+Un campo queda **en duda** cuando: no llega al mínimo, las lecturas discrepan, hay
+dos códigos distintos en la misma foto, el dato no tiene la forma esperada, o el
+propio lector lo marcó. La duda viaja de la lectura al libro: un valor dudoso **no
+se publica** nunca sin una decisión humana explícita.
+
+Y hay tres cosas que el sistema NO hace a propósito:
+  · no transformar la cola de la serie (`$`→`S`) con una tabla aprendida de las
+    respuestas — eso es sobreajuste, y fue el error central de P42;
+  · no normalizar a la carta (espacios, un día de diferencia) para cuadrar con la
+    referencia;
+  · no rellenar con la referencia cuando falta un dato.
+
+--------------------------------------------------------------------------------
+7. LA CADENA DE EVIDENCIA: QUÉ SE GUARDA DE CADA CELDA
+--------------------------------------------------------------------------------
+Por cada valor escrito queda un renglón en `Trazabilidad` con:
+  proyecto · etapa · caso · componente · campo · foto · texto OCR original ·
+  texto publicado · orientación · regla · fuente · versión · payload (hex) ·
+  valor codificado
+
+“Texto OCR original” guarda lo que traía la fuente **sin tocar** y “texto publicado”
+lo que se escribió. Si algún día alguien pregunta por qué una celda dice `R6E` y el
+código dice `R6E1`, la respuesta está en la misma fila, con la foto y la regla.
+
+Nunca se sobrescribe una celda ocupada sin una orden explícita, y cuando se hace
+(`corregir_por_codigo.py`) se pide por nombre la celda, se comprueba que el valor
+anterior es el que se vio, y se deja renglón con el valor viejo y el nuevo.
+
+--------------------------------------------------------------------------------
+8. LA PERSONA EN EL CIRCUITO
+--------------------------------------------------------------------------------
+Lo que el sistema no sabe, no lo adivina: lo pregunta. `revisar_dudas.py` genera una
+sola página HTML (sin red, sin servidor, se abre con doble clic) que enseña **una
+etiqueta por pantalla**, con recorte ampliado, giro de 90°, ajuste fino y zoom, y
+las opciones posibles **con su origen**: lo que dice el código, lo que decía el
+libro, lo que sugiere lo aprendido. Siempre hay “Otro” para escribir el valor a
+mano, y “Dejar en blanco” es una respuesta válida.
+
+Las respuestas se guardan como decisiones **por celda**, ligadas al valor
+codificado que se vio: si el código dice hoy otra cosa, la decisión caduca y se
+avisa. Ninguna decisión se generaliza a otra etiqueta.
+
+El aprendizaje no es una tabla de reglas, son **precedentes**: patrón de cola →
+valor confirmado, con cuántos casos lo apoyan. Se enseñan como sugerencia marcada
+(`aprendida`) y, si tienen menos de 3 casos, marcada además como `flojo`. El
+publicador no los lee: sólo lee decisiones por celda. Así se gana velocidad sin
+volver a caer en la tabla que hubo que retirar.
+
+--------------------------------------------------------------------------------
+9. COBERTURA: LA LECCIÓN DE 232564
+--------------------------------------------------------------------------------
+Un caso se cerró con la fecha vacía. El usuario encontró la foto a mano: estaba en
+el repositorio, y el sistema **ya la había leído bien**. Fallaron dos cosas:
+
+  · el voto mezclaba pegatinas (una etiqueta de proveedor ganaba a la del tablero);
+  · sólo se había mirado el **5 % de las fotos** (63 de 1 271): la primera pasada
+    elige por pistas y con cupo, y nadie comprobaba cuántas quedaban sin mirar.
+
+Las tres reglas que evitan que se repita a 50 o 100 carpetas:
+  R1  Cobertura antes que astucia: por caso, fotos en el repo / en disco / miradas.
+      Un campo no se cierra como «sin dato» mientras queden fotos sin mirar.
+  R2  Segunda pasada: si un campo sigue en duda, se buscan más fotos (sin cupo, con
+      el detector complementario) y se para al llegar a consenso.
+  R3  Cada valor sabe de qué pegatina viene.
+
+Coste medido: primera pasada ~683 s por caso; segunda pasada 6,1 s por foto y sólo
+en los casos con dudas; decodificar un DataMatrix 10-20 ms; suite de pruebas < 3 s.
+
+--------------------------------------------------------------------------------
+10. CÓMO SE MIDE (y cómo se mide mal)
+--------------------------------------------------------------------------------
+Tres marcadores, y hay que leerlos juntos o engañan:
+
+  · TABLERO (40 celdas: 4 columnas × 10 casos) — lo que el sistema propone.
+  · LIBRO CONTRA LA REFERENCIA (200 celdas) — lo que se publica frente al libro
+    bueno. Ojo: coincidir con la referencia no es tener razón; es coincidir.
+  · LIBRO CONTRA EL CÓDIGO (50 celdas) — los 5 campos que el DataMatrix puede
+    zanjar. Éste es el que dice si el libro es verdad.
+
+Resultados de los 10 casos: tablero 40/40; libro contra referencia 199/200 con 0
+huecos; libro contra código 43/50 coincidentes, 6 diferencias en el último carácter
+de la serie y 1 en un espacio (la referencia es la que lo perdió).
+
+Errores de medición que ya están corregidos y no hay que repetir: premiar un vacío,
+cambiar el denominador según los casos que aparecen, y mezclar «lo que propone el
+motor» con «lo que se publica» en una sola cifra.
+
+--------------------------------------------------------------------------------
+11. LO QUE QUEDA ABIERTO, SIN MAQUILLAJE
+--------------------------------------------------------------------------------
+  · El último carácter de la serie en 6 de 10 casos: el libro dice `S`, `I`, ``,
+    y el código dice `$`, `L`, `1`, `%`, `O9`, `E`. La evidencia apunta a que el
+    libro se copió mal, pero eso cambia 6 celdas: se decide con la plantilla del
+    proveedor o con fotos dirigidas, no por mayoría.
+  · El formato exacto del campo de la serie (¿14 caracteres? ¿15 con espacio?).
+  · Windows: falta cerrar el runtime de VC++, el proveedor ONNX en CPU y fijar el
+    intérprete en el `.bat`.
+  · Los tokens del repositorio hay que rotarlos.
+
+--------------------------------------------------------------------------------
+12. HISTORIA CORTA DE LOS ERRORES QUE NOS HICIERON MEJOR
+--------------------------------------------------------------------------------
+  P41 no escribía ningún campo en la prueba real → P42 se hizo sobre P40.
+  Una tabla que convertía `$`→`S` cuadraba el libro con las respuestas → retirada:
+    ajustar una regla a los casos que ya conoces no es medir, es copiar.
+  El consenso por posiciones fabricaba fechas → sustituido por voto por valor
+    completo en todos los campos.
+  El publicador tenía una excepción que escribía dudosos «si venían del DataMatrix»
+    → eliminada; ahora sólo publica con decisión explícita.
+  La foto de 232564 estaba y no se miró → cobertura, segunda pasada y clasificador
+    de pegatinas.
+  La fecha del módulo de 222530 (`11/04`) era nuestra, no de la referencia: el
+    DataMatrix del módulo decía `100425` → corregida por el código.
+===============================================================================

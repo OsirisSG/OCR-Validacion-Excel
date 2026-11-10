@@ -1,0 +1,93 @@
+===============================================================================
+P42 EN LOS LABORATORIOS DE EDAG
+Qué está listo, qué hace falta en la máquina y qué pediría el técnico.
+===============================================================================
+
+ESTADO
+------
+El sistema está terminado y medido para estos 10 casos (tablero 40/40, libro
+199/200). Lo que sigue separa lo que ya funciona de lo que depende del laboratorio.
+
+--------------------------------------------------------------------------------
+1. LO QUE YA FUNCIONA SIN NADA DEL LABORATORIO
+--------------------------------------------------------------------------------
+· Leer el DataMatrix de una foto (zona y módulo), el grabado y la fecha del sticker.
+· Clasificar la pegatina (tablero / módulo / proveedor) y decidir quién vota.
+· Consensuar por valor completo, no por posiciones.
+· Detectar dudas y abrir una ventana de confirmación con la imagen y las opciones.
+· Negarse a publicar un campo sin decisión explícita.
+· Medir el avance por campo, por caso y por lote.
+· Todo esto corre en CPU, sin GPU, sin internet, sin nube.
+
+Cifras de esta máquina (portátil, 8 núcleos, sin GPU):
+    1 271 fotos recorridas ................. 10 min
+    1 lectura de DataMatrix ................ 10-20 ms
+    los 10 casos completos, de cero ....... ~30 min
+    las 38 pruebas ......................... < 3 s
+
+--------------------------------------------------------------------------------
+2. LO QUE HAY QUE INSTALAR (una vez)
+--------------------------------------------------------------------------------
+    pip install -r requirements_p42.txt
+
+   Versiones probadas en este cierre:
+     python ................... 3.11  (3.10 sirve; 3.12 también, ver notas)
+     openpyxl ................. 3.1.x
+     opencv-python-headless ... 4.10.x   ← headless: no necesita pantalla, importante en servidor
+     zxing-cpp ................ 2.2.x    ← el que lee DataMatrix de verdad
+     rapidocr-onnxruntime ..... 1.3.x    ← OCR de las etiquetas
+     numpy .................... 1.26.x
+
+   En Windows, además:
+     · Microsoft Visual C++ 2015-2022 Redistributable (x64) — lo pide numpy/onnxruntime
+       y el error si falta ("DLL load failed") no lo dice. Instalarlo ANTES.
+     · Ruta sin acentos ni espacios para el árbol si se puede (`C:\vmatrix`).
+
+   Comprobación en 2 segundos, sin fotos:
+     python comprobar_entorno_p42.py --foto <cualquier foto con etiqueta>
+     → «el entorno puede correr P42 sin cambios»
+
+--------------------------------------------------------------------------------
+3. LO QUE HAY QUE PEDIR AL LABORATORIO (si no lo tenemos)
+--------------------------------------------------------------------------------
+   a) LA PLANTILLA DEL PROVEEDOR del DataMatrix del módulo.
+      El formato es `#2GJ880204J ##813016342#100425*671 ZRZ0539983E*=` pero el
+      proveedor puede cambiar campo, separador o versión. Con la plantilla escrita,
+      6 celdas que hoy están `pendiente_de_confirmar` se cierran solas y deja de
+      hacer falta votar la serie.
+
+   b) QUÉ SIGNIFICA EL ÚLTIMO CARÁCTER DE LA SERIE.
+      Hoy lo leemos del grabado y del DataMatrix; en 6 casos el libro difiere del
+      código en ese carácter. Si el laboratorio dice qué es (diez dígitos de control,
+      relleno, código de planta), la regla deja de ser una votación.
+
+   c) SI EL STICKER DEL TABLERO ES ÚNICO O SE REIMPRIME.
+      De esto depende la regla de la foto única: hoy, si hay una sola pegatina de
+      tablero en el caso, una lectura basta; si hay varias, votan entre ellas.
+      Si en planta se reimprime tras una corrección, la regla cambia (manda la
+      última impresión, no la mayoría).
+
+   d) FOTOS DIRIGIDAS para los casos que sigan dudosos: módulo entero con el
+      grabado paralelo al borde, luz rasante, sin reflejo. La segunda pasada
+      encontró la fecha de 232564 así; el resto de dudas son de nitidez, no de
+      criterio.
+
+--------------------------------------------------------------------------------
+4. LO QUE NO NECESITA
+--------------------------------------------------------------------------------
+   · GPU. El OCR corre en CPU (ONNX); una GPU no acelera este cuello de botella.
+   · Internet. Nada sale de la máquina; no hay servicio externo ni licencia.
+   · Base de datos. El estado son dos JSON y un xlsx versionado.
+   · Windows. Corre igual en Linux; sólo el lanzador cambia.
+
+--------------------------------------------------------------------------------
+5. SI UN CAMPO NO APARECE
+--------------------------------------------------------------------------------
+   El sistema no dice "sin dato" hasta haber agotado la búsqueda, y deja constancia:
+     · cuántas fotos del caso contienen esa pegatina,
+     · cuántas se han mirado,
+     · qué leyó cada una,
+     · por qué no votaron.
+   Ese registro es lo que se enseña al laboratorio cuando pregunta "¿y por qué no
+   está este dato?". Es la respuesta, no una excusa: se puede auditar foto a foto.
+===============================================================================

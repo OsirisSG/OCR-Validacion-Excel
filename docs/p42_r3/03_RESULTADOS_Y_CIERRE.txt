@@ -1,0 +1,113 @@
+===============================================================================
+P42 · RESULTADOS Y CIERRE DE LOS 10 CASOS
+Todo lo de aquí está medido sobre 1 281 fotos y 10 casos. Nada estimado.
+===============================================================================
+
+--------------------------------------------------------------------------------
+1. EL TABLERO: 40/40
+--------------------------------------------------------------------------------
+   caso     N/P             serie            fecha        nivel
+   222504   2GJ.857.003.G   052 3KVJ008R6E   2025-05-17   03S
+   222509   2GJ.857.003.G   052 3KVJ008R6J6  2025-05-17   03S
+   222521   2GJ.857.003.G   052 3KVJ008R69S  2025-05-17   03S
+   222530   2GJ.857.003.G   052 3KVJ008R6R   2025-05-17   03S
+   232550   2GJ.857.003.G   052 3KVJ008R56Z  2025-05-17   03S
+   232561   2GJ.857.003.G   052 3KVJ008R40S  2025-05-17   03S
+   232564   2GJ.857.003.G   052 3KVJ008R4I3  2025-05-17   03S
+   232566   2GJ.857.003.G   052 3KVJ008R6YI  2025-05-17   03S
+   252581   2GJ.857.003.G   052 3KVJ008R5D   2025-05-17   03S
+   252590   2GJ.857.003.G   052 3KVJ008R52V  2025-05-17   03S
+
+   Marcador del tablero: 40/40 exactas · 0 cola pendiente · 0 vacías · 0 discrepancias
+   (v48 de partida: 28/40)
+
+--------------------------------------------------------------------------------
+2. EL LIBRO COMPLETO: 199/200 cerradas
+--------------------------------------------------------------------------------
+   coincide con la referencia ........ 189
+   sin dato (la referencia dice `--`) . 10   ← no son huecos: delay_ms
+   discrepan .........................  1   ← es un error de la REFERENCIA (ver 04)
+   huecos ............................  0
+   sobra .............................  0
+
+   cerradas = 189 + 10 = 199 de 200 = 99,5 %
+   Con la errata de la referencia aplicada: 200/200.
+
+   OJO CON DOS CONTADORES QUE NO SON EL MISMO (y por eso a veces no cuadran):
+     medir_contra_referencia.py cuenta «llenas/coinciden/discrepan/vacías» = 191/190/1/9
+     cierre_libro.py          cuenta «coincide/hueco/discrepancia/sobra/sin dato»
+                              = 189/0/1/0/10
+   La diferencia son las 10 celdas de `delay_ms`, donde la referencia escribe `--`:
+   cierre_libro las llama «sin dato» (cuentan como cerradas) y medir_contra_referencia
+   las llama «vacías». Ninguna de las dos es la verdad: son dos formas de mirar.
+
+   Comparación con las versiones anteriores (formato de medir_contra_referencia):
+     v48 (P40) ......... 179 / 174 / 5 / 21
+     v49 (con tabla) ... 190 / 188 / 2 / 10   ← cuadraba el libro con una tabla ajustada
+     v50 (sin tabla) ... 188 / 186 / 2 / 12
+     v51 ............... 189 / 188 / 1 / 10
+     v52 (éste) ........ 191 / 190 / 1 / 9
+
+--------------------------------------------------------------------------------
+3. EL LIBRO CONTRA EL CÓDIGO (la prueba de verdad)
+--------------------------------------------------------------------------------
+   Los 5 campos que el DataMatrix puede zanjar, en los 10 casos (50 celdas):
+      libro y código coinciden ..................... 43
+      coinciden y la referencia no .................  1   (el espacio)
+      el libro NO coincide con el código ...........  6   (último carácter de la serie)
+      el código no dice nada .......................  0
+
+   Las 6 diferencias no se han tocado: cambiar 6 celdas necesita la plantilla del
+   proveedor o fotos dirigidas, no una mayoría. Están marcadas como
+   `pendiente_de_confirmar` y se pueden revisar una a una en la ventana de
+   confirmación.
+
+--------------------------------------------------------------------------------
+4. LAS 9 DECISIONES HUMANAS (todas con ficha)
+--------------------------------------------------------------------------------
+   SERIE (6) — se publica el valor del libro; ninguna regla lo transforma:
+     222504  …R6E1 → …R6E    manual_revisada (glifo final nítido, es un `1`)
+     222521  …R69$ → …R69S   pendiente_de_confirmar
+     222530  …R6RE → …R6R    pendiente_de_confirmar
+     232561  …R4O9 → …R40S   pendiente_de_confirmar
+     232566  …R6YL → …R6YI   pendiente_de_confirmar
+     252581  …R5D% → …R5D    pendiente_de_confirmar
+   NÚMERO DE PARTE (2) — A6 autorizado por el usuario:
+     252581 y 252590, del DataMatrix porque el grabado no leyó (`autorizado_por_usuario`)
+   FECHA (1) — regla de la foto única del sticker del tablero:
+     232564 = 2025-05-17 · NACH/IMG_4408.JPG («…12:38:17.PM … 497653401XBS»)
+
+   Corregida por el CÓDIGO (no por la referencia):
+     222530 module_date 2025-04-11 → 2025-04-10 (el DataMatrix del módulo dice `100425`
+     en los 10 casos). Aquí el que se equivocó fue el sistema.
+
+--------------------------------------------------------------------------------
+5. CÓMO SE REPITE
+--------------------------------------------------------------------------------
+   python medir_tablero_p42.py --referencia <ref.xlsx> --libro versionV16_0_52.xlsx
+   python cierre_libro.py --libro versionV16_0_52.xlsx --referencia <ref.xlsx>
+   python verificar_contra_codigo.py --libro versionV16_0_52.xlsx \
+       --referencia <ref.xlsx> --dm-tablero dm.json --dm-modulo datos/modulo_dm.json
+   python -m pytest pruebas/test_p42_datamatrix.py -q      # 38 pruebas
+
+--------------------------------------------------------------------------------
+6. COMPROBADO DESDE EL PROPIO ZIP (2026-10-29)
+--------------------------------------------------------------------------------
+   El paquete se descomprimió en una carpeta limpia y se instaló en un árbol nuevo
+   (sólo con utilidades/, sin nada de P42). Después, con el libro que va dentro:
+     medir_tablero_p42.py ....... exacto 40 · cola pendiente 0 · vacío 0 · TOTAL 40/40
+     medir_contra_referencia.py . 191 llenas · 190 coinciden · 1 discrepa · 9 vacías
+     cierre_libro.py ............ 199/200 = 99,5 % · techo 200/200
+     pruebas .................... 17 pasan (21 se saltan sin las librerías de OCR)
+   Es decir: lo que dice este documento es lo que hace el paquete, no lo que hacía
+   la máquina donde se construyó.
+
+--------------------------------------------------------------------------------
+7. COSTE
+--------------------------------------------------------------------------------
+   barrido DataMatrix del lote (1 271 fotos) ....... 617 s
+   paso de etiquetas P42 .......................... 1 286 s
+   una lectura de DataMatrix ...................... 10-20 ms
+   segunda pasada (sólo casos con dudas) .......... 6,1 s por foto
+   suite de pruebas ............................... < 3 s
+===============================================================================

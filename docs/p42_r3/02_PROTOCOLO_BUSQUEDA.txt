@@ -1,0 +1,109 @@
+===============================================================================
+PROTOCOLO DE BÚSQUEDA · v2
+Lo que pasó el 2026-10-29 con 232564, por qué pasó, y qué se cambia para 50 o 100
+===============================================================================
+
+--------------------------------------------------------------------------------
+1. EL HECHO
+--------------------------------------------------------------------------------
+El usuario encontró a mano, en el repositorio, la foto `NACH/IMG_4408.JPG` del caso
+232564. El sistema había cerrado ese caso con la fecha vacía. La foto no faltaba:
+estaba en el repositorio y en la copia de trabajo. Y no sólo eso: **el sistema ya la
+había leído**, y había leído bien (`17/05/2025`).
+
+Lo que falló no fue la búsqueda de la foto. Fueron dos cosas, y conviene no
+confundirlas porque se arreglan de forma distinta.
+
+--------------------------------------------------------------------------------
+2. FALLO A · EL VOTO MEZCLABA PEGATINAS
+--------------------------------------------------------------------------------
+En 232564 había seis lecturas de fecha:
+
+  NACH/IMG_4408   17/05/2025   «INT 316 IP Part w Barcode … 12:38:17.PM … 497653401XBS»
+  NACH/IMG_4406   16/05/2025   «16/MAY0/2025 2061717 MAT»
+  VOR/IMG_5396    06/05/2025   «/06/05/2025 Lieferant : Farbe: 60 6K»
+  VOR/IMG_5399    11/04/2025   (sin texto guardado)
+  VOR/IMG_5395    11/04/2025   (sin texto guardado)
+  NACH/IMG_6728   09/06/2005   (basura: el año está mal)
+
+Sólo la primera es **el sticker del tablero**. Las demás son etiquetas de
+proveedor («Lieferant», «Farbe», «MAT») o lecturas malas. El consenso votaba por
+valor completo entre todas ellas, así que 11/04 ganaba por 2 votos frente a los
+17/05 que había leído alguien. Publicar 11/04 habría sido un error; dejarlo vacío,
+como se hizo, era lo correcto pero es perder la respuesta que sí estaba.
+
+  **Cambio 1.** Antes de votar, cada fecha se clasifica por la pegatina de la que
+  sale: `tablero`, `modulo`, `proveedor`, `desconocida`. Sólo votan entre sí las del
+  mismo tipo, y la fecha del tablero sólo se acepta si viene de una pegatina
+  `tablero`. Implementado en `buscar_mas.clase_de_pegatina()`.
+  El discriminador es barato y no depende del idioma: el sticker del tablero lleva
+  hora (`12:38:17 PM`) y un código de parte largo; el del módulo lleva `2GJ…` o
+  `ZRZ…`; el de proveedor lleva `Lieferant`, `Farbe`, `MAT`, lote o cantidad.
+
+--------------------------------------------------------------------------------
+3. FALLO B · SE MIRÓ EL 5 % DE LAS FOTOS
+--------------------------------------------------------------------------------
+`auditar_cobertura.py` sobre el lote entero:
+
+  fotos en el repositorio ......... 1281   (1271 fotos + 10 diagramas .png)
+  fotos en la copia de trabajo .... 1271
+  fotos que el sistema miró ....... 63   = **5,0 %**
+  caso 232564: 8 miradas de 134
+
+La primera pasada no mira todas las fotos a propósito: elige las que tienen una
+pista (la pestaña azul) y aplica un cupo. Es lo que hace que el lote cueste 683 s
+por caso en vez de horas. El problema es que **un campo en duda se cerraba sin
+saber cuántas fotos quedaban sin mirar**. En 232564 quedaban 126.
+
+  **Cambio 2.** Segunda pasada obligatoria cuando un campo sigue en duda
+  (`buscar_mas.py`): recorre las fotos no miradas, sin cupo, con un detector
+  complementario (el código que va pegado al sticker, no la pestaña), y para en
+  cuanto hay dos lecturas iguales de la misma clase de pegatina.
+  Coste medido: 91 fotos en 559 s (6,1 s/foto). Sólo se paga en los casos con
+  dudas, y se para antes si llega al consenso.
+
+  **Cambio 3.** Un campo no puede cerrarse como «sin dato» mientras queden fotos
+  sin mirar en ese caso. `auditar_cobertura.py` da el número exacto y es el que
+  hay que llevar a cero antes de publicar.
+
+--------------------------------------------------------------------------------
+4. POR QUÉ ESTO IMPORTA MÁS CON 50 O 100 CARPETAS
+--------------------------------------------------------------------------------
+Con 10 casos, una foto perdida es una casilla vacía que el usuario puede rellenar
+a mano en una tarde. Con 100 casos:
+
+  * el 5 % de cobertura significa ~6000 fotos sin mirar por lote;
+  * un 10 % de celdas en duda son ~400 celdas que alguien tiene que resolver;
+  * y una celda vacía que en realidad tenía respuesta se vuelve invisible, porque
+    el informe dice «no hay dato» con la misma cara que diría «no lo busqué».
+
+Las tres reglas que evitan eso:
+
+  R1 · COBERTURA ANTES QUE ASTUCIA.
+       El sistema tiene que poder decir, para cada caso, cuántas fotos existen,
+       cuántas tiene y cuántas ha mirado. Si esos tres números no cuadran, no hay
+       veredicto: hay un aviso.
+  R2 · UN CAMPO EN DUDA NO SE CIERRA HASTA AGOTAR LA BÚSQUEDA.
+       Con su coste a la vista (fotos examinadas y segundos), y por escrito en el
+       informe. «No encontrado» sin decir en cuántas fotos no es un resultado.
+  R3 · CADA VALOR SABE DE QUÉ PEGATINA VIENE.
+       No se vota entre etiquetas distintas. Un valor sin clase de pegatina no
+       compite con los demás: no se usa.
+
+Y una cuarta, que ya era regla y sigue siéndolo: **nunca se inventa**. Si tras
+agotar la búsqueda hay una sola lectura buena, va a la cola de confirmación con su
+imagen; no se publica sola y no se rellena con la referencia.
+
+--------------------------------------------------------------------------------
+5. LO QUE FALTA PARA CERRARLO DEL TODO
+--------------------------------------------------------------------------------
+  * La segunda pasada tarda 6 s por foto. Con 100 casos hay que paralelizarla por
+    caso (un proceso por carpeta) y ordenar la cola por «casos con campos en duda»,
+    no por número. Los 2 GB de RAM aguantan 2 procesos a la vez, no más.
+  * El manifiesto del repositorio se hace hoy comparando carpetas. Para 100 casos
+    conviene guardarlo (nombre + tamaño + sha1 corto) la primera vez y comparar
+    contra él, para no volver a listar el repositorio entero cada vez.
+  * Las 10 diferencias repo→copia que ha detectado el auditor son los diagramas
+    `.png` de cada caso (`222504.png`, …), no fotos. Conviene que el manifiesto
+    distinga «foto» de «documento del caso», para que el aviso no se vuelva ruido.
+===============================================================================

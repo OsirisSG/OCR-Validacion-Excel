@@ -1,0 +1,17 @@
+{
+ "casos": 1,
+ "proyectos": {
+  "BMG": 1
+ },
+ "tipos": {},
+ "temperaturas": {
+  "+85": 1
+ },
+ "generadores": {},
+ "repeticion": {
+  "proyectos": 1.0,
+  "tipos": 0.0,
+  "temperaturas": 1.0,
+  "generadores": 0.0
+ }
+}

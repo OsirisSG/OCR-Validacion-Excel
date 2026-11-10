@@ -94,10 +94,12 @@ def test_reporte_bmg_combina_1st_2st_y_colorea_apertura(tmp_path):
     assert rgb(bloque_2st[0]) == config["colores"]["gris"].lstrip("#").upper()
 
     # El detalle 1ST ocupa su bloque y 2ST inicia en el bloque siguiente.
-    assert lista["C8"].value == "1003"
-    assert lista["C9"].value == "1002"
-    assert lista["C10"].value == "1001"
-    assert lista["C58"].value == "2001"
+    # P08: el número de prueba entra como NÚMERO (un filtro u orden por esa columna
+    # falla si el valor llega como texto); los niveles siguen siendo texto.
+    assert lista["C8"].value == 1003
+    assert lista["C9"].value == 1002
+    assert lista["C10"].value == 1001
+    assert lista["C58"].value == 2001
     assert resumen["D7"].hyperlink is not None
     assert "Versuchsmatrix" in resumen["D7"].hyperlink.target
 

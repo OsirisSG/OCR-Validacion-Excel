@@ -338,6 +338,24 @@ def _campo_confiable(resultado: dict, clave: str):
     return dato
 
 
+def _campo_publicable(resultado: dict, clave: str):
+    """Como ``_campo`` pero con la puerta de publicación de P01-R01.
+
+    Un valor marcado ``requiere_revision`` o en estado ``conflicto`` /
+    ``pendiente_revision`` no se escribe en la plantilla del usuario: queda
+    registrado en el JSON/dashboard, no como dato confirmado. Una confirmación
+    humana explícita manda sobre esa marca.
+    """
+    dato = (resultado.get("campos") or {}).get(clave)
+    if isinstance(dato, dict):
+        humano = bool(dato.get("confirmacion_manual")) or dato.get("estado") == "confirmado_manual"
+        bloqueado = bool(dato.get("requiere_revision")) or dato.get("estado") in {
+            "conflicto", "pendiente_revision"}
+        if bloqueado and not humano:
+            return None
+    return _campo(resultado, clave)
+
+
 def _numero(valor):
     if isinstance(valor, bool) or valor in (None, "", "--", "-"):
         return None
@@ -484,6 +502,20 @@ def _relleno(hex_color: str) -> PatternFill:
     return PatternFill("solid", fgColor=hex_color.lstrip("#"))
 
 
+# P08: hay columnas que son números en el libro (un filtro por rango o una ordenación
+# por número de prueba falla si el valor entra como texto). Los niveles (`01S`) y los
+# números de parte NO están aquí: son texto por definición.
+COLUMNAS_NUMERICAS = {"test_number", "week"}
+
+
+def _como_numero(clave: str, valor):
+    """Devuelve el entero cuando la columna es numérica y el valor es un entero limpio."""
+    if clave not in COLUMNAS_NUMERICAS or valor in (None, ""):
+        return valor
+    texto = str(valor).strip()
+    return int(texto) if texto.isdigit() else valor
+
+
 def _escribir_fila(hoja, fila: int, resultado: dict, idioma: str = "es") -> None:
     canonico = resultado.get("resultado_caso_canonico")
     if ("campos" in resultado or "videos" in resultado or "video_apertura" in resultado
@@ -492,13 +524,14 @@ def _escribir_fila(hoja, fila: int, resultado: dict, idioma: str = "es") -> None
         canonico = resolver_resultado_caso(resultado)
     apertura = (canonico.get("apertura") or {}) if isinstance(canonico, dict) else {}
     for indice, clave in enumerate(CLAVES_PLANTILLA, start=1):
-        valor = _campo(resultado, clave)
+        valor = _campo_publicable(resultado, clave)
         if clave == "opening_time_ms":
             # Sólo publica como dato de plantilla un tiempo confirmado por una
             # persona. Los consensos heurísticos quedan en «Apertura V15.10».
             valor = (apertura.get("tiempo_ms")
                      if apertura.get("estado") in {"VERIFICADO_HUMANO", "AUTO_VERIFICABLE"} else None)
         celda = hoja.cell(fila, indice)
+        valor = _como_numero(clave, valor)
         if clave in {"opening_time_ms", "forvia_measurement_ms", "full_inflation_time_ms", "delay_ms"}:
             valor = (_tiempo_apertura_final(valor) if clave == "opening_time_ms"
                      else _tiempo_ms(valor))
@@ -547,19 +580,23 @@ def _poblar_lista(hoja, resultados: list[dict], idioma: str = "es") -> dict[str,
     inicio1, inicio2 = 8, max(58, 8 + len(g1))
     iniciox = inicio2 + len(g2)
     ultimo = max(107, inicio1+len(g1)-1, inicio2+len(g2)-1, iniciox+len(gx)-1)
+    previos=_previos_por_caso(hoja)
     for fila in range(8, max(hoja.max_row, ultimo)+1):
         for col in range(1, 56):
             celda=hoja.cell(fila,col); celda.value=None; celda.hyperlink=None; celda.comment=None
     mapa={}
+    informe_conservadas={"conservadas": 0}
     for grupo,inicio,estilo in ((g1,inicio1,estilo_1st),(g2,inicio2,estilo_2st),(gx,iniciox,estilo_1st)):
         for off, resultado in enumerate(grupo):
             fila=inicio+off; _copiar_estilo_fila(hoja, estilo, fila)
             _escribir_fila(hoja, fila, resultado, idioma)
+            _conservar_previos(hoja, fila, resultado, previos, informe_conservadas)
             mapa[_identidad(resultado)] = fila
     hoja.freeze_panes="A8"
     hoja.auto_filter.ref=f"A7:{get_column_letter(len(CLAVES_PLANTILLA) + len(COLUMNAS_MAXIMO_VIDEO))}{max(7,ultimo)}"
     hoja.column_dimensions[get_column_letter(len(CLAVES_PLANTILLA) + 1)].width = 27
     hoja.column_dimensions[get_column_letter(len(CLAVES_PLANTILLA) + 2)].width = 26
+    ULTIMA_CONSERVACION[hoja.title]=informe_conservadas["conservadas"]
     return mapa
 
 
@@ -1265,6 +1302,114 @@ def _guardar_atomico(libro, destino: Path, intentos: int=6) -> None:
         except OSError: pass
 
 
+def _valores_publicables(resultado: dict) -> dict:
+    """Lo que el pipeline propone para una fila, con la misma puerta que _escribir_fila."""
+    propuestos = {}
+    for clave in CLAVES_PLANTILLA:
+        if clave == "opening_time_ms":
+            continue  # el tiempo va por su carril (regla 8)
+        valor = _campo_publicable(resultado, clave)
+        if valor not in (None, ""):
+            propuestos[clave] = _como_numero(clave, valor)
+    return propuestos
+
+
+def _numeros_de_ejemplo(ruta_plantilla: str | Path | None) -> set[str]:
+    """Números de prueba de las filas de EJEMPLO que trae la plantilla institucional.
+
+    El libro institucional viene con casos de muestra (222501, 222502…). En modo relleno no se
+    borra nada del usuario, pero esas muestras no son datos suyos: se identifican por estar en
+    la plantilla enviada y no entre los resultados de esta corrida.
+    """
+    if not ruta_plantilla:
+        return set()
+    try:
+        libro = load_workbook(Path(ruta_plantilla), data_only=True)
+    except Exception:
+        return set()
+    hoja = libro[HOJA_LISTA] if HOJA_LISTA in libro.sheetnames else libro[libro.sheetnames[0]]
+    numeros = set()
+    for fila in range(8, hoja.max_row + 1):
+        numero = "".join(ch for ch in str(hoja.cell(fila, 3).value or "") if ch.isdigit())
+        if numero:
+            numeros.add(numero)
+    return numeros
+
+
+def _rellenar_lista(hoja, resultados: list[dict], config: dict,
+                    plantilla: str | Path | None = None) -> tuple[dict, dict]:
+    """Modo aditivo (P08): rellena huecos del libro y NUNCA pisa lo que ya está escrito.
+
+    Devuelve ``(mapa, informe)``. ``mapa`` identifica cada caso con su fila para que la
+    matriz y el resto de hojas sigan cuadrando. ``informe`` es el plan completo, que se
+    escribe al lado del libro como JSON para que las discrepancias sean consultables.
+    """
+    from utilidades.relleno_libro import (aplicar, constantes_confiables, emparejar_filas,
+                                          planificar, resumen)
+
+    empareje = emparejar_filas(hoja, resultados, CLAVES_PLANTILLA)
+    pares, mapa = [], {}
+    for resultado in resultados:
+        fila = empareje["filas"].get(id(resultado))
+        if fila is not None:
+            mapa[_identidad(resultado)] = fila
+            pares.append({"fila": fila, "valores": _valores_publicables(resultado)})
+    fase3 = config.get("fase3") or {}
+    # Filas de ejemplo de la plantilla que no son de esta corrida: se liberan para los casos
+    # nuevos. Sólo se tocan ésas; nunca una fila que tenga datos del usuario.
+    liberadas = 0
+    if fase3.get("limpiar_ejemplos", False):
+        de_ejemplo = _numeros_de_ejemplo(plantilla)
+        suyos = {str(r.get("test_number") or "") for r in resultados}
+        for fila in range(8, 108):
+            numero = "".join(ch for ch in str(hoja.cell(fila, 3).value or "") if ch.isdigit())
+            if numero and numero in de_ejemplo and numero not in suyos:
+                for columna in range(1, 56):
+                    celda = hoja.cell(fila, columna)
+                    celda.value = None
+                    celda.hyperlink = None
+                    celda.comment = None
+                liberadas += 1
+    # Casos que el libro no tiene: se añaden al final, sin tocar las filas existentes.
+    siguiente = max([*empareje["filas"].values(), 7]) + 1
+    while siguiente <= 107 and any(hoja.cell(siguiente, columna).value not in (None, "")
+                                   for columna in range(1, 21)):
+        siguiente += 1
+    for resultado in empareje["sin_fila"]:
+        if siguiente > 107:
+            break
+        _copiar_estilo_fila(hoja, 8, siguiente)
+        mapa[_identidad(resultado)] = siguiente
+        pares.append({"fila": siguiente, "valores": _valores_publicables(resultado)})
+        siguiente += 1
+    fase3 = config.get("fase3") or {}
+    confirmadas = list(fase3.get("constantes_confirmadas") or [])
+    # P10: las columnas que el libro repite igual y cuya forma es válida se rellenan solas
+    # (se puede desactivar con `fase3.confirmar_constantes: false`). Quedan en el informe con
+    # su origen «libro», así que son auditables y reversibles: no se confunden con lecturas.
+    if fase3.get("confirmar_constantes", True):
+        confirmadas += [clave for clave in constantes_confiables(hoja, CLAVES_PLANTILLA)
+                        if clave not in confirmadas]
+    plan = planificar(hoja, pares, CLAVES_PLANTILLA, constante_confirmada=confirmadas)
+    escritas = aplicar(hoja, plan)
+    informe = {
+        "modo": "aditivo",
+        "resumen": resumen(plan),
+        "celdas_escritas": escritas,
+        "filas_de_ejemplo_liberadas": liberadas,
+        "filas_emparejadas": len(empareje["filas"]),
+        "filas_huerfanas_libro": empareje["huerfanas"],
+        "casos_sin_fila": [str((r.get("test_number") or "")) for r in empareje["sin_fila"]],
+        "emparejados_por_identidad": len(empareje.get("por_identidad") or []),
+        "emparejados_por_identidad_detalle": empareje.get("por_identidad") or [],
+        "constantes_aplicadas": sorted(confirmadas),
+        "discrepancias": [{k: v for k, v in d.items()} for d in plan["discrepancias"]],
+        "constantes_detectadas": {k: v["valor"] for k, v in plan["constantes"].items()},
+        "constantes_por_confirmar": sorted({c["clave"] for c in plan["constantes_propuestas"]}),
+    }
+    return mapa, informe
+
+
 def generar_reporte_bmg(ruta_plantilla: str | Path, ruta_salida: str | Path,
                         resultados: list[dict], config: dict, reglas: dict, idioma: str="es",
                         criterios_apertura: dict | None = None,
@@ -1305,8 +1450,14 @@ def generar_reporte_bmg(ruta_plantilla: str | Path, ruta_salida: str | Path,
     libro=load_workbook(Path(ruta_plantilla))
     faltantes={HOJA_RESUMEN,HOJA_LISTA}-set(libro.sheetnames)
     if faltantes: raise ValueError(f"La plantilla BMG no contiene las hojas requeridas: {sorted(faltantes)}")
-    mapa=_poblar_lista(libro[HOJA_LISTA],resultados,idioma)
-    _copiar_lista_a_rangos(libro,resultados,idioma)
+    informe_relleno = None
+    if (config.get("fase3") or {}).get("modo_relleno"):
+        # P08: libro con datos del usuario → rellenar huecos, no reescribir la hoja.
+        mapa, informe_relleno = _rellenar_lista(libro[HOJA_LISTA], resultados, config,
+                                                plantilla=ruta_plantilla)
+    else:
+        mapa=_poblar_lista(libro[HOJA_LISTA],resultados,idioma)
+        _copiar_lista_a_rangos(libro,resultados,idioma)
     resumen=libro[HOJA_RESUMEN]
     # R7: eliminar datos históricos precargados ANTES de dibujar cualquier
     # etapa, para que una corrida de 1-2 filas no deje IDs de la plantilla.
@@ -1354,4 +1505,57 @@ def generar_reporte_bmg(ruta_plantilla: str | Path, ruta_salida: str | Path,
     destino = Path(ruta_salida)
     if identidad_proyecto and meta_identidad.get("publicable") is False:
         destino = destino.with_name(f"{destino.stem}.borrador_no_publicable{destino.suffix or '.xlsx'}")
-    _guardar_atomico(libro,destino); return destino
+    _guardar_atomico(libro,destino)
+    if informe_relleno is not None:
+        # El plan queda al lado del libro: qué se rellenó, qué se respetó y qué discrepa.
+        with open(destino.with_suffix(".relleno.json"), "w", encoding="utf-8") as folio:
+            json.dump(informe_relleno, folio, ensure_ascii=False, indent=2, default=str)
+    return destino
+
+
+# --- P42: lo que el flujo no leyó, no se borra ----------------------------------------
+# Antes de limpiar la matriz se guarda lo que ya estaba escrito, por número de prueba.
+# Al escribir cada caso se devuelve a la fila lo que esta corrida no supo reescribir.
+# Nunca pisa un valor nuevo: si la corrida trae dato, manda la corrida.
+ULTIMA_CONSERVACION: dict[str, int] = {}
+
+
+def _previos_por_caso(hoja, inicio: int = 8, fin: int | None = None):
+    """Número de prueba -> lista de {columna: valor} con lo que ya había escrito."""
+    fin = min(hoja.max_row, 400) if fin is None else fin
+    previos: dict[str, list[dict[int, object]]] = {}
+    for fila in range(inicio, fin + 1):
+        numero = hoja.cell(fila, 3).value
+        if numero in (None, ""):
+            continue
+        clave = str(numero).strip()
+        if len(clave) != 6 or not clave.isdigit():
+            continue
+        valores = {}
+        for columna in range(1, 56):
+            valor = hoja.cell(fila, columna).value
+            if valor not in (None, ""):
+                valores[columna] = valor
+        if valores:
+            previos.setdefault(clave, []).append(valores)
+    return previos
+
+
+def _conservar_previos(hoja, fila: int, resultado: dict, previos: dict,
+                       informe: dict | None = None) -> int:
+    """Devuelve a la fila lo que tenía y esta corrida no ha escrito. Nunca sobrescribe."""
+    numero = _campo(resultado, "test_number")
+    clave = "" if numero is None else str(numero).strip()
+    candidatos = previos.get(clave)
+    if not candidatos:
+        return 0
+    devueltas = 0
+    for columna, valor in candidatos[0].items():
+        celda = hoja.cell(fila, columna)
+        if celda.value not in (None, ""):
+            continue
+        celda.value = valor
+        devueltas += 1
+    if devueltas and informe is not None:
+        informe["conservadas"] = informe.get("conservadas", 0) + devueltas
+    return devueltas

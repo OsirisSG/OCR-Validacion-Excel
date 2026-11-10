@@ -1,0 +1,27 @@
+V-MATRIX - Diagnóstico de versión y semáforo (SOLO LECTURA)
+
+Objetivo: identificar por qué un lote terminado tiene pruebas grises,
+comprobar la versión realmente instalada y detectar diferencias entre
+la matriz y el resumen.
+
+INSTRUCCIONES
+1. Cierra otros procesos de V-Matrix si hay más de uno y abre tu V-Matrix habitual.
+2. Copia DIAGNOSTICO_SEMAFORO_V16.bat y DIAGNOSTICO_SEMAFORO_V16.py
+   a la RAÍZ de C:\Programas Base\OCR-Validacion-Excel-ocr-gpu-produccion,
+   junto a iniciar.py, VERSION.txt y la carpeta dashboard.
+3. Con la aplicación ABIERTA en el dashboard, haz doble clic en
+   DIAGNOSTICO_SEMAFORO_V16.bat.
+4. El BAT guardará un reporte en tu carpeta temporal de Windows (%%TEMP%%).
+   Al final verás el nombre y la ruta exactos del archivo TXT.
+5. Revisa el reporte por posibles identificadores de pruebas antes de
+   compartirlo, y envíalo a la conversación.
+
+SEGURIDAD
+- No modifica videos, Excel, JSON, criterios de semáforo ni código.
+- NO instala parches ni reanaliza el lote.
+- Solo consulta el backend de V-Matrix en 127.0.0.1 (puertos frecuentes).
+- Solo escribe el informe de diagnóstico en la carpeta temporal de Windows.
+- Verificar un hash de código no certifica que el algoritmo mida correctamente.
+
+Si no detecta la API, confirma que tu V-Matrix está abierto en el mismo
+Windows y que el puerto de dashboard es 8000. Si lo cambiaste, indícalo.

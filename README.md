@@ -6,7 +6,7 @@ Aplicación local para recorrer lotes de fotografías, extraer nomenclaturas con
 OCR, comparar etiquetas contra imágenes de referencia, generar un Excel maestro
 y consultar los resultados desde un dashboard responsivo.
 
-> **Versión V16.0.2 · 2026-10-19.** Cambio formal de numeración a partir de R15.9.1, conservando el mismo motor OCR, lógica de apertura, Tmax, semáforo y generación Excel.
+> **Versión V16.0.20.** Identidad vigente según `VERSION.txt`; `PATCH_BUILD`, la caché estática y el soak usan el mismo valor. El cambio formal de numeración se documentó en V16.0.2 (2026-10-19), conservando el mismo motor OCR, lógica de apertura, Tmax, semáforo y generación Excel.
 > El **paquete ACUMULATIVO V16** permite actualizar directamente instalaciones verificadas desde R15.6 hasta R15.9.1. No es el instalador incremental antiguo.
 > Las mejoras históricas de R15.9.1 (integridad, recuperación y durabilidad) se mantienen. Consulta su historial en `docs/informes/CHANGELOG_R15_9.md`.
 > Sigue pendiente la validación de campo con Windows, GPU y videos reales; el cambio de nombre no certifica producción.

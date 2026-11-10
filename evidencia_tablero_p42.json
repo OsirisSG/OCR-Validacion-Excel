@@ -1,0 +1,1180 @@
+{
+ "222504": {
+  "caso": "222504 RDW NOM NT",
+  "caso_numero": "222504",
+  "fotos": 118,
+  "fotos_con_pista": 115,
+  "votos": {
+   "dashboard_part_number": {
+    "2GJ.857.003.G": 1
+   },
+   "dashboard_serial_number": {
+    "052 3KVJ008R6E1": 2
+   },
+   "dashboard_date": {
+    "2025-05-17": 2
+   },
+   "dashboard_engineering_level": {
+    "03S": 1
+   }
+  },
+  "confianza": {
+   "dashboard_part_number": 0.95,
+   "dashboard_serial_number": 0.95,
+   "dashboard_date": 0.82,
+   "dashboard_engineering_level": 0.68
+  },
+  "dudoso": {
+   "dashboard_part_number": false,
+   "dashboard_serial_number": false,
+   "dashboard_date": false,
+   "dashboard_engineering_level": true
+  },
+  "por_que_dudoso": {
+   "dashboard_engineering_level": "1 lectura(s) iguales de 1; hacen falta 2"
+  },
+  "fuente": {
+   "dashboard_part_number": {
+    "foto": "IMG_1601.JPG",
+    "carpeta": "NACH",
+    "origen": "datamatrix_payload_np",
+    "lecturas": 1,
+    "valor_codificado": "2GJ.857.003.G",
+    "texto": "052# 2GJ 857 003 G#       #812506467#19052500*052 3KVJ008R6E1*=",
+    "cola_cruda": "",
+    "clase_cola": "",
+    "payload_hex": "303532232032474a203835372030303320472320202020202020233831323530363436372331393035323530302a30353220334b564a303038523645312a3d",
+    "formato": "DataMatrix",
+    "version_decode": "3.1.1",
+    "conflicto": [],
+    "posiciones_dudosas": [],
+    "descartadas_por_largo": 0,
+    "descartadas_datamatrix": 0,
+    "de_pestana_azul": 0,
+    "captura": ""
+   },
+   "dashboard_serial_number": {
+    "foto": "IMG_1601.JPG",
+    "carpeta": "NACH",
+    "origen": "datamatrix",
+    "lecturas": 2,
+    "valor_codificado": "052 3KVJ008R6E1",
+    "texto": "052# 2GJ 857 003 G#       #812506467#19052500*052 3KVJ008R6E1*=",
+    "cola_cruda": "R6E1",
+    "clase_cola": "limpia",
+    "payload_hex": "303532232032474a203835372030303320472320202020202020233831323530363436372331393035323530302a30353220334b564a303038523645312a3d",
+    "formato": "DataMatrix",
+    "version_decode": "3.1.1",
+    "conflicto": [],
+    "posiciones_dudosas": [],
+    "descartadas_por_largo": 0,
+    "descartadas_datamatrix": 0,
+    "de_pestana_azul": 0,
+    "captura": ""
+   },
+   "dashboard_date": {
+    "foto": "IMG_3154 (1).JPG",
+    "carpeta": "NACH",
+    "origen": "17/05/2025",
+    "lecturas": 2,
+    "valor_codificado": "2025-05-17",
+    "texto": "",
+    "cola_cruda": "",
+    "clase_cola": "",
+    "payload_hex": "",
+    "formato": "",
+    "version_decode": "",
+    "conflicto": [],
+    "posiciones_dudosas": [],
+    "descartadas_por_largo": 0,
+    "descartadas_datamatrix": 0,
+    "de_pestana_azul": 2,
+    "captura": ""
+   },
+   "dashboard_engineering_level": {
+    "foto": "IMG_1600.JPG",
+    "carpeta": "VOR",
+    "origen": "estampa_rosa",
+    "lecturas": 1,
+    "valor_codificado": "03S",
+    "texto": "",
+    "cola_cruda": "",
+    "clase_cola": "",
+    "payload_hex": "",
+    "formato": "",
+    "version_decode": "",
+    "conflicto": [],
+    "posiciones_dudosas": [],
+    "descartadas_por_largo": 0,
+    "descartadas_datamatrix": 0,
+    "de_pestana_azul": 0,
+    "captura": ""
+   }
+  },
+  "dashboard_part_number": "2GJ.857.003.G",
+  "dashboard_serial_number": "052 3KVJ008R6E1",
+  "dashboard_date": "2025-05-17",
+  "dashboard_engineering_level": "03S"
+ },
+ "222509": {
+  "caso": "222509 RDW NOM NT",
+  "caso_numero": "222509",
+  "fotos": 123,
+  "fotos_con_pista": 113,
+  "votos": {
+   "dashboard_part_number": {
+    "2GJ.857.003.G": 1
+   },
+   "dashboard_serial_number": {
+    "052 3KVJ008R6J6": 1
+   },
+   "dashboard_date": {
+    "2025-05-17": 2
+   },
+   "dashboard_engineering_level": {
+    "03S": 1
+   }
+  },
+  "confianza": {
+   "dashboard_part_number": 0.95,
+   "dashboard_serial_number": 0.95,
+   "dashboard_date": 0.87,
+   "dashboard_engineering_level": 0.72
+  },
+  "dudoso": {
+   "dashboard_part_number": false,
+   "dashboard_serial_number": false,
+   "dashboard_date": false,
+   "dashboard_engineering_level": true
+  },
+  "por_que_dudoso": {
+   "dashboard_engineering_level": "1 lectura(s) iguales de 1; hacen falta 2"
+  },
+  "fuente": {
+   "dashboard_part_number": {
+    "foto": "IMG_1782.JPG",
+    "carpeta": "VOR",
+    "origen": "datamatrix_payload_np",
+    "lecturas": 1,
+    "valor_codificado": "2GJ.857.003.G",
+    "texto": "052# 2GJ 857 003 G#       #812506467#19052500*052 3KVJ008R6J6*=",
+    "cola_cruda": "",
+    "clase_cola": "",
+    "payload_hex": "303532232032474a203835372030303320472320202020202020233831323530363436372331393035323530302a30353220334b564a30303852364a362a3d",
+    "formato": "DataMatrix",
+    "version_decode": "3.1.1",
+    "conflicto": [],
+    "posiciones_dudosas": [],
+    "descartadas_por_largo": 0,
+    "descartadas_datamatrix": 0,
+    "de_pestana_azul": 0,
+    "captura": ""
+   },
+   "dashboard_serial_number": {
+    "foto": "IMG_1782.JPG",
+    "carpeta": "VOR",
+    "origen": "datamatrix",
+    "lecturas": 1,
+    "valor_codificado": "052 3KVJ008R6J6",
+    "texto": "052# 2GJ 857 003 G#       #812506467#19052500*052 3KVJ008R6J6*=",
+    "cola_cruda": "R6J6",
+    "clase_cola": "limpia",
+    "payload_hex": "303532232032474a203835372030303320472320202020202020233831323530363436372331393035323530302a30353220334b564a30303852364a362a3d",
+    "formato": "DataMatrix",
+    "version_decode": "3.1.1",
+    "conflicto": [],
+    "posiciones_dudosas": [],
+    "descartadas_por_largo": 0,
+    "descartadas_datamatrix": 0,
+    "de_pestana_azul": 0,
+    "captura": ""
+   },
+   "dashboard_date": {
+    "foto": "IMG_2965.JPG",
+    "carpeta": "NACH",
+    "origen": "17/05/2025",
+    "lecturas": 2,
+    "valor_codificado": "2025-05-17",
+    "texto": "",
+    "cola_cruda": "",
+    "clase_cola": "",
+    "payload_hex": "",
+    "formato": "",
+    "version_decode": "",
+    "conflicto": [],
+    "posiciones_dudosas": [],
+    "descartadas_por_largo": 0,
+    "descartadas_datamatrix": 0,
+    "de_pestana_azul": 2,
+    "captura": ""
+   },
+   "dashboard_engineering_level": {
+    "foto": "IMG_1781.JPG",
+    "carpeta": "VOR",
+    "origen": "estampa_rosa",
+    "lecturas": 1,
+    "valor_codificado": "03S",
+    "texto": "",
+    "cola_cruda": "",
+    "clase_cola": "",
+    "payload_hex": "",
+    "formato": "",
+    "version_decode": "",
+    "conflicto": [],
+    "posiciones_dudosas": [],
+    "descartadas_por_largo": 0,
+    "descartadas_datamatrix": 0,
+    "de_pestana_azul": 0,
+    "captura": ""
+   }
+  },
+  "dashboard_part_number": "2GJ.857.003.G",
+  "dashboard_serial_number": "052 3KVJ008R6J6",
+  "dashboard_date": "2025-05-17",
+  "dashboard_engineering_level": "03S"
+ },
+ "222521": {
+  "caso": "222521 RDW OGL NT",
+  "caso_numero": "222521",
+  "fotos": 123,
+  "fotos_con_pista": 116,
+  "votos": {
+   "dashboard_part_number": {
+    "2GJ.857.003.G": 1
+   },
+   "dashboard_serial_number": {
+    "052 3KVJ008R69$": 2
+   },
+   "dashboard_date": {
+    "2025-05-17": 2
+   },
+   "dashboard_engineering_level": {
+    "03S": 2
+   }
+  },
+  "confianza": {
+   "dashboard_part_number": 0.6,
+   "dashboard_serial_number": 0.6,
+   "dashboard_date": 0.82,
+   "dashboard_engineering_level": 0.73
+  },
+  "dudoso": {
+   "dashboard_part_number": false,
+   "dashboard_serial_number": true,
+   "dashboard_date": false,
+   "dashboard_engineering_level": false
+  },
+  "por_que_dudoso": {
+   "dashboard_serial_number": "el dato decodificado no tiene la forma esperada (clase simbolo; cola cruda R69$)"
+  },
+  "fuente": {
+   "dashboard_part_number": {
+    "foto": "IMG_1714.JPG",
+    "carpeta": "NACH",
+    "origen": "datamatrix_payload_np",
+    "lecturas": 1,
+    "valor_codificado": "2GJ.857.003.G",
+    "texto": "052# 2GJ 857 003 G#       #812506467#19052500*052 3KVJ008R69$*=",
+    "cola_cruda": "",
+    "clase_cola": "",
+    "payload_hex": "303532232032474a203835372030303320472320202020202020233831323530363436372331393035323530302a30353220334b564a303038523639242a3d",
+    "formato": "DataMatrix",
+    "version_decode": "3.1.1",
+    "conflicto": [],
+    "posiciones_dudosas": [],
+    "descartadas_por_largo": 0,
+    "descartadas_datamatrix": 0,
+    "de_pestana_azul": 0,
+    "captura": ""
+   },
+   "dashboard_serial_number": {
+    "foto": "IMG_1714.JPG",
+    "carpeta": "NACH",
+    "origen": "datamatrix",
+    "lecturas": 2,
+    "valor_codificado": "052 3KVJ008R69$",
+    "texto": "052# 2GJ 857 003 G#       #812506467#19052500*052 3KVJ008R69$*=",
+    "cola_cruda": "R69$",
+    "clase_cola": "simbolo",
+    "payload_hex": "303532232032474a203835372030303320472320202020202020233831323530363436372331393035323530302a30353220334b564a303038523639242a3d",
+    "formato": "DataMatrix",
+    "version_decode": "3.1.1",
+    "conflicto": [],
+    "posiciones_dudosas": [],
+    "descartadas_por_largo": 0,
+    "descartadas_datamatrix": 0,
+    "de_pestana_azul": 0,
+    "captura": ""
+   },
+   "dashboard_date": {
+    "foto": "IMG_1711.JPG",
+    "carpeta": "NACH",
+    "origen": "17/05/2025",
+    "lecturas": 2,
+    "valor_codificado": "2025-05-17",
+    "texto": "",
+    "cola_cruda": "",
+    "clase_cola": "",
+    "payload_hex": "",
+    "formato": "",
+    "version_decode": "",
+    "conflicto": [],
+    "posiciones_dudosas": [],
+    "descartadas_por_largo": 0,
+    "descartadas_datamatrix": 1,
+    "de_pestana_azul": 2,
+    "captura": ""
+   },
+   "dashboard_engineering_level": {
+    "foto": "IMG_2327.JPG",
+    "carpeta": "VOR",
+    "origen": "estampa_rosa",
+    "lecturas": 2,
+    "valor_codificado": "03S",
+    "texto": "",
+    "cola_cruda": "",
+    "clase_cola": "",
+    "payload_hex": "",
+    "formato": "",
+    "version_decode": "",
+    "conflicto": [],
+    "posiciones_dudosas": [],
+    "descartadas_por_largo": 0,
+    "descartadas_datamatrix": 0,
+    "de_pestana_azul": 0,
+    "captura": ""
+   }
+  },
+  "dashboard_part_number": "2GJ.857.003.G",
+  "dashboard_serial_number": "052 3KVJ008R69$",
+  "dashboard_date": "2025-05-17",
+  "dashboard_engineering_level": "03S"
+ },
+ "222530": {
+  "caso": "222530 RDW UGL NT",
+  "caso_numero": "222530",
+  "fotos": 126,
+  "fotos_con_pista": 118,
+  "votos": {
+   "dashboard_part_number": {
+    "2GJ.857.003.G": 1
+   },
+   "dashboard_serial_number": {
+    "052 3KVJ008R6RE": 2
+   },
+   "dashboard_date": {
+    "2025-05-17": 1
+   },
+   "dashboard_engineering_level": {
+    "03S": 1
+   }
+  },
+  "confianza": {
+   "dashboard_part_number": 0.95,
+   "dashboard_serial_number": 0.95,
+   "dashboard_date": 0.84,
+   "dashboard_engineering_level": 0.72
+  },
+  "dudoso": {
+   "dashboard_part_number": false,
+   "dashboard_serial_number": false,
+   "dashboard_date": true,
+   "dashboard_engineering_level": true
+  },
+  "por_que_dudoso": {
+   "dashboard_date": "1 lectura(s) iguales de 1; hacen falta 2",
+   "dashboard_engineering_level": "1 lectura(s) iguales de 1; hacen falta 2"
+  },
+  "fuente": {
+   "dashboard_part_number": {
+    "foto": "IMG_2278.JPG",
+    "carpeta": "NACH",
+    "origen": "datamatrix_payload_np",
+    "lecturas": 1,
+    "valor_codificado": "2GJ.857.003.G",
+    "texto": "052# 2GJ 857 003 G#       #812506467#19052500*052 3KVJ008R6RE*=",
+    "cola_cruda": "",
+    "clase_cola": "",
+    "payload_hex": "303532232032474a203835372030303320472320202020202020233831323530363436372331393035323530302a30353220334b564a303038523652452a3d",
+    "formato": "DataMatrix",
+    "version_decode": "3.1.1",
+    "conflicto": [],
+    "posiciones_dudosas": [],
+    "descartadas_por_largo": 0,
+    "descartadas_datamatrix": 0,
+    "de_pestana_azul": 0,
+    "captura": ""
+   },
+   "dashboard_serial_number": {
+    "foto": "IMG_2278.JPG",
+    "carpeta": "NACH",
+    "origen": "datamatrix",
+    "lecturas": 2,
+    "valor_codificado": "052 3KVJ008R6RE",
+    "texto": "052# 2GJ 857 003 G#       #812506467#19052500*052 3KVJ008R6RE*=",
+    "cola_cruda": "R6RE",
+    "clase_cola": "limpia",
+    "payload_hex": "303532232032474a203835372030303320472320202020202020233831323530363436372331393035323530302a30353220334b564a303038523652452a3d",
+    "formato": "DataMatrix",
+    "version_decode": "3.1.1",
+    "conflicto": [],
+    "posiciones_dudosas": [],
+    "descartadas_por_largo": 0,
+    "descartadas_datamatrix": 0,
+    "de_pestana_azul": 0,
+    "captura": ""
+   },
+   "dashboard_date": {
+    "foto": "IMG_2655.JPG",
+    "carpeta": "VOR",
+    "origen": "17/05/2025",
+    "lecturas": 1,
+    "valor_codificado": "2025-05-17",
+    "texto": "",
+    "cola_cruda": "",
+    "clase_cola": "",
+    "payload_hex": "",
+    "formato": "",
+    "version_decode": "",
+    "conflicto": [],
+    "posiciones_dudosas": [],
+    "descartadas_por_largo": 0,
+    "descartadas_datamatrix": 0,
+    "de_pestana_azul": 1,
+    "captura": ""
+   },
+   "dashboard_engineering_level": {
+    "foto": "IMG_2279.JPG",
+    "carpeta": "NACH",
+    "origen": "estampa_rosa",
+    "lecturas": 1,
+    "valor_codificado": "03S",
+    "texto": "",
+    "cola_cruda": "",
+    "clase_cola": "",
+    "payload_hex": "",
+    "formato": "",
+    "version_decode": "",
+    "conflicto": [],
+    "posiciones_dudosas": [],
+    "descartadas_por_largo": 0,
+    "descartadas_datamatrix": 0,
+    "de_pestana_azul": 0,
+    "captura": ""
+   }
+  },
+  "dashboard_part_number": "2GJ.857.003.G",
+  "dashboard_serial_number": "052 3KVJ008R6RE",
+  "dashboard_date": "2025-05-17",
+  "dashboard_engineering_level": "03S"
+ },
+ "232550": {
+  "caso": "232550 RDW NOM HT",
+  "caso_numero": "232550",
+  "fotos": 119,
+  "fotos_con_pista": 112,
+  "votos": {
+   "dashboard_part_number": {
+    "2GJ.857.003.G": 1
+   },
+   "dashboard_serial_number": {
+    "052 3KVJ008R56Z": 1
+   },
+   "dashboard_date": {
+    "2025-05-17": 2
+   },
+   "dashboard_engineering_level": {
+    "03S": 2
+   }
+  },
+  "confianza": {
+   "dashboard_part_number": 0.95,
+   "dashboard_serial_number": 0.95,
+   "dashboard_date": 0.84,
+   "dashboard_engineering_level": 0.74
+  },
+  "dudoso": {
+   "dashboard_part_number": false,
+   "dashboard_serial_number": false,
+   "dashboard_date": false,
+   "dashboard_engineering_level": false
+  },
+  "fuente": {
+   "dashboard_part_number": {
+    "foto": "IMG_4801.JPG",
+    "carpeta": "VOR",
+    "origen": "datamatrix_payload_np",
+    "lecturas": 1,
+    "valor_codificado": "2GJ.857.003.G",
+    "texto": "052# 2GJ 857 003 G#       #812506467#19052500*052 3KVJ008R56Z*=",
+    "cola_cruda": "",
+    "clase_cola": "",
+    "payload_hex": "303532232032474a203835372030303320472320202020202020233831323530363436372331393035323530302a30353220334b564a3030385235365a2a3d",
+    "formato": "DataMatrix",
+    "version_decode": "3.1.1",
+    "conflicto": [],
+    "posiciones_dudosas": [],
+    "descartadas_por_largo": 0,
+    "descartadas_datamatrix": 0,
+    "de_pestana_azul": 0,
+    "captura": ""
+   },
+   "dashboard_serial_number": {
+    "foto": "IMG_4801.JPG",
+    "carpeta": "VOR",
+    "origen": "datamatrix",
+    "lecturas": 1,
+    "valor_codificado": "052 3KVJ008R56Z",
+    "texto": "052# 2GJ 857 003 G#       #812506467#19052500*052 3KVJ008R56Z*=",
+    "cola_cruda": "R56Z",
+    "clase_cola": "limpia",
+    "payload_hex": "303532232032474a203835372030303320472320202020202020233831323530363436372331393035323530302a30353220334b564a3030385235365a2a3d",
+    "formato": "DataMatrix",
+    "version_decode": "3.1.1",
+    "conflicto": [],
+    "posiciones_dudosas": [],
+    "descartadas_por_largo": 0,
+    "descartadas_datamatrix": 0,
+    "de_pestana_azul": 0,
+    "captura": ""
+   },
+   "dashboard_date": {
+    "foto": "IMG_6012.JPG",
+    "carpeta": "NACH",
+    "origen": "17/05/2025",
+    "lecturas": 2,
+    "valor_codificado": "2025-05-17",
+    "texto": "",
+    "cola_cruda": "",
+    "clase_cola": "",
+    "payload_hex": "",
+    "formato": "",
+    "version_decode": "",
+    "conflicto": [],
+    "posiciones_dudosas": [],
+    "descartadas_por_largo": 0,
+    "descartadas_datamatrix": 1,
+    "de_pestana_azul": 2,
+    "captura": ""
+   },
+   "dashboard_engineering_level": {
+    "foto": "IMG_4800.JPG",
+    "carpeta": "VOR",
+    "origen": "estampa_rosa",
+    "lecturas": 2,
+    "valor_codificado": "03S",
+    "texto": "",
+    "cola_cruda": "",
+    "clase_cola": "",
+    "payload_hex": "",
+    "formato": "",
+    "version_decode": "",
+    "conflicto": [],
+    "posiciones_dudosas": [],
+    "descartadas_por_largo": 0,
+    "descartadas_datamatrix": 0,
+    "de_pestana_azul": 0,
+    "captura": ""
+   }
+  },
+  "dashboard_part_number": "2GJ.857.003.G",
+  "dashboard_serial_number": "052 3KVJ008R56Z",
+  "dashboard_date": "2025-05-17",
+  "dashboard_engineering_level": "03S"
+ },
+ "232561": {
+  "caso": "232561 RDW OGL HT",
+  "caso_numero": "232561",
+  "fotos": 147,
+  "fotos_con_pista": 139,
+  "votos": {
+   "dashboard_part_number": {
+    "2GJ.857.003.G": 1
+   },
+   "dashboard_serial_number": {
+    "052 3KVJ008R4O9": 2
+   },
+   "dashboard_date": {
+    "2025-04-11": 2,
+    "2025-05-06": 2,
+    "2025-05-17": 1
+   },
+   "dashboard_engineering_level": {
+    "03S": 1
+   }
+  },
+  "confianza": {
+   "dashboard_part_number": 0.6,
+   "dashboard_serial_number": 0.6,
+   "dashboard_date": 0.9,
+   "dashboard_engineering_level": 0.72
+  },
+  "dudoso": {
+   "dashboard_part_number": false,
+   "dashboard_serial_number": true,
+   "dashboard_date": true,
+   "dashboard_engineering_level": true
+  },
+  "por_que_dudoso": {
+   "dashboard_serial_number": "el dato decodificado no tiene la forma esperada (clase ambigua; cola cruda R4O9)",
+   "dashboard_date": "las lecturas discrepan: «2025-04-11»×2, «2025-05-06»×2, «2025-05-17»×1",
+   "dashboard_engineering_level": "1 lectura(s) iguales de 1; hacen falta 2"
+  },
+  "fuente": {
+   "dashboard_part_number": {
+    "foto": "IMG_4221.JPG",
+    "carpeta": "NACH",
+    "origen": "datamatrix_payload_np",
+    "lecturas": 1,
+    "valor_codificado": "2GJ.857.003.G",
+    "texto": "052# 2GJ 857 003 G#       #812506467#19052500*052 3KVJ008R4O9*=",
+    "cola_cruda": "",
+    "clase_cola": "",
+    "payload_hex": "303532232032474a203835372030303320472320202020202020233831323530363436372331393035323530302a30353220334b564a30303852344f392a3d",
+    "formato": "DataMatrix",
+    "version_decode": "3.1.1",
+    "conflicto": [],
+    "posiciones_dudosas": [],
+    "descartadas_por_largo": 0,
+    "descartadas_datamatrix": 0,
+    "de_pestana_azul": 0,
+    "captura": ""
+   },
+   "dashboard_serial_number": {
+    "foto": "IMG_4221.JPG",
+    "carpeta": "NACH",
+    "origen": "datamatrix",
+    "lecturas": 2,
+    "valor_codificado": "052 3KVJ008R4O9",
+    "texto": "052# 2GJ 857 003 G#       #812506467#19052500*052 3KVJ008R4O9*=",
+    "cola_cruda": "R4O9",
+    "clase_cola": "ambigua",
+    "payload_hex": "303532232032474a203835372030303320472320202020202020233831323530363436372331393035323530302a30353220334b564a30303852344f392a3d",
+    "formato": "DataMatrix",
+    "version_decode": "3.1.1",
+    "conflicto": [],
+    "posiciones_dudosas": [],
+    "descartadas_por_largo": 0,
+    "descartadas_datamatrix": 0,
+    "de_pestana_azul": 0,
+    "captura": ""
+   },
+   "dashboard_date": {
+    "foto": "IMG_5222.JPG",
+    "carpeta": "VOR",
+    "origen": "11/04/2025",
+    "lecturas": 5,
+    "valor_codificado": "2025-04-11",
+    "texto": "",
+    "cola_cruda": "",
+    "clase_cola": "",
+    "payload_hex": "",
+    "formato": "",
+    "version_decode": "",
+    "conflicto": [],
+    "posiciones_dudosas": [],
+    "descartadas_por_largo": 3,
+    "descartadas_datamatrix": 2,
+    "de_pestana_azul": 0,
+    "captura": ""
+   },
+   "dashboard_engineering_level": {
+    "foto": "IMG_5197.JPG",
+    "carpeta": "VOR",
+    "origen": "estampa_rosa",
+    "lecturas": 1,
+    "valor_codificado": "03S",
+    "texto": "",
+    "cola_cruda": "",
+    "clase_cola": "",
+    "payload_hex": "",
+    "formato": "",
+    "version_decode": "",
+    "conflicto": [],
+    "posiciones_dudosas": [],
+    "descartadas_por_largo": 0,
+    "descartadas_datamatrix": 0,
+    "de_pestana_azul": 0,
+    "captura": ""
+   }
+  },
+  "dashboard_part_number": "2GJ.857.003.G",
+  "dashboard_serial_number": "052 3KVJ008R4O9",
+  "dashboard_date": "2025-04-11",
+  "dashboard_engineering_level": "03S"
+ },
+ "232564": {
+  "caso": "232564 RDW OGL HT",
+  "caso_numero": "232564",
+  "fotos": 134,
+  "fotos_con_pista": 124,
+  "votos": {
+   "dashboard_part_number": {
+    "2GJ.857.003.G": 1
+   },
+   "dashboard_serial_number": {
+    "052 3KVJ008R4I3": 1
+   },
+   "dashboard_date": {
+    "2025-04-11": 2,
+    "2025-05-16": 1,
+    "2025-05-17": 1,
+    "2025-05-06": 1,
+    "2020-05-06": 1
+   },
+   "dashboard_engineering_level": {
+    "03S": 1
+   }
+  },
+  "confianza": {
+   "dashboard_part_number": 0.95,
+   "dashboard_serial_number": 0.95,
+   "dashboard_date": 0.9,
+   "dashboard_engineering_level": 0.7
+  },
+  "dudoso": {
+   "dashboard_part_number": false,
+   "dashboard_serial_number": false,
+   "dashboard_date": true,
+   "dashboard_engineering_level": true
+  },
+  "por_que_dudoso": {
+   "dashboard_date": "1 lectura(s) iguales de 6; hacen falta 2; las lecturas discrepan: «2025-04-11»×2, «2025-05-16»×1, «2025-05-17»×1, «2025-05-06»×1",
+   "dashboard_engineering_level": "1 lectura(s) iguales de 1; hacen falta 2"
+  },
+  "fuente": {
+   "dashboard_part_number": {
+    "foto": "IMG_5375.JPG",
+    "carpeta": "VOR",
+    "origen": "datamatrix_payload_np",
+    "lecturas": 1,
+    "valor_codificado": "2GJ.857.003.G",
+    "texto": "052# 2GJ 857 003 G#       #812506467#19052500*052 3KVJ008R4I3*=",
+    "cola_cruda": "",
+    "clase_cola": "",
+    "payload_hex": "303532232032474a203835372030303320472320202020202020233831323530363436372331393035323530302a30353220334b564a303038523449332a3d",
+    "formato": "DataMatrix",
+    "version_decode": "3.1.1",
+    "conflicto": [],
+    "posiciones_dudosas": [],
+    "descartadas_por_largo": 0,
+    "descartadas_datamatrix": 0,
+    "de_pestana_azul": 0,
+    "captura": ""
+   },
+   "dashboard_serial_number": {
+    "foto": "IMG_5375.JPG",
+    "carpeta": "VOR",
+    "origen": "datamatrix",
+    "lecturas": 1,
+    "valor_codificado": "052 3KVJ008R4I3",
+    "texto": "052# 2GJ 857 003 G#       #812506467#19052500*052 3KVJ008R4I3*=",
+    "cola_cruda": "R4I3",
+    "clase_cola": "limpia",
+    "payload_hex": "303532232032474a203835372030303320472320202020202020233831323530363436372331393035323530302a30353220334b564a303038523449332a3d",
+    "formato": "DataMatrix",
+    "version_decode": "3.1.1",
+    "conflicto": [],
+    "posiciones_dudosas": [],
+    "descartadas_por_largo": 0,
+    "descartadas_datamatrix": 0,
+    "de_pestana_azul": 0,
+    "captura": ""
+   },
+   "dashboard_date": {
+    "foto": "IMG_5399.JPG",
+    "carpeta": "VOR",
+    "origen": "11/04/2025",
+    "lecturas": 6,
+    "valor_codificado": "2025-04-11",
+    "texto": "",
+    "cola_cruda": "",
+    "clase_cola": "",
+    "payload_hex": "",
+    "formato": "",
+    "version_decode": "",
+    "conflicto": [],
+    "posiciones_dudosas": [],
+    "descartadas_por_largo": 0,
+    "descartadas_datamatrix": 0,
+    "de_pestana_azul": 0,
+    "captura": ""
+   },
+   "dashboard_engineering_level": {
+    "foto": "IMG_5374.JPG",
+    "carpeta": "VOR",
+    "origen": "estampa_rosa",
+    "lecturas": 1,
+    "valor_codificado": "03S",
+    "texto": "",
+    "cola_cruda": "",
+    "clase_cola": "",
+    "payload_hex": "",
+    "formato": "",
+    "version_decode": "",
+    "conflicto": [],
+    "posiciones_dudosas": [],
+    "descartadas_por_largo": 0,
+    "descartadas_datamatrix": 0,
+    "de_pestana_azul": 0,
+    "captura": ""
+   }
+  },
+  "dashboard_part_number": "2GJ.857.003.G",
+  "dashboard_serial_number": "052 3KVJ008R4I3",
+  "dashboard_date": "2025-05-17",
+  "dashboard_engineering_level": "03S"
+ },
+ "232566": {
+  "caso": "232566 RDW UGL HT",
+  "caso_numero": "232566",
+  "fotos": 120,
+  "fotos_con_pista": 115,
+  "votos": {
+   "dashboard_part_number": {
+    "2GJ.857.003.G": 1
+   },
+   "dashboard_serial_number": {
+    "052 3KVJ008R6YL": 1
+   },
+   "dashboard_date": {
+    "2025-05-17": 1
+   },
+   "dashboard_engineering_level": {
+    "03S": 1
+   }
+  },
+  "confianza": {
+   "dashboard_part_number": 0.95,
+   "dashboard_serial_number": 0.95,
+   "dashboard_date": 0.82,
+   "dashboard_engineering_level": 0.65
+  },
+  "dudoso": {
+   "dashboard_part_number": false,
+   "dashboard_serial_number": false,
+   "dashboard_date": true,
+   "dashboard_engineering_level": true
+  },
+  "por_que_dudoso": {
+   "dashboard_date": "1 lectura(s) iguales de 1; hacen falta 2",
+   "dashboard_engineering_level": "1 lectura(s) iguales de 1; hacen falta 2"
+  },
+  "fuente": {
+   "dashboard_part_number": {
+    "foto": "IMG_5445.JPG",
+    "carpeta": "VOR",
+    "origen": "datamatrix_payload_np",
+    "lecturas": 1,
+    "valor_codificado": "2GJ.857.003.G",
+    "texto": "052# 2GJ 857 003 G#       #812506467#19052500*052 3KVJ008R6YL*=",
+    "cola_cruda": "",
+    "clase_cola": "",
+    "payload_hex": "303532232032474a203835372030303320472320202020202020233831323530363436372331393035323530302a30353220334b564a3030385236594c2a3d",
+    "formato": "DataMatrix",
+    "version_decode": "3.1.1",
+    "conflicto": [],
+    "posiciones_dudosas": [],
+    "descartadas_por_largo": 0,
+    "descartadas_datamatrix": 0,
+    "de_pestana_azul": 0,
+    "captura": ""
+   },
+   "dashboard_serial_number": {
+    "foto": "IMG_5445.JPG",
+    "carpeta": "VOR",
+    "origen": "datamatrix",
+    "lecturas": 1,
+    "valor_codificado": "052 3KVJ008R6YL",
+    "texto": "052# 2GJ 857 003 G#       #812506467#19052500*052 3KVJ008R6YL*=",
+    "cola_cruda": "R6YL",
+    "clase_cola": "limpia",
+    "payload_hex": "303532232032474a203835372030303320472320202020202020233831323530363436372331393035323530302a30353220334b564a3030385236594c2a3d",
+    "formato": "DataMatrix",
+    "version_decode": "3.1.1",
+    "conflicto": [],
+    "posiciones_dudosas": [],
+    "descartadas_por_largo": 0,
+    "descartadas_datamatrix": 0,
+    "de_pestana_azul": 0,
+    "captura": ""
+   },
+   "dashboard_date": {
+    "foto": "IMG_5443.JPG",
+    "carpeta": "VOR",
+    "origen": "17/05/2025",
+    "lecturas": 1,
+    "valor_codificado": "2025-05-17",
+    "texto": "",
+    "cola_cruda": "",
+    "clase_cola": "",
+    "payload_hex": "",
+    "formato": "",
+    "version_decode": "",
+    "conflicto": [],
+    "posiciones_dudosas": [],
+    "descartadas_por_largo": 0,
+    "descartadas_datamatrix": 0,
+    "de_pestana_azul": 1,
+    "captura": ""
+   },
+   "dashboard_engineering_level": {
+    "foto": "IMG_5444.JPG",
+    "carpeta": "VOR",
+    "origen": "estampa_rosa",
+    "lecturas": 1,
+    "valor_codificado": "03S",
+    "texto": "",
+    "cola_cruda": "",
+    "clase_cola": "",
+    "payload_hex": "",
+    "formato": "",
+    "version_decode": "",
+    "conflicto": [],
+    "posiciones_dudosas": [],
+    "descartadas_por_largo": 0,
+    "descartadas_datamatrix": 0,
+    "de_pestana_azul": 0,
+    "captura": ""
+   }
+  },
+  "dashboard_part_number": "2GJ.857.003.G",
+  "dashboard_serial_number": "052 3KVJ008R6YL",
+  "dashboard_date": "2025-05-17",
+  "dashboard_engineering_level": "03S"
+ },
+ "252581": {
+  "caso": "252581 RDW NOM RT",
+  "caso_numero": "252581",
+  "fotos": 129,
+  "fotos_con_pista": 116,
+  "votos": {
+   "dashboard_part_number": {
+    "2GJ.857.003.G": 1
+   },
+   "dashboard_serial_number": {
+    "052 3KVJ008R5D%": 2
+   },
+   "dashboard_date": {
+    "2025-05-17": 2
+   },
+   "dashboard_engineering_level": {
+    "03S": 2
+   }
+  },
+  "confianza": {
+   "dashboard_part_number": 0.6,
+   "dashboard_serial_number": 0.6,
+   "dashboard_date": 0.86,
+   "dashboard_engineering_level": 0.65
+  },
+  "dudoso": {
+   "dashboard_part_number": false,
+   "dashboard_serial_number": true,
+   "dashboard_date": false,
+   "dashboard_engineering_level": false
+  },
+  "fuente": {
+   "dashboard_part_number": {
+    "foto": "IMG_9651.JPG",
+    "carpeta": "NACH",
+    "origen": "datamatrix_payload_np",
+    "lecturas": 1,
+    "valor_codificado": "2GJ.857.003.G",
+    "texto": "052# 2GJ 857 003 G#       #812506467#19052500*052 3KVJ008R5D%*=",
+    "cola_cruda": "",
+    "clase_cola": "",
+    "payload_hex": "303532232032474a203835372030303320472320202020202020233831323530363436372331393035323530302a30353220334b564a303038523544252a3d",
+    "formato": "DataMatrix",
+    "version_decode": "3.1.1",
+    "conflicto": [],
+    "posiciones_dudosas": [],
+    "descartadas_por_largo": 0,
+    "descartadas_datamatrix": 0,
+    "de_pestana_azul": 0,
+    "captura": ""
+   },
+   "dashboard_serial_number": {
+    "foto": "IMG_9651.JPG",
+    "carpeta": "NACH",
+    "origen": "datamatrix",
+    "lecturas": 2,
+    "valor_codificado": "052 3KVJ008R5D%",
+    "texto": "052# 2GJ 857 003 G#       #812506467#19052500*052 3KVJ008R5D%*=",
+    "cola_cruda": "R5D%",
+    "clase_cola": "simbolo",
+    "payload_hex": "303532232032474a203835372030303320472320202020202020233831323530363436372331393035323530302a30353220334b564a303038523544252a3d",
+    "formato": "DataMatrix",
+    "version_decode": "3.1.1",
+    "conflicto": [],
+    "posiciones_dudosas": [],
+    "descartadas_por_largo": 0,
+    "descartadas_datamatrix": 0,
+    "de_pestana_azul": 0,
+    "captura": ""
+   },
+   "dashboard_date": {
+    "foto": "IMG_8813.JPG",
+    "carpeta": "VOR",
+    "origen": "17/05/2025",
+    "lecturas": 2,
+    "valor_codificado": "2025-05-17",
+    "texto": "",
+    "cola_cruda": "",
+    "clase_cola": "",
+    "payload_hex": "",
+    "formato": "",
+    "version_decode": "",
+    "conflicto": [],
+    "posiciones_dudosas": [],
+    "descartadas_por_largo": 0,
+    "descartadas_datamatrix": 0,
+    "de_pestana_azul": 2,
+    "captura": ""
+   },
+   "dashboard_engineering_level": {
+    "foto": "IMG_9650.JPG",
+    "carpeta": "NACH",
+    "origen": "estampa_rosa",
+    "lecturas": 2,
+    "valor_codificado": "03S",
+    "texto": "",
+    "cola_cruda": "",
+    "clase_cola": "",
+    "payload_hex": "",
+    "formato": "",
+    "version_decode": "",
+    "conflicto": [],
+    "posiciones_dudosas": [],
+    "descartadas_por_largo": 0,
+    "descartadas_datamatrix": 0,
+    "de_pestana_azul": 0,
+    "captura": ""
+   }
+  },
+  "por_que_dudoso": {
+   "dashboard_serial_number": "el dato decodificado no tiene la forma esperada (clase simbolo; cola cruda R5D%)"
+  },
+  "dashboard_part_number": "2GJ.857.003.G",
+  "dashboard_serial_number": "052 3KVJ008R5D%",
+  "dashboard_date": "2025-05-17",
+  "dashboard_engineering_level": "03S"
+ },
+ "252590": {
+  "caso": "252590 RDW NOM RT",
+  "caso_numero": "252590",
+  "fotos": 133,
+  "fotos_con_pista": 130,
+  "votos": {
+   "dashboard_part_number": {
+    "2GJ.857.003.G": 1
+   },
+   "dashboard_serial_number": {
+    "052 3KVJ008R52V": 2
+   },
+   "dashboard_date": {
+    "2025-05-17": 2
+   },
+   "dashboard_engineering_level": {
+    "03S": 1
+   }
+  },
+  "confianza": {
+   "dashboard_part_number": 0.95,
+   "dashboard_serial_number": 0.95,
+   "dashboard_date": 0.82,
+   "dashboard_engineering_level": 0.72
+  },
+  "dudoso": {
+   "dashboard_part_number": false,
+   "dashboard_serial_number": false,
+   "dashboard_date": false,
+   "dashboard_engineering_level": true
+  },
+  "por_que_dudoso": {
+   "dashboard_engineering_level": "1 lectura(s) iguales de 1; hacen falta 2"
+  },
+  "fuente": {
+   "dashboard_part_number": {
+    "foto": "IMG_4836.JPG",
+    "carpeta": "NACH",
+    "origen": "datamatrix_payload_np",
+    "lecturas": 1,
+    "valor_codificado": "2GJ.857.003.G",
+    "texto": "052# 2GJ 857 003 G#       #812506467#19052500*052 3KVJ008R52V*=",
+    "cola_cruda": "",
+    "clase_cola": "",
+    "payload_hex": "303532232032474a203835372030303320472320202020202020233831323530363436372331393035323530302a30353220334b564a303038523532562a3d",
+    "formato": "DataMatrix",
+    "version_decode": "3.1.1",
+    "conflicto": [],
+    "posiciones_dudosas": [],
+    "descartadas_por_largo": 0,
+    "descartadas_datamatrix": 0,
+    "de_pestana_azul": 0,
+    "captura": ""
+   },
+   "dashboard_serial_number": {
+    "foto": "IMG_4836.JPG",
+    "carpeta": "NACH",
+    "origen": "datamatrix",
+    "lecturas": 2,
+    "valor_codificado": "052 3KVJ008R52V",
+    "texto": "052# 2GJ 857 003 G#       #812506467#19052500*052 3KVJ008R52V*=",
+    "cola_cruda": "R52V",
+    "clase_cola": "limpia",
+    "payload_hex": "303532232032474a203835372030303320472320202020202020233831323530363436372331393035323530302a30353220334b564a303038523532562a3d",
+    "formato": "DataMatrix",
+    "version_decode": "3.1.1",
+    "conflicto": [],
+    "posiciones_dudosas": [],
+    "descartadas_por_largo": 0,
+    "descartadas_datamatrix": 0,
+    "de_pestana_azul": 0,
+    "captura": ""
+   },
+   "dashboard_date": {
+    "foto": "IMG_8886.JPG",
+    "carpeta": "VOR",
+    "origen": "17/05/2025",
+    "lecturas": 2,
+    "valor_codificado": "2025-05-17",
+    "texto": "",
+    "cola_cruda": "",
+    "clase_cola": "",
+    "payload_hex": "",
+    "formato": "",
+    "version_decode": "",
+    "conflicto": [],
+    "posiciones_dudosas": [],
+    "descartadas_por_largo": 0,
+    "descartadas_datamatrix": 0,
+    "de_pestana_azul": 2,
+    "captura": ""
+   },
+   "dashboard_engineering_level": {
+    "foto": "IMG_8887.JPG",
+    "carpeta": "VOR",
+    "origen": "estampa_rosa",
+    "lecturas": 1,
+    "valor_codificado": "03S",
+    "texto": "",
+    "cola_cruda": "",
+    "clase_cola": "",
+    "payload_hex": "",
+    "formato": "",
+    "version_decode": "",
+    "conflicto": [],
+    "posiciones_dudosas": [],
+    "descartadas_por_largo": 0,
+    "descartadas_datamatrix": 0,
+    "de_pestana_azul": 0,
+    "captura": ""
+   }
+  },
+  "dashboard_part_number": "2GJ.857.003.G",
+  "dashboard_serial_number": "052 3KVJ008R52V",
+  "dashboard_date": "2025-05-17",
+  "dashboard_engineering_level": "03S"
+ }
+}

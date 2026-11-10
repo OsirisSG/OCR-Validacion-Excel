@@ -1,0 +1,16 @@
+V-MATRIX - DIAGNOSTICO DE SEMAFORO V2 (CORREGIDO)
+
+Este ZIP corrige un error de ubicacion de la version previa del diagnostico.
+El BAT original enviaba a Python la ruta de carpeta terminada en barra invertida dentro de comillas; Windows puede interpretar mal ese argumento. Ahora el PY descubre su propia carpeta.
+
+PASOS:
+1. Descomprimir ZIP.
+2. Copiar los archivos DIAGNOSTICO_SEMAFORO_V16.bat y DIAGNOSTICO_SEMAFORO_V16.py a la carpeta donde esta iniciar.py. Reemplazar solo esos DOS archivos.
+3. Mantener V-Matrix abierto y ejecutar el BAT.
+4. Al final se mostrara REPORTE GUARDADO EN: <ruta>. Enviar el TXT generado.
+
+El diagnostico NO cambia archivos del programa ni resultados. Solo escribe el TXT en %%TEMP%%.
+Si falta dashboard/backend/app.py, lo indica pero genera el reporte y consulta el backend abierto igualmente.
+NO aplica arreglos al semaforo ni instala V16.
+
+PRUEBAS DE ESTE V2: sintaxis Python correcta; escenarios locales con iniciar.py y con/sin dashboard/backend/app.py generan reporte exitosamente. No probado en Windows real.

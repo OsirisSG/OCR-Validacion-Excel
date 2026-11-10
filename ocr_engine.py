@@ -130,6 +130,11 @@ class MotorEasyOCR:
         self.dispositivo = self.recursos["seleccionado"]
         self.advertencias = [self.recursos["warning"]] if self.recursos.get("warning") else []
         self.modelo_visual = cfg_fase1.get("_modelo_visual_activo")
+        # P08: cuantizar el modelo en CPU acelera pero cuesta precisión (medido: lecturas
+        # de nivel y de número de parte malformadas). Como el objetivo del lote es reducir
+        # el margen de error, el valor por omisión es NO cuantizar; se activa con
+        # `fase1.cuantizar_cpu: true` cuando lo que importa es la velocidad.
+        self.cuantizar_cpu = bool(cfg_fase1.get("cuantizar_cpu", False))
         self._reader_cpu = None
         self._fallos_cuda_consecutivos = 0
         self._exitos_desde_ajuste = 0
@@ -139,7 +144,8 @@ class MotorEasyOCR:
         try:
             self._reader = easyocr.Reader(
                 [self._lang], gpu=gpu, verbose=False,
-                quantize=self.dispositivo == "cpu" and not self.modelo_visual)
+                quantize=self.cuantizar_cpu and self.dispositivo == "cpu"
+                and not self.modelo_visual)
         except Exception as exc:
             if self.dispositivo == "cpu":
                 raise
@@ -149,7 +155,7 @@ class MotorEasyOCR:
             self.dispositivo = "cpu"
             self._reader = easyocr.Reader(
                 [self._lang], gpu=False, verbose=False,
-                quantize=not bool(self.modelo_visual))
+                quantize=self.cuantizar_cpu and not bool(self.modelo_visual))
         self.dispositivo = str(getattr(self._reader, "device", self.dispositivo))
         solicitado_batch = int(rendimiento.get(
             "batch_cpu" if self.dispositivo == "cpu" else "batch_gpu", 1))
@@ -183,7 +189,8 @@ class MotorEasyOCR:
             return self._reader
         if self._reader_cpu is None:
             self._reader_cpu = self._easyocr.Reader(
-                [self._lang], gpu=False, verbose=False, quantize=not bool(self.modelo_visual))
+                [self._lang], gpu=False, verbose=False,
+                quantize=self.cuantizar_cpu and not bool(self.modelo_visual))
             if self.modelo_visual:
                 import torch
                 self._reader_cpu.recognizer.load_state_dict(torch.load(

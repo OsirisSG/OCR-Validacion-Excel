@@ -47,6 +47,7 @@ from flujo_empresarial import (BaseConocimiento, CAMPOS_REQUERIDOS_DEFAULT,
                                extraer_candidatos_texto)
 from ocr_engine import cargar_imagen, extraer_texto, extraer_texto_empresarial
 from utilidades.persistencia import escribir_json_seguro
+from utilidades.protocolo_identidad import candidatos_desde_barra
 from utilidades.persistencia_documento import persistir_documento_completo
 
 _RE_TOKEN_CODIGO = re.compile(r"^([A-Za-z]+)(\d+)$")
@@ -782,6 +783,10 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
                             "perfil_extraccion": cfg_emp.get("perfil_extraccion") or {},
                             "version_procesamiento": "v8"}
             evidencias.extend(extraer_candidatos_texto(
+                resultado.get("texto_completo", ""), foto_contexto, contexto_caso))
+            # P05: la barra de estado quemada en el vídeo (si la hay) también vota.
+            # Es texto renderizado y trae versión, temperatura e inflador juntos.
+            evidencias.extend(candidatos_desde_barra(
                 resultado.get("texto_completo", ""), foto_contexto, contexto_caso))
             evidencias.extend(evidencias_desde_qr(
                 resultado.get("qrs", []), foto_contexto,

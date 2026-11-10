@@ -38,7 +38,7 @@ from pathlib import Path
 ESTADOS_ACTIVOS = {"procesando", "pausando", "pausado", "cancelando", "reanudando"}
 ESTADOS_TERMINADOS = {"inactivo", "detenido_con_avance", "completado"}
 # Identidad por defecto del soak (criterio 1 de los invariantes).
-PATCH_BUILD_R159 = "16.0.20"
+PATCH_BUILD_R159 = "16.0.52"
 # Compatibilidad R15.8/R15.7: los nombres históricos se mantienen como alias
 # de lectura y apuntan SIEMPRE a la identidad vigente.
 PATCH_BUILD_R158 = PATCH_BUILD_R159

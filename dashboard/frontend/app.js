@@ -539,7 +539,7 @@ function EstadoVacio() {
     <div class="icono"><${Icono} tipo="carpeta" /></div>
     <h2 style=${{ margin: "0 0 6px" }}>Aún no hay datos procesados</h2>
     <p style=${{ margin: 0 }}>Ejecuta el pipeline sobre una carpeta de lote y vuelve a cargar esta página:</p>
-    <p style=${{ margin: "10px 0 0" }}><code>python pipeline.py &lt;ruta_raiz&gt;</code></p>
+    <p style=${{ margin: "10px 0 0" }}><code>python pipeline.py ${"<ruta_raiz>"}</code></p>
   </div>`;
 }
 
@@ -889,7 +889,7 @@ function DialogoRangosApertura({ config, onCancelar, onProcesar, proyectos, suge
       </div>
       <p class="mono dialogo-rangos-combinacion" role="status">${String(combinacion)}</p>
       <p class="subtitulo-seccion">${t("Reglas")}: <span class="mono">${t("verde")} ≤ V</span>,
-        <span class="mono">V &lt; ${t("amarillo")} ≤ A</span>, <span class="mono">${t("rojo")} &gt; A</span>.
+        <span class="mono">${"V < "}${t("amarillo")}${" ≤ A"}</span>, <span class="mono">${t("rojo")}${" > A"}</span>.
         ${t("El gris nunca se sustituye por 0 ms.")}</p>
       <label class="dialogo-rangos-guardar">
         <input type="checkbox" checked=${guardarPreferencia}

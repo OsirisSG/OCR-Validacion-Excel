@@ -632,7 +632,7 @@ function MatrizApertura({ matriz, colores }) {
       <div>
         <h3 class="titulo-seccion" style=${{ margin: 0 }}>Matriz de tiempo de apertura</h3>
         <p class="subtitulo-seccion" style=${{ marginBottom: 0 }}>
-          1ST y 2ST en un solo resumen. Se muestran únicamente casos existentes; las categorías vacías no crean casillas. Haz clic en una prueba para localizar su carpeta en el Listado.
+          1ST y 2ST en un solo resumen. Se muestran únicamente casos existentes; las categorías vacías no crean casillas. Haz clic en una prueba para abrir en Listado su carpeta.
         </p>
       </div>
       <div class="leyenda-apertura" aria-label="Leyenda tiempo de apertura">
@@ -659,6 +659,7 @@ function MatrizApertura({ matriz, colores }) {
                   style=${{ background: paleta[item.estado] || paleta.gris }}
                   title=${tituloCelda(item)}
                   aria-label=${`${item.test_number} · ${tituloCelda(item)}`}
+                  aria-description=${trazaCelda(item)}
                   onClick=${() => abrirEnListado(item)}>${item.test_number}</button>`)}
             </div>
             <div class="matriz-columna-meta"><strong>${col.temperatura}</strong><span>${col.generador}</span>
@@ -676,6 +677,7 @@ function MatrizApertura({ matriz, colores }) {
           style=${{ background: paleta[item.estado] || paleta.gris }}
           title=${tituloCelda(item)}
           aria-label=${`${item.test_number} · ${tituloCelda(item)}`}
+                  aria-description=${trazaCelda(item)}
           onClick=${() => abrirEnListado(item)}>${item.test_number}</button>`)}
       </div>
     </section>` : null}

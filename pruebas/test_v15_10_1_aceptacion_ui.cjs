@@ -65,7 +65,9 @@ test("La matriz expone decisión, razón, fuente y tiempo crudo en su tooltip ac
   assert.ok(app.includes("item?.motivo_rechazo"));
   assert.ok(app.includes("item?.raw_time_ms"));
   assert.ok(app.includes("item?.fuente_evidencia"));
-  assert.ok(app.includes("aria-label=${tituloCelda(item)}"));
+  // P42: el nombre accesible incluye el ID; la auditoría va en la descripción.
+  assert.ok(app.includes("aria-label=${`${item.test_number} · ${tituloCelda(item)}`}"));
+  assert.equal((app.match(/aria-description=\$\{trazaCelda\(item\)\}/g) || []).length, 2);
   assert.ok(app.includes("no_positivo: \"tiempo final debe ser > 0\""));
 });
 

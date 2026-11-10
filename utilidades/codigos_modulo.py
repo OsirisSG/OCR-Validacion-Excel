@@ -415,6 +415,53 @@ def _textos_simples(imagen) -> list[tuple[str, float]]:
         return []
 
 
+PROVEEDORES = ("AUTOLIV", "FORVIA")
+
+
+def normalizar_proveedor(texto: str) -> str | None:
+    """`Autoliv B.V.& Co.KG` -> `Autoliv`. Devuelve `None` si no es un proveedor conocido."""
+    limpio = "".join(caracter for caracter in str(texto or "").upper()
+                     if caracter.isalnum())
+    for proveedor in PROVEEDORES:
+        if proveedor in limpio:
+            return proveedor.capitalize()
+    return None
+
+
+def leer_proveedor(imagen, lados=(None, cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_90_COUNTERCLOCKWISE),
+                   lado_maximo: int = 1500) -> dict:
+    """Busca el proveedor en el **texto vertical** de la etiqueta del módulo.
+
+    En la etiqueta grande de VW AG el nombre va girado 90° y en cuerpo diminuto (`Autoliv
+    B.V.& Co.KG`). Por eso se mira la mitad derecha de la foto, en los tres giros y ampliada. Sin
+    esto el proveedor sólo se podía copiar como constante.
+    """
+    alto, ancho = imagen.shape[:2]
+    recorte = imagen[int(alto * 0.15):int(alto * 0.75), int(ancho * 0.35):]
+    if recorte.size == 0:
+        recorte = imagen
+    mejor: dict = {}
+    for giro, codigo in enumerate(lados):
+        vista = recorte if codigo is None else cv2.rotate(recorte, codigo)
+        escala = lado_maximo / max(vista.shape[:2])
+        if escala > 1:
+            vista = cv2.resize(vista, None, fx=escala, fy=escala, interpolation=cv2.INTER_CUBIC)
+        for texto, confianza in _textos_simples(vista):
+            proveedor = normalizar_proveedor(texto)
+            if proveedor and float(confianza) > mejor.get("confianza", 0.0):
+                mejor = {"inflator_supplier": proveedor, "texto": texto,
+                         "confianza": float(confianza), "giro": giro}
+    return mejor
+
+
+def nivel_correcto_por_sintaxis(nivel: str, con_estampa: bool) -> bool:
+    """`##K` cuando el módulo lleva estampa y `##S` cuando no la lleva (sintaxis que usa el libro)."""
+    if not re.fullmatch(r"[0-9]{2}[KS]", str(nivel or "")):
+        return False
+    familia = nivel[-1]
+    return familia == ("K" if con_estampa else "S")
+
+
 def datos_de_variante(lineas: list[dict]) -> dict:
     """`PAB Variante`: lo que acompaña a la etiqueta y confirma que es el mismo módulo."""
     unido = " ".join(str(linea.get("texto", "")) for linea in lineas)

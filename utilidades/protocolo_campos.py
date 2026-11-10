@@ -63,18 +63,19 @@ def _g(patron: str, **kw) -> Gramatica:
 
 GRAMATICAS: dict[str, Gramatica] = {
     # número de parte estilo VW: 3 caracteres, tres grupos de 3 dígitos y letra final
-    "module_part_number": _g(r"^[0-9A-Z]{3}\.\d{3}\.\d{3}\.[0-9A-Z]$", critico=True,
+    "module_part_number": _g(r"^[0-9A-Z]{3}\.\d{3}\.\d{3}\.[0-9A-Z]{1,2}$", critico=True,
                              forma_legible="3 caracteres + . + 3 dígitos + . + 3 dígitos + . + letra"),
     # el tablero puede venir con puntos (2GJ.880.204.J) o seguido (3KV0008R662)
-    "dashboard_part_number": _g(r"^[0-9A-Z]{3}\.\d{3}\.\d{3}\.[0-9A-Z]$|^[0-9A-Z]{3}[0-9A-Z]{5,9}$",
+    "dashboard_part_number": _g(r"^[0-9A-Z]{3}\.\d{3}\.\d{3}\.[0-9A-Z]{1,2}$|^[0-9A-Z]{3}[0-9A-Z]{5,9}$",
                                 critico=True, forma_legible="ABC.123.456.J o ABC0008R662"),
     # número de serie: bloque fijo + espacio + 3 letras + 7 dígitos + letra
     # (en el libro completo hay una serie que termina en dígito —`671 ZRZ05399609`—, así que la
     #  última posición admite letra o dígito)
     "module_serial_number": _g(r"^\d{3} [A-Z]{3}\d{7}[A-Z0-9]$", critico=True, unico=True, prefijo=7,
                                forma_legible="3 dígitos, espacio, 3 letras, 7 dígitos y una letra"),
-    "dashboard_serial_number": _g(r"^\d{3} [A-Z]{3}\d{7}[A-Z]$", critico=True, unico=True, prefijo=7,
-                                  forma_legible="igual que el del módulo"),
+    "dashboard_serial_number": _g(r"^\d{3} [A-Z0-9]{3}J\d{3}[A-Z][A-Z0-9]{2,3}$", critico=True,
+                                  unico=True, prefijo=7,
+                                  forma_legible="3 dígitos, espacio, 3 caracteres, J, 3 dígitos y cola"),
     # niveles de ingeniería: dos dígitos y una letra (02S, 16S, 66K)
     "engineering_level": _g(r"^\d{2}[A-Z]$", catalogo=True, forma_legible="dos dígitos y una letra"),
     # variante del módulo (`PAB · Variante`): tres letras, RDW en todo el proyecto
@@ -100,7 +101,7 @@ GRAMATICAS: dict[str, Gramatica] = {
     "dashboard_date": _g(r"^\d{4}-\d{2}-\d{2}$", forma_legible="AAAA-MM-DD"),
     # derivadas
     "week": _g(r"^\d{4}-W\d{2}$", forma_legible="AAAA-Wnn (semana ISO)"),
-    "test_reason": _g(r"^[A-Z][A-Z0-9 .&/,-]{1,40}$", forma_legible="motivo de la prueba"),
+    "test_reason": _g(r"^[A-Z][A-Z0-9 .&/,\-()]{1,40}$", forma_legible="motivo de la prueba"),
     "test_place": _g(r"^[A-Z][A-Za-z .&/-]{1,38}$", forma_legible="lugar de la prueba"),
     "delay_ms": _g(r"^(\d{1,4}|--)$", forma_legible="milisegundos (entero)"),
 }
@@ -122,6 +123,38 @@ FAMILIA = {
     "_proyecto_designacion": "parte",
 }
 ANIO_MINIMO, ANIO_MAXIMO = 2020, 2030
+
+
+SIN_ACENTOS = str.maketrans("ÁÉÍÓÚÜÑáéíóúüñ", "AEIOUUNaeiouun")
+
+
+def normalizar_por_campo(campo: str, texto: str) -> str:
+    """Lleva el valor a la forma en que se compara, **sin cambiar lo que dice**.
+
+    - Números de parte: mayúsculas y puntos. La etiqueta los imprime con espacios
+      (`2GJ 880 204 J`) y el libro con puntos (`2GJ.880.204.J`); sin esto, la lectura correcta no
+      pasaba la gramática y la celda se quedaba vacía.
+    - Motivo de la prueba: mayúsculas y sin acentos (`Certificación` → `CERTIFICACION`), porque el
+      campo los admite pero el libro los escribe en mayúsculas.
+    """
+    if not texto:
+        return texto
+    if campo.endswith("part_number"):
+        limpio = re.sub(r"\s+", " ", texto.upper()).strip()
+        if "." not in limpio:
+            compacto = limpio.replace(" ", "")
+            if re.fullmatch(r"[0-9A-Z]{3}\d{3}\d{3}[0-9A-Z]{1,2}", compacto):
+                return f"{compacto[:3]}.{compacto[3:6]}.{compacto[6:9]}.{compacto[9:]}"
+            # tres bloques separados por espacios: `2GJ 880 204 J` / `2GJ 880 204 AB`
+            trozos = limpio.split(" ")
+            if len(trozos) == 4 and re.fullmatch(r"[0-9A-Z]{3}", trozos[0]) \
+                    and all(re.fullmatch(r"\d{3}", t) for t in trozos[1:3]) \
+                    and re.fullmatch(r"[0-9A-Z]{1,2}", trozos[3]):
+                return ".".join(trozos)
+        return limpio
+    if campo == "test_reason":
+        return re.sub(r"\s+", " ", texto.upper().translate(SIN_ACENTOS)).strip()
+    return texto
 
 
 def limpiar(texto) -> str:
@@ -350,7 +383,7 @@ def evaluar(campo: str, valor, lexico: dict[str, set[str]] | None = None,
     """Veredicto sobre un texto candidato para un campo."""
     lexico = lexico or {}
     perfil = perfil or {}
-    texto = limpiar(valor)
+    texto = normalizar_por_campo(campo, limpiar(valor))
     gramatica = GRAMATICAS.get(campo)
     if gramatica is None:                      # campo sin protocolo: se acepta tal cual, marcado
         return Veredicto(campo, texto, "valido" if texto else "invalido", 0.5,

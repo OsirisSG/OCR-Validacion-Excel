@@ -565,8 +565,62 @@ def _copiar_estilo_fila(hoja, origen: int, destino: int, columnas: int = 55) -> 
         dst.protection = copy.copy(src.protection)
 
 
-def _poblar_lista(hoja, resultados: list[dict], idioma: str = "es") -> dict[str, int]:
+def _actualizar_lista_existente(hoja, resultados, idioma):
+    """Actualización aditiva: no mueve filas, fórmulas ni correcciones humanas.
+
+    El libro antiguo no almacena una identidad inequívoca de etapa por fila.
+    Un número duplicado (incluido 1ST/2ST) requiere desambiguación humana;
+    se rechaza ANTES de escribir, en vez de usar silenciosamente la primera fila.
+    """
+    from openpyxl import Workbook
+    indice = {}
+    for fila in range(8, hoja.max_row + 1):
+        numero = hoja.cell(fila, 3).value
+        if numero not in (None, ""):
+            indice.setdefault(str(numero).strip(), []).append(fila)
+    numeros = [str(_campo(r, "test_number") or "").strip() for r in resultados]
+    if (len(numeros) != len(set(numeros)) or any(not n for n in numeros)
+            or any(len(indice.get(n, [])) > 1 for n in numeros)):
+        raise ValueError("Identidad ambigua: confirme número y etapa antes de actualizar el libro")
+    mapa, discrepancias, conservadas = {}, [], 0
+    temporal = Workbook().active
+    for resultado, numero in zip(resultados, numeros):
+        fila = indice.get(numero, [None])[0]
+        if fila is None:
+            etapa = str(resultado.get("tipo_st") or "").upper()
+            fila = 8 if etapa == "1ST" else 58 if etapa == "2ST" else 108
+            limite = 57 if etapa == "1ST" else 107 if etapa == "2ST" else hoja.max_row + 1
+            while fila <= limite and any(hoja.cell(fila, c).value not in (None, "")
+                                         or hoja.cell(fila, c).comment or hoja.cell(fila, c).hyperlink
+                                         for c in range(1, max(55, hoja.max_column) + 1)):
+                fila += 1
+            if fila > limite:
+                fila = max(108, hoja.max_row + 1)
+            _copiar_estilo_fila(hoja, 8, fila)
+            indice[numero] = [fila]
+        _escribir_fila(temporal, 1, resultado, idioma)
+        for columna in range(1, len(CLAVES_PLANTILLA) + 1):
+            destino, propuesta = hoja.cell(fila, columna), temporal.cell(1, columna)
+            if destino.value not in (None, ""):
+                conservadas += 1
+                if propuesta.value not in (None, "") and destino.value != propuesta.value:
+                    discrepancias.append({"celda": destino.coordinate,
+                                          "existente": destino.value, "propuesto": propuesta.value})
+            elif propuesta.value not in (None, ""):
+                destino.value = propuesta.value
+        mapa[_identidad(resultado)] = fila
+    ULTIMA_CONSERVACION[hoja.title] = conservadas
+    ULTIMAS_DISCREPANCIAS[hoja.title] = discrepancias
+    return mapa
+
+
+def _poblar_lista(hoja, resultados: list[dict], idioma: str = "es",
+                  conservar_existentes: bool = True) -> dict[str, int]:
     """No recorta casos: conserva filas históricas y desplaza 2ST cuando hace falta."""
+    if conservar_existentes and any(hoja.cell(f, c).value not in (None, "")
+                                   for f in range(8, hoja.max_row + 1)
+                                   for c in range(1, min(55, hoja.max_column) + 1)):
+        return _actualizar_lista_existente(hoja, resultados, idioma)
     estilo_1st = 8 if hoja.max_row >= 8 else 7
     estilo_2st = 58 if hoja.max_row >= 58 else estilo_1st
     for idx, clave in enumerate((*CLAVES_PLANTILLA, *COLUMNAS_MAXIMO_VIDEO), start=1):
@@ -580,7 +634,6 @@ def _poblar_lista(hoja, resultados: list[dict], idioma: str = "es") -> dict[str,
     inicio1, inicio2 = 8, max(58, 8 + len(g1))
     iniciox = inicio2 + len(g2)
     ultimo = max(107, inicio1+len(g1)-1, inicio2+len(g2)-1, iniciox+len(gx)-1)
-    previos=_previos_por_caso(hoja)
     for fila in range(8, max(hoja.max_row, ultimo)+1):
         for col in range(1, 56):
             celda=hoja.cell(fila,col); celda.value=None; celda.hyperlink=None; celda.comment=None
@@ -590,7 +643,6 @@ def _poblar_lista(hoja, resultados: list[dict], idioma: str = "es") -> dict[str,
         for off, resultado in enumerate(grupo):
             fila=inicio+off; _copiar_estilo_fila(hoja, estilo, fila)
             _escribir_fila(hoja, fila, resultado, idioma)
-            _conservar_previos(hoja, fila, resultado, previos, informe_conservadas)
             mapa[_identidad(resultado)] = fila
     hoja.freeze_panes="A8"
     hoja.auto_filter.ref=f"A7:{get_column_letter(len(CLAVES_PLANTILLA) + len(COLUMNAS_MAXIMO_VIDEO))}{max(7,ultimo)}"
@@ -600,9 +652,10 @@ def _poblar_lista(hoja, resultados: list[dict], idioma: str = "es") -> dict[str,
     return mapa
 
 
-def _copiar_lista_a_rangos(libro, resultados: list[dict], idioma: str = "es") -> None:
+def _copiar_lista_a_rangos(libro, resultados: list[dict], idioma: str = "es",
+                           conservar_existentes: bool = True) -> None:
     if HOJA_RANGOS in libro.sheetnames:
-        _poblar_lista(libro[HOJA_RANGOS], resultados, idioma)
+        _poblar_lista(libro[HOJA_RANGOS], resultados, idioma, conservar_existentes)
 
 
 def _limpiar_bloques_historicos_matriz(hoja) -> None:
@@ -1359,7 +1412,9 @@ def _rellenar_lista(hoja, resultados: list[dict], config: dict,
     # nuevos. Sólo se tocan ésas; nunca una fila que tenga datos del usuario.
     liberadas = 0
     if fase3.get("limpiar_ejemplos", False):
-        de_ejemplo = _numeros_de_ejemplo(plantilla)
+        # El libro de entrada no demuestra que sus filas sean ejemplos.
+        # Sólo una lista explícitamente confirmada permite eliminarlas.
+        de_ejemplo = {str(n) for n in fase3.get("numeros_ejemplo_confirmados", [])}
         suyos = {str(r.get("test_number") or "") for r in resultados}
         for fila in range(8, 108):
             numero = "".join(ch for ch in str(hoja.cell(fila, 3).value or "") if ch.isdigit())
@@ -1456,8 +1511,23 @@ def generar_reporte_bmg(ruta_plantilla: str | Path, ruta_salida: str | Path,
         mapa, informe_relleno = _rellenar_lista(libro[HOJA_LISTA], resultados, config,
                                                 plantilla=ruta_plantilla)
     else:
-        mapa=_poblar_lista(libro[HOJA_LISTA],resultados,idioma)
-        _copiar_lista_a_rangos(libro,resultados,idioma)
+        # Sólo la plantilla institucional distribuida es un ejemplo conocido.
+        # Una copia editada o un libro de una corrida anterior es dato del usuario.
+        import hashlib
+        institucional = Path(__file__).parent / "plantillas" / "reporte_bmg_1st_2st.xlsx"
+        es_ejemplo = (institucional.is_file() and
+                      hashlib.sha256(Path(ruta_plantilla).read_bytes()).digest() ==
+                      hashlib.sha256(institucional.read_bytes()).digest())
+        mapa=_poblar_lista(libro[HOJA_LISTA],resultados,idioma, not es_ejemplo)
+        _copiar_lista_a_rangos(libro,resultados,idioma, not es_ejemplo)
+        if not es_ejemplo:
+            informe_relleno = {
+                "modo": "conservacion",
+                "conservadas": {nombre: ULTIMA_CONSERVACION.get(nombre, 0)
+                                for nombre in (HOJA_LISTA, HOJA_RANGOS)},
+                "discrepancias": {nombre: ULTIMAS_DISCREPANCIAS.get(nombre, [])
+                                  for nombre in (HOJA_LISTA, HOJA_RANGOS)},
+            }
     resumen=libro[HOJA_RESUMEN]
     # R7: eliminar datos históricos precargados ANTES de dibujar cualquier
     # etapa, para que una corrida de 1-2 filas no deje IDs de la plantilla.
@@ -1518,6 +1588,7 @@ def generar_reporte_bmg(ruta_plantilla: str | Path, ruta_salida: str | Path,
 # Al escribir cada caso se devuelve a la fila lo que esta corrida no supo reescribir.
 # Nunca pisa un valor nuevo: si la corrida trae dato, manda la corrida.
 ULTIMA_CONSERVACION: dict[str, int] = {}
+ULTIMAS_DISCREPANCIAS: dict[str, list] = {}
 
 
 def _previos_por_caso(hoja, inicio: int = 8, fin: int | None = None):

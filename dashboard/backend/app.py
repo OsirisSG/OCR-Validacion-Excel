@@ -89,7 +89,7 @@ _CHECKPOINT_DEBOUNCE = max(0.05, float(_PERSISTENCIA_CFG.get("checkpoint_debounc
 _EXCEL_DEBOUNCE = max(0.10, float(_PERSISTENCIA_CFG.get("excel_debounce_segundos", 0.80)))
 _EXCEL_LATENCIA_MAX = max(_EXCEL_DEBOUNCE, float(_PERSISTENCIA_CFG.get("excel_latencia_max_segundos", 2.50)))
 
-PATCH_BUILD = "16.0.5"
+PATCH_BUILD = "16.0.20"
 
 # ---------------------------------------------------------------------------
 # R15.8 (ALTO-03, auditoría R15.7): POLÍTICA TRANSVERSAL de recuperación.

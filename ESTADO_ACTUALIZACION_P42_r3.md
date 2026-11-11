@@ -1,3 +1,5 @@
+> Actualización de revisión: build 16.0.52, correcciones de conservación y OCR aplicadas. Sigue retenido para main por fallos generales. Véase [informe vigente](docs/informes/AUDITORIA_P42_CONSERVACION.md). El texto siguiente registra la carga inicial.
+
 # V16.0.52 · P42 r3 — actualización pendiente de validación general
 
 Origen: diagnóstico 20261109_091659 y SUPER_PARCHE_P42_V16_0_52_r3.zip.

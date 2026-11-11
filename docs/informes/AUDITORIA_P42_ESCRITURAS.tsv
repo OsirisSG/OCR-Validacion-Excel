@@ -1,0 +1,22 @@
+archivo	linea	patron	codigo
+evidencia/p10_cobertura.py	69	vaciar value	celda.value = None
+generar_excel.py	296	revisar creación/eliminación	Workbook()
+ordenar_libro.py	217	vaciar value	celda.value = None
+ordenar_libro.py	211	vaciar value	celda.value = None
+plantilla_empresarial.py	428	eliminar hoja	del libro[HOJA_TRAZABILIDAD]
+plantilla_empresarial.py	403	vaciar value	hoja.cell(fila, columna).value = None
+reporte_bmg.py	833	vaciar value	hoja.cell(fila_encontrada, col).value = None
+reporte_bmg.py	834	vaciar value	hoja.cell(fila_procesada, col).value = None
+reporte_bmg.py	964	eliminar hoja	del libro[nombre]
+reporte_bmg.py	988	eliminar hoja	del libro[nombre]
+reporte_bmg.py	1017	eliminar hoja	del libro[nombre]
+reporte_bmg.py	1194	eliminar hoja	del libro[nombre]
+reporte_bmg.py	554	vaciar value	hoja.cell(fila, columna).value = None
+reporte_bmg.py	586	revisar creación/eliminación	Workbook()
+reporte_bmg.py	640	vaciar value	celda.value = None
+reporte_bmg.py	754	vaciar value	c.value = None
+reporte_bmg.py	825	vaciar value	hoja.cell(destino, col).value = None
+reporte_bmg.py	675	vaciar value	celda.value = None
+reporte_bmg.py	1426	vaciar value	celda.value = None
+utilidades/identidad_excel_publicacion.py	82	vaciar value	celda.value = None
+utilidades/matriz_excel_dinamica_v1510.py	71	revisar creación/eliminación	Workbook()

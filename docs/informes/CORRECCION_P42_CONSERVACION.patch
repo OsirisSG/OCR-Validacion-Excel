@@ -1,0 +1,789 @@
+diff --git a/ESTADO_ACTUALIZACION_P42_r3.md b/ESTADO_ACTUALIZACION_P42_r3.md
+index 8cf8471..a72f79b 100644
+--- a/ESTADO_ACTUALIZACION_P42_r3.md
++++ b/ESTADO_ACTUALIZACION_P42_r3.md
+@@ -1,3 +1,5 @@
++> Actualización de revisión: build 16.0.52, correcciones de conservación y OCR aplicadas. Sigue retenido para main por fallos generales. Véase [informe vigente](docs/informes/AUDITORIA_P42_CONSERVACION.md). El texto siguiente registra la carga inicial.
++
+ # V16.0.52 · P42 r3 — actualización pendiente de validación general
+ 
+ Origen: diagnóstico 20261109_091659 y SUPER_PARCHE_P42_V16_0_52_r3.zip.
+diff --git a/README.md b/README.md
+index 3e8086d..984a397 100644
+--- a/README.md
++++ b/README.md
+@@ -6,7 +6,7 @@ Aplicación local para recorrer lotes de fotografías, extraer nomenclaturas con
+ OCR, comparar etiquetas contra imágenes de referencia, generar un Excel maestro
+ y consultar los resultados desde un dashboard responsivo.
+ 
+-> **Versión V16.0.20.** Identidad vigente según `VERSION.txt`; `PATCH_BUILD`, la caché estática y el soak usan el mismo valor. El cambio formal de numeración se documentó en V16.0.2 (2026-10-19), conservando el mismo motor OCR, lógica de apertura, Tmax, semáforo y generación Excel.
++> **Versión V16.0.52 P42 r3 · revisión de conservación.** Rama de revisión pendiente de aprobación de la suite completa. Incluye recuperación de funciones OCR, actualización aditiva de libros y auditoría accesible. VERSION.txt, backend, caché y soak comparten 16.0.52. Véase [auditoría y límites](docs/informes/AUDITORIA_P42_CONSERVACION.md).
+ > El **paquete ACUMULATIVO V16** permite actualizar directamente instalaciones verificadas desde R15.6 hasta R15.9.1. No es el instalador incremental antiguo.
+ > Las mejoras históricas de R15.9.1 (integridad, recuperación y durabilidad) se mantienen. Consulta su historial en `docs/informes/CHANGELOG_R15_9.md`.
+ > Sigue pendiente la validación de campo con Windows, GPU y videos reales; el cambio de nombre no certifica producción.
+diff --git a/VERSION.txt b/VERSION.txt
+index 75dd3cb..a8317d4 100644
+--- a/VERSION.txt
++++ b/VERSION.txt
+@@ -1 +1 @@
+-16.0.20
++16.0.52
+diff --git a/dashboard/backend/app.py b/dashboard/backend/app.py
+index 5333800..4da5d48 100644
+--- a/dashboard/backend/app.py
++++ b/dashboard/backend/app.py
+@@ -89,7 +89,7 @@ _CHECKPOINT_DEBOUNCE = max(0.05, float(_PERSISTENCIA_CFG.get("checkpoint_debounc
+ _EXCEL_DEBOUNCE = max(0.10, float(_PERSISTENCIA_CFG.get("excel_debounce_segundos", 0.80)))
+ _EXCEL_LATENCIA_MAX = max(_EXCEL_DEBOUNCE, float(_PERSISTENCIA_CFG.get("excel_latencia_max_segundos", 2.50)))
+ 
+-PATCH_BUILD = "16.0.20"
++PATCH_BUILD = "16.0.52"
+ 
+ # ---------------------------------------------------------------------------
+ # R15.8 (ALTO-03, auditoría R15.7): POLÍTICA TRANSVERSAL de recuperación.
+diff --git a/dashboard/frontend/app.js b/dashboard/frontend/app.js
+index 82f51ec..374e0d5 100644
+--- a/dashboard/frontend/app.js
++++ b/dashboard/frontend/app.js
+@@ -632,7 +632,7 @@ function MatrizApertura({ matriz, colores }) {
+       <div>
+         <h3 class="titulo-seccion" style=${{ margin: 0 }}>Matriz de tiempo de apertura</h3>
+         <p class="subtitulo-seccion" style=${{ marginBottom: 0 }}>
+-          1ST y 2ST en un solo resumen. Se muestran únicamente casos existentes; las categorías vacías no crean casillas. Haz clic en una prueba para localizar su carpeta en el Listado.
++          1ST y 2ST en un solo resumen. Se muestran únicamente casos existentes; las categorías vacías no crean casillas. Haz clic en una prueba para abrir en Listado su carpeta.
+         </p>
+       </div>
+       <div class="leyenda-apertura" aria-label="Leyenda tiempo de apertura">
+@@ -659,6 +659,7 @@ function MatrizApertura({ matriz, colores }) {
+                   style=${{ background: paleta[item.estado] || paleta.gris }}
+                   title=${tituloCelda(item)}
+                   aria-label=${`${item.test_number} · ${tituloCelda(item)}`}
++                  aria-description=${trazaCelda(item)}
+                   onClick=${() => abrirEnListado(item)}>${item.test_number}</button>`)}
+             </div>
+             <div class="matriz-columna-meta"><strong>${col.temperatura}</strong><span>${col.generador}</span>
+@@ -676,6 +677,7 @@ function MatrizApertura({ matriz, colores }) {
+           style=${{ background: paleta[item.estado] || paleta.gris }}
+           title=${tituloCelda(item)}
+           aria-label=${`${item.test_number} · ${tituloCelda(item)}`}
++                  aria-description=${trazaCelda(item)}
+           onClick=${() => abrirEnListado(item)}>${item.test_number}</button>`)}
+       </div>
+     </section>` : null}
+diff --git a/dashboard/frontend/index.html b/dashboard/frontend/index.html
+index 383ab69..3349e77 100644
+--- a/dashboard/frontend/index.html
++++ b/dashboard/frontend/index.html
+@@ -9,7 +9,7 @@
+   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+   <meta http-equiv="Pragma" content="no-cache" />
+   <meta http-equiv="Expires" content="0" />
+-  <link rel="stylesheet" href="estilos.css?v=16.0.20" />
++  <link rel="stylesheet" href="estilos.css?v=16.0.52" />
+   <link rel="icon" type="image/png" href="assets/favicon.png?v=20260925-v14-10" />
+   <script src="vendor/react.production.min.js"></script>
+   <script src="vendor/react-dom.production.min.js"></script>
+@@ -36,9 +36,9 @@
+       }
+     });
+   </script>
+-  <script src="i18n.js?v=16.0.20"></script>
+-  <script src="visor_precision.js?v=16.0.20"></script>
+-  <script src="red_segura.js?v=16.0.20"></script>
+-  <script src="app.js?v=16.0.20"></script>
++  <script src="i18n.js?v=16.0.52"></script>
++  <script src="visor_precision.js?v=16.0.52"></script>
++  <script src="red_segura.js?v=16.0.52"></script>
++  <script src="app.js?v=16.0.52"></script>
+ </body>
+ </html>
+diff --git a/docs/informes/AUDITORIA_P42_CONSERVACION.md b/docs/informes/AUDITORIA_P42_CONSERVACION.md
+new file mode 100644
+index 0000000..3825cf3
+--- /dev/null
++++ b/docs/informes/AUDITORIA_P42_CONSERVACION.md
+@@ -0,0 +1,65 @@
++# V16.0.52 P42 r3 — conservación y estado de validación
++
++Estado: **borrador; no aprobado para main**. Base de revisión: `0d283730476404ad7812d87103ef197c1e98509b`.
++
++## Correcciones implementadas
++
++- Recuperadas funciones de proveedor y normalización desde las copias `documentos/logicas`, contrastadas con las pruebas P29/P30/P33. La sintaxis del nivel exige dos dígitos y K/S; se recupera la gramática específica de serie de tablero.
++- El nombre accesible de la matriz conserva número de prueba y tiempo. La descripción accesible vuelve a exponer la auditoría. El tooltip visual conserva su diseño de tiempo breve.
++- `_poblar_lista` usa actualización aditiva cuando hay datos existentes: no mueve filas; conserva valores, fórmulas, comentarios, hipervínculos y cabeceras; sólo rellena celdas vacías con valores publicables. Las discrepancias quedan en `ULTIMAS_DISCREPANCIAS` y, al generar el libro, en el informe `.relleno.json`.
++- Números repetidos en origen o destino se rechazan antes de escribir. Esto evita mezclar 1ST y 2ST, pero exige resolver la identidad: no se adivina la etapa a partir de la fila. Un número corregido se añade como otra fila; no usurpa la anterior.
++- Sólo la plantilla institucional distribuida, comprobada por SHA-256, permite regeneración con limpieza. Una copia modificada se considera libro del usuario.
++- `limpiar_ejemplos` ya no toma todos los números del libro de entrada como ejemplos. Requiere `fase3.numeros_ejemplo_confirmados` explícito.
++- Identidad de build, backend, caché y soak sincronizada a 16.0.52; esto no cambia el algoritmo de vídeo ni acredita exactitud.
++
++## Auditoría de escrituras destructivas
++
++Referencias por función para no depender de desplazamientos de líneas. El inventario adjunto `AUDITORIA_P42_ESCRITURAS.tsv` contiene archivo y línea actuales de los patrones encontrados por análisis AST. Es detección sintáctica, no prueba de seguridad de todas las escrituras dinámicas.
++
++| Archivo / función | Comportamiento y riesgo | Estado |
++|---|---|---|
++| reporte_bmg.py / _poblar_lista, _escribir_fila | Limpiaba A:BC y escribía None: pérdida de datos y comentarios. Crítico. | Ruta aditiva para libros existentes; limpieza reservada al ejemplo institucional conocido. |
++| reporte_bmg.py / _previos_por_caso, _conservar_previos | Tope 400 y elección del primer número repetido. No preservaba filas ausentes, comentarios ni conflicto contra nueva lectura. Alto. | La ruta aditiva no depende de estos helpers legados. |
++| reporte_bmg.py / _rellenar_lista | Infería ejemplos desde el mismo libro del usuario. Alto si limpiar_ejemplos=True. | Corregido mediante lista explícita. El emparejamiento antiguo y la propagación de constantes requieren revisión adicional. |
++| reporte_bmg.py / _limpiar_bloques_historicos_matriz, _poblar_matriz | Borra y reconstruye IDs/colores en Übersicht. Alto si esa hoja tiene anotaciones manuales. | No corregido en esta revisión; no afirmar conservación integral del libro. |
++| reporte_bmg.py / _crear_trazabilidad, _crear_diccionario, _crear_evidencia_video, _crear_matriz_apertura_dinamica | Elimina/recrea hojas derivadas existentes. Alto para anotaciones humanas añadidas allí. | Pendiente de estrategia explícita de archivo/historial. |
++| ordenar_libro.py / contador_en_banda | Borra o mueve SUBTOTAL de A6 según modo. | Herramienta de formato separada; no ejecutar sobre originales durante esta revisión. |
++| utilidades/relleno_libro.py / aplicar | Sólo llena vacíos; no sobrescribe. | Guardas presentes. Su emparejamiento por número no distingue duplicados de etapa. |
++| utilidades/rescate_columnas.py / aplicar | Sólo llena vacíos. | Guardas presentes; revisar legitimidad de las derivaciones, no sólo la escritura. |
++| utilidades/corregir_libro.py / corregir | Sustituciones XML explícitas de celdas. | Uso bajo revisión de correcciones; no es parte de la exportación normal. |
++
++La corrección r3 original era insuficiente: hacía prevalecer cualquier nueva lectura sobre el valor anterior y recuperaba únicamente vacíos. No detectaba números ambiguos ni preservaba filas históricas ausentes. Las pruebas sintéticas añadidas reprodujeron cinco fallos antes del cambio y pasan después.
++
++## Tablero y campos de contexto
++
++El análisis de llamadas del árbol activo no encontró una llamada desde `pipeline.py`/`flujo_empresarial.py` al pipeline especializado `utilidades.tablero_pipeline.analizar_fotos`. Lo invoca `tablero_caso.py`. El lote especializado usa `leer_tablero_lote.py` → `evidencia_tablero.py`. Esto explica una posible separación entre la corrida normal y la evidencia especializada; no demuestra qué comando se ejecutó en el equipo del cliente.
++
++`analizar_fotos` descarta extensiones no admitidas e imágenes no legibles. Sin motor OCR conserva propuestas/dudas sin lectura. Para cerrar el diagnóstico se necesita registrar: comando ejecutado, rutas relativas de fotos, clasificación de anclas, disponibilidad del OCR, recortes y conteos de evidencia por campo antes de generar Trazabilidad. No convertir propuestas en valores confirmados sólo para llenar columnas.
++
++`flujo_empresarial.py` sí contempla motivo explícito mediante encabezados como MOTIVO/TEST REASON. No debe inferirse motivo ni laboratorio desde fabricante o nombre de carpeta. La derivación de semana debe exigir perfil EDAG explícito, número WWYYNN válido y fecha que corrobore semana/año; fuera de ese contrato, abrir duda. `rescate_columnas.planificar` actualmente deriva semana ISO desde fecha sin esa guarda de perfil: queda señalado para revisión. No se han inventado valores para Semana/Motivo/Fecha/Lugar.
++
++## Evidencia y límites
++
++- 112 pruebas focalizadas aprobadas; 12 pruebas adicionales de integridad/documentación aprobadas (hay solapamiento entre ambos conjuntos).
++- Node: 54 aprobadas, 0 fallidas.
++- La primera suite completa pudo ejecutar 1739 casos: 1593 aprobados, 67 fallidos y 79 omitidos; antes no podía recogerse por imports ausentes. Incluye 2 fallos P30 ya corregidos después de esa ejecución. Los resultados definitivos y comparación con main se adjuntan por separado.
++- No se han desactivado las pruebas fallidas del detector ni relajado la puerta de publicación.
++- El guardado de un libro sintético con 11 imágenes conserva las 11, los comentarios en Versuchsmatrix/Rangos y el hash del archivo de entrada. No equivale a una validación del libro real.
++- No se dispone aquí del conjunto completo `libros/` descrito en los nuevos documentos. No se certifica ≥198/200 ni conservación de las 11 imágenes de esos libros reales. Las pruebas nuevas usan libros sintéticos.
++- No se modifican SQLite, aprendizaje, validacion.json ni fotos/vídeos originales.
++
++## Reversión
++
++Cada cambio de esta revisión es un commit de la rama. Revertir esos commits conserva el historial y devuelve el código previo; no aplicar una reversión sobre libros de producción. El diff unificado adjunto permite `git apply --check` y `git apply -R` sobre la base indicada, en una copia limpia. Los libros de entrada deben mantenerse como originales y generar resultados en otra ruta.
++
++La prueba de CSS ahora admite espacios alrededor de `:` sin cambiar la exigencia de `position: sticky`. La prueba organizativa conserva una lista cerrada de documentos y manifiestos originales del paquete en la raíz, por el requisito de transferirlos sin pérdida; los documentos nuevos permanecen en docs/.
++
++## Comparación ejecutada con main
++
++En el mismo entorno, main `16f6b18` produjo 68 fallos, 1109 aprobaciones y 54 omisiones. La revisión intermedia produjo 66 fallos, 1600 aprobaciones y 79 omisiones. 63 fallos son comunes, incluyendo detector/consenso, módulo histórico APLICAR_PARCHE_V15_10 ausente y permisos ejecutables de lanzadores Mac. Los tres fallos adicionales eran organización de documentos, enlace al informe aún no creado y comprobación CSS sensible a espacios; quedaron corregidos y verificados por separado. Resultado definitivo en RESULTADOS_P42_REVISION.txt. No se ha cambiado video_airbag.py respecto de main.
++
++## Verificación con el libro disponible
++
++Se recibieron y leyeron 04_REPRODUCIR.md y 05_INVENTARIO.md. Se ejecutó simular_borrado.py con la muestra V16.0.52 del super parche y la evidencia real del diagnóstico (10 casos, seis campos). Resultado: cero celdas antes ocupadas modificadas o perdidas en Versuchsmatrix/Rangos; 11 imágenes conservadas con bytes idénticos. No se sustituye el A/B solicitado sobre V16.0.51 ni la referencia corregida, todavía no disponibles.
++
++Suite definitiva: **1604 aprobadas, 63 fallidas, 79 omitidas**. Los 63 fallos son un subconjunto exacto de los fallos reproducidos en main. Node: **54/54**. Publicación retenida.
+diff --git a/docs/informes/AUDITORIA_P42_ESCRITURAS.tsv b/docs/informes/AUDITORIA_P42_ESCRITURAS.tsv
+new file mode 100644
+index 0000000..0ffdfd0
+--- /dev/null
++++ b/docs/informes/AUDITORIA_P42_ESCRITURAS.tsv
+@@ -0,0 +1,22 @@
++archivo	linea	patron	codigo
++evidencia/p10_cobertura.py	69	vaciar value	celda.value = None
++generar_excel.py	296	revisar creación/eliminación	Workbook()
++ordenar_libro.py	217	vaciar value	celda.value = None
++ordenar_libro.py	211	vaciar value	celda.value = None
++plantilla_empresarial.py	428	eliminar hoja	del libro[HOJA_TRAZABILIDAD]
++plantilla_empresarial.py	403	vaciar value	hoja.cell(fila, columna).value = None
++reporte_bmg.py	833	vaciar value	hoja.cell(fila_encontrada, col).value = None
++reporte_bmg.py	834	vaciar value	hoja.cell(fila_procesada, col).value = None
++reporte_bmg.py	964	eliminar hoja	del libro[nombre]
++reporte_bmg.py	988	eliminar hoja	del libro[nombre]
++reporte_bmg.py	1017	eliminar hoja	del libro[nombre]
++reporte_bmg.py	1194	eliminar hoja	del libro[nombre]
++reporte_bmg.py	554	vaciar value	hoja.cell(fila, columna).value = None
++reporte_bmg.py	586	revisar creación/eliminación	Workbook()
++reporte_bmg.py	640	vaciar value	celda.value = None
++reporte_bmg.py	754	vaciar value	c.value = None
++reporte_bmg.py	825	vaciar value	hoja.cell(destino, col).value = None
++reporte_bmg.py	675	vaciar value	celda.value = None
++reporte_bmg.py	1426	vaciar value	celda.value = None
++utilidades/identidad_excel_publicacion.py	82	vaciar value	celda.value = None
++utilidades/matriz_excel_dinamica_v1510.py	71	revisar creación/eliminación	Workbook()
+diff --git a/docs/informes/RESULTADOS_P42_REVISION.txt b/docs/informes/RESULTADOS_P42_REVISION.txt
+new file mode 100644
+index 0000000..4e65a47
+--- /dev/null
++++ b/docs/informes/RESULTADOS_P42_REVISION.txt
+@@ -0,0 +1,83 @@
++V16.0.52 P42 r3 — resultados ejecutados
++
++Base main: 16f6b18; base de rama: 0d283730476404ad7812d87103ef197c1e98509b.
++Python: python3 -m pytest pruebas/ -q --tb=line
++1604 passed, 63 failed, 79 skipped.
++Main, mismo entorno: 1109 passed, 68 failed, 54 skipped.
++Los 63 fallos restantes también fallan en main. No se han omitido para aprobar.
++Node: node --test pruebas/*.cjs: 54 passed, 0 failed.
++Focalizadas: 112 passed; integridad/documentación: 12 passed (con solapamiento).
++
++Simulación con simular_borrado.py del usuario:
++Libro de partida: muestra versionV16_0_52.xlsx del SUPER_PARCHE.
++Evidencia: versionV16_0_52_real.xlsx del diagnóstico, 10 casos y 6 campos.
++Celdas previamente ocupadas modificadas en Versuchsmatrix/Rangos: 0.
++Celdas perdidas: 0. Imágenes: 11 antes, 11 después, bytes idénticos.
++No equivale a ejecutar el A/B sobre versionV16_0_51.xlsx ni medir contra Book-10-Examples_CORREGIDO.xlsx: faltan esos dos libros.
++
++Decisión: RETENIDO; main no fusionado.
++
++Fallos pendientes:
++pruebas/test_ruptura_real.py::test_confirmacion_humana_prevalece_sobre_flags_automaticos
++pruebas/test_ruptura_real.py::test_dos_camaras_automaticas_no_borran_revision_pendiente
++pruebas/test_ruptura_real.py::test_fisura_oscura_precede_a_tela_clara
++pruebas/test_ruptura_real.py::test_hinchado_suave_y_brillo_creciente_no_son_ruptura
++pruebas/test_ruptura_real.py::test_indicio_separado_por_cuadro_limpio_no_se_fusiona
++pruebas/test_ruptura_real.py::test_pixel_10_crece_30_sin_arrastrar_pixel_caliente_anterior
++pruebas/test_ruptura_real.py::test_primer_pixel_persistente_mas_de_siete_frames_se_conserva
++pruebas/test_ruptura_real.py::test_ruido_puntual_cercano_no_adelanta_fisura_real
++pruebas/test_v1510_piloto.py::test_benchmark_portable_windows_sin_resource
++pruebas/test_v1510_piloto.py::test_instalar_y_rollback_transaccional_en_repo_simulado
++pruebas/test_v1510_piloto.py::test_modificador_matriz_no_encubre_diferencias
++pruebas/test_v15_10_1_r4_apertura_dependencias.py::test_consenso_automatico_3_camaras_recupera_color_sin_relajar_conflictos
++pruebas/test_v15_6_tiempo_video_estable.py::VideoV156TiempoEstableTests::test_consenso_autorrepara_items_antiguos
++pruebas/test_v15_7_1_identidad_cache_fps.py::test_analisis_corrige_rec_mal_leido_con_el_reloj
++pruebas/test_v15_7_bugs_prioritarios.py::ConsensoPrimeraAparicionTests::test_deteccion_aislada_mas_temprana_pide_revision
++pruebas/test_v15_7_bugs_prioritarios.py::ConsensoPrimeraAparicionTests::test_nunca_negativo
++pruebas/test_v15_7_bugs_prioritarios.py::ConsensoPrimeraAparicionTests::test_scheibe_no_define_el_tiempo
++pruebas/test_v15_7_bugs_prioritarios.py::FpsRealTests::test_sin_rec_en_ningun_video_no_inventa_1375_ms
++pruebas/test_v15_7_detector_apertura.py::DetectorAperturaV157Tests::test_discontinuidad_descarta_hinchado_incluso_sin_compensacion
++pruebas/test_v15_9_1_consenso_publicacion.py::test_b1_con_cuatro_camaras_el_mantenimiento_sigue_intacto
++pruebas/test_v15_9_1_consenso_publicacion.py::test_b1_precedencia_manual_siempre_manda
++pruebas/test_v15_9_1_consenso_publicacion.py::test_b1_propuesta_no_confirmada_nunca_es_valida
++pruebas/test_v15_9_1_consenso_publicacion.py::test_b1_tres_coincidentes_limpio_si_publica
++pruebas/test_v15_9_1_consenso_publicacion.py::test_b2_ausencia_de_reloj_no_bloquea_por_si_sola
++pruebas/test_v15_9_1_consenso_publicacion.py::test_b2_causa_grave_no_se_borra_al_confirmar
++pruebas/test_v15_9_1_consenso_publicacion.py::test_b2_error_de_lectura_del_reloj_bloquea_publicacion
++pruebas/test_v15_9_1_consenso_publicacion.py::test_b2_overlay_dudoso_bloquea_publicacion
++pruebas/test_v15_9_1_consenso_publicacion.py::test_b2_revision_manual_limpia_las_causas_de_esa_camara
++pruebas/test_v15_9_1_consenso_publicacion.py::test_b2_roi_confirmada_no_bloquea
++pruebas/test_v15_9_1_consenso_publicacion.py::test_b2_roi_incierta_autoalineada_bloquea_publicacion
++pruebas/test_v15_9_1_consenso_publicacion.py::test_compatibilidad_con_datos_de_cache_antiguos
++pruebas/test_v15_9_1_consenso_publicacion.py::test_e2e_causa_grave_deja_el_tiempo_pendiente_en_la_fila
++pruebas/test_v15_9_1_consenso_publicacion.py::test_e2e_confirmado_si_rellena_y_colorea
++pruebas/test_v15_9_1_consenso_publicacion.py::test_e2e_propuesto_no_rellena_opening_time_ms
++pruebas/test_v15_9_1_consenso_publicacion.py::test_e2e_sin_evento_previo_de_video_marca_faltante
++pruebas/test_v15_9_1_paridad_matriz.py::test_e2e_propuesto_y_causa_grave_quedan_grises_en_el_excel
++pruebas/test_v15_9_2_correcciones_c1_c7.py::test_c1_migracion_preserva_confirmacion_manual_real
++pruebas/test_v15_9_2_correcciones_c1_c7.py::test_c1_migracion_reevalua_2_de_4_y_conserva_evidencia
++pruebas/test_v15_9_2_correcciones_c1_c7.py::test_c2_alerta_sin_clasificar_bloquea_el_consolidado
++pruebas/test_v15_9_2_correcciones_c1_c7.py::test_c2_alerta_sin_clasificar_deja_la_fila_pendiente
++pruebas/test_v15_9_2_correcciones_c1_c7.py::test_c2_confirmacion_manual_manda_sobre_alerta_sin_clasificar
++pruebas/test_v15_9_2_correcciones_c1_c7.py::test_c2_items_legados_sin_motivo_bloquean_v15_9_3
++pruebas/test_v15_9_2_correcciones_c1_c7.py::test_c2_revision_informativa_no_bloquea_confirmacion_limpia
++pruebas/test_v15_9_2_correcciones_c1_c7.py::test_c5_comandos_mac_conservan_modo_ejecutable
++pruebas/test_v15_9_3_criticos.py::test_crit02_confirmacion_humana_sigue_mandando
++pruebas/test_v15_9_3_criticos.py::test_crit02_marca_informativa_explicita_no_bloquea
++pruebas/test_v15_9_3_criticos.py::test_crit02_revision_sin_motivo_no_se_publica
++pruebas/test_v15_9_3_criticos.py::test_crit02_tres_de_4_limpio_sigue_confirmado
++pruebas/test_v15_9_4_ampliacion.py::test_n4_tres_de_4_con_revision_obligatoria_queda_pendiente
++pruebas/test_v15_9_consenso_3_de_4.py::test_camara_ausente_no_cambia_el_minimo_de_tres
++pruebas/test_v15_9_consenso_3_de_4.py::test_camaras_adicionales_raras_no_destruyen_el_consenso
++pruebas/test_v15_9_consenso_3_de_4.py::test_confirmacion_humana_conserva_la_decision
++pruebas/test_v15_9_consenso_3_de_4.py::test_deteccion_anterior_sin_respaldo_sigue_pidiendo_revision
++pruebas/test_v15_9_consenso_3_de_4.py::test_dos_de_cuatro_queda_discordancia_y_pide_revision
++pruebas/test_v15_9_consenso_3_de_4.py::test_estados_sin_evento_sin_datos_y_evento_al_inicio
++pruebas/test_v15_9_consenso_3_de_4.py::test_incidencias_de_video_se_reportan
++pruebas/test_v15_9_consenso_3_de_4.py::test_tres_de_cuatro_coinciden_confirma
++pruebas/test_v15_9_consenso_3_de_4.py::test_unico_cluster_sin_soporte_queda_propuesto
++pruebas/test_v15_9_detector_dos_momentos.py::test_hinchado_suave_tampoco_es_apertura
++pruebas/test_v15_9_detector_dos_momentos.py::test_razones_evento_explica_dos_momentos_y_fuentes
++pruebas/test_v15_9_detector_dos_momentos.py::test_version_de_algoritmo_y_dos_momentos_en_resultado
++pruebas/test_v15_video_airbag.py::VideoAirbagV15Tests::test_consenso_tres_de_cuatro
++pruebas/test_v15_video_airbag.py::VideoAirbagV15Tests::test_overlay_calibra_camaras_sin_overlay
+diff --git a/pruebas/test_documentacion_organizada.py b/pruebas/test_documentacion_organizada.py
+index 5f28f0a..051831a 100644
+--- a/pruebas/test_documentacion_organizada.py
++++ b/pruebas/test_documentacion_organizada.py
+@@ -10,9 +10,23 @@ RAIZ = Path(__file__).resolve().parents[1]
+ def test_raiz_conserva_solo_readme_y_txt_funcionales():
+     # V15.9.2 (C6): AGENTS.md debe vivir en la raíz para que Codex lo descubra.
+     archivos_md = sorted(p.name for p in RAIZ.glob('*.md'))
+-    assert archivos_md == ['AGENTS.md', 'README.md']
++    # P42: conservar el paquete diagnóstico solicitado, incluidos sus documentos
++    # originales. Lista cerrada: la documentación nueva sigue viviendo en docs/.
++    originales_md = {
++        'ESTADO_ACTUALIZACION_P42_r3.md', 'INSTRUCCIONES_HOTFIX_ARRANQUE.md',
++        'PLAN_Y_CORRECCION_V15_10_1_R3.md', 'PLAN_Y_CORRECCION_V15_10_1_R6.md',
++        'README_CORRECCIONES_VERSIONES.md', 'README_CORRECCION_ACUMULADA_V15_10_1.md',
++        'README_R11.md', 'README_R12.md', 'README_R8.md',
++    }
++    originales_txt = {
++        'INSTRUCCIONES_APLICAR_PARCHE.txt', 'INSTRUCCIONES_DIAGNOSTICO.txt',
++        'LEEME_DIAGNOSTICO_SEMAFORO_V16.txt', 'LEEME_DIAGNOSTICO_V2.txt',
++        'MANIFEST_SHA256_ACUMULADO.txt', 'MANIFEST_SHA256_HOTFIX_ARRANQUE.txt',
++        'MANIFEST_SHA256_R8.txt', 'MANIFEST_SHA256_V15_10_1_H5_CENSURA.txt',
++    }
++    assert set(archivos_md) == {'AGENTS.md', 'README.md'} | originales_md
+     for p in RAIZ.glob('*.txt'):
+-        assert p.name == 'VERSION.txt' or p.name.startswith('requirements')
++        assert p.name == 'VERSION.txt' or p.name.startswith('requirements') or p.name in originales_txt
+     assert (RAIZ / 'VERSION.txt').is_file()
+     assert (RAIZ / 'requirements.txt').is_file()
+     assert (RAIZ / 'requirements-complete.txt').is_file()
+diff --git a/pruebas/test_p42_conservacion_segura.py b/pruebas/test_p42_conservacion_segura.py
+new file mode 100644
+index 0000000..3e4f5b3
+--- /dev/null
++++ b/pruebas/test_p42_conservacion_segura.py
+@@ -0,0 +1,107 @@
++"""Regresiones sin fotos: conservar trabajo humano y abstenerse ante identidad ambigua."""
++import pytest
++from openpyxl import Workbook
++from openpyxl.comments import Comment
++import reporte_bmg as R
++
++
++def caso(numero, **campos):
++    return {"case_key": f"1st|{numero}", "tipo_st": "1ST",
++            "campos": {k: {"valor": v} for k, v in {"test_number": str(numero), **campos}.items()}}
++
++
++def hoja():
++    ws = Workbook().active
++    ws.title = 'Versuchsmatrix'
++    ws['C8'] = 232561
++    ws['B7'] = 'Cabecera institucional'
++    ws['B8'] = 'Revisión humana'
++    ws['B8'].comment = Comment('Decisión de la persona', 'Operador')
++    ws['B8'].hyperlink = 'https://example.org/evidencia'
++    return ws
++
++
++def test_conserva_valor_humano_aunque_ocr_discrepe():
++    ws = hoja()
++    R._poblar_lista(ws, [caso(232561, test_reason='OTRA LECTURA')])
++    assert ws['B8'].value == 'Revisión humana'
++    assert ws['B8'].comment.text == 'Decisión de la persona'
++    assert ws['B8'].hyperlink.target == 'https://example.org/evidencia'
++
++
++def test_conserva_historicos_cabeceras_y_formulas_sin_moverlos():
++    ws = hoja()
++    ws['C410'] = 232599
++    ws['B410'] = '=B8'
++    R._poblar_lista(ws, [caso(232561)])
++    assert ws['C410'].value == 232599
++    assert ws['B410'].value == '=B8'
++    assert ws['B7'].value == 'Cabecera institucional'
++
++
++def test_duplicado_1st_2st_se_rechaza_antes_de_modificar():
++    ws = hoja()
++    ws['C58'] = 232561
++    ws['B58'] = 'Segunda etapa'
++    with pytest.raises(ValueError, match='ambigua'):
++        R._poblar_lista(ws, [caso(232561)])
++    assert ws['B8'].value == 'Revisión humana'
++    assert ws['B58'].value == 'Segunda etapa'
++
++
++def test_numero_corregido_no_usurpa_fila_antigua():
++    ws = hoja()
++    mapa = R._poblar_lista(ws, [caso(232562, test_reason='NUEVA')])
++    assert ws['C8'].value == 232561
++    assert ws.cell(mapa['1st|232562'], 3).value == 232562
++
++
++def test_rellena_huecos_sin_republicar_un_tiempo_pendiente():
++    ws = hoja()
++    r = caso(232561, module_version='RDW')
++    r['campos']['opening_time_ms'] = {'valor': 4, 'requiere_revision': True}
++    R._poblar_lista(ws, [r])
++    assert ws['H8'].value == 'RDW'
++    assert ws['X8'].value is None
++
++
++def test_relleno_no_borra_historicos_por_ser_la_plantilla(tmp_path):
++    ws = hoja()
++    p = tmp_path / 'entrada.xlsx'
++    ws.parent.save(p)
++    R._rellenar_lista(ws, [caso(232562)], {'fase3': {'limpiar_ejemplos': True}}, p)
++    assert ws['C8'].value == 232561
++    assert ws['B8'].value == 'Revisión humana'
++
++
++def test_rangos_comentarios_y_once_imagenes_sobreviven_serializacion(tmp_path):
++    from io import BytesIO
++    from hashlib import sha256
++    from PIL import Image as PILImage
++    from openpyxl import load_workbook
++    from openpyxl.drawing.image import Image
++    from zipfile import ZipFile
++    ws = hoja()
++    wb = ws.parent
++    espejo = wb.copy_worksheet(ws)
++    espejo.title = 'Rangos'
++    for i in range(11):
++        buffer = BytesIO()
++        PILImage.new('RGB', (2, 2), (i, 0, 0)).save(buffer, format='PNG')
++        buffer.seek(0)
++        ws.add_image(Image(buffer), f'BF{i+1}')
++    entrada = tmp_path / 'original.xlsx'
++    salida = tmp_path / 'resultado.xlsx'
++    wb.save(entrada)
++    original = sha256(entrada.read_bytes()).digest()
++    wb = load_workbook(entrada)
++    R._poblar_lista(wb['Versuchsmatrix'], [caso(232561, module_version='RDW')])
++    R._copiar_lista_a_rangos(wb, [caso(232561, module_version='RDW')])
++    wb.save(salida)
++    with ZipFile(salida) as z:
++        assert len([n for n in z.namelist() if n.startswith('xl/media/')]) == 11
++    resultado = load_workbook(salida)
++    for nombre in ['Versuchsmatrix', 'Rangos']:
++        assert resultado[nombre]['B8'].comment.text == 'Decisión de la persona'
++        assert resultado[nombre]['H8'].value == 'RDW'
++    assert sha256(entrada.read_bytes()).digest() == original
+diff --git a/pruebas/test_v15_10_1_aceptacion_ui.cjs b/pruebas/test_v15_10_1_aceptacion_ui.cjs
+index f56f83a..57ea747 100644
+--- a/pruebas/test_v15_10_1_aceptacion_ui.cjs
++++ b/pruebas/test_v15_10_1_aceptacion_ui.cjs
+@@ -65,7 +65,9 @@ test("La matriz expone decisión, razón, fuente y tiempo crudo en su tooltip ac
+   assert.ok(app.includes("item?.motivo_rechazo"));
+   assert.ok(app.includes("item?.raw_time_ms"));
+   assert.ok(app.includes("item?.fuente_evidencia"));
+-  assert.ok(app.includes("aria-label=${tituloCelda(item)}"));
++  // P42: el nombre accesible incluye el ID; la auditoría va en la descripción.
++  assert.ok(app.includes("aria-label=${`${item.test_number} · ${tituloCelda(item)}`}"));
++  assert.equal((app.match(/aria-description=\$\{trazaCelda\(item\)\}/g) || []).length, 2);
+   assert.ok(app.includes("no_positivo: \"tiempo final debe ser > 0\""));
+ });
+ 
+diff --git a/pruebas/test_v15_6_tiempo_video_estable.py b/pruebas/test_v15_6_tiempo_video_estable.py
+index 6373ea9..acfd2ea 100644
+--- a/pruebas/test_v15_6_tiempo_video_estable.py
++++ b/pruebas/test_v15_6_tiempo_video_estable.py
+@@ -113,7 +113,7 @@ class VideoV156TiempoEstableTests(unittest.TestCase):
+         self.assertIn("function fpsGrabacionOverlayVideo", app)
+         self.assertIn("metadataVieja", app)
+         self.assertIn("video-revisor-controles-estables", app)
+-        self.assertIn("position:sticky", css)
++        self.assertRegex(css, r"position\s*:\s*sticky")
+         self.assertIn("video-mensaje-reservado", css)
+ 
+     def test_backend_autorrepara_al_abrir_detalle(self):
+diff --git a/pruebas/test_v16_identidad.py b/pruebas/test_v16_identidad.py
+index 2b6c765..cc30bd2 100644
+--- a/pruebas/test_v16_identidad.py
++++ b/pruebas/test_v16_identidad.py
+@@ -3,12 +3,12 @@ from pathlib import Path
+ import re
+ 
+ ROOT = Path(__file__).resolve().parents[1]
+-BUILD = "16.0.20"
++BUILD = "16.0.52"
+ 
+ def test_v16_version_unica():
+     assert (ROOT / "VERSION.txt").read_text(encoding="utf-8").strip() == BUILD
+     backend = (ROOT / "dashboard/backend/app.py").read_text(encoding="utf-8")
+-    assert 'PATCH_BUILD = "16.0.20"' in backend
++    assert 'PATCH_BUILD = "16.0.52"' in backend
+     assert 'version=PATCH_BUILD' in backend
+     html = (ROOT / "dashboard/frontend/index.html").read_text(encoding="utf-8")
+     versions = re.findall(r'(?:estilos\.css|app\.js|i18n\.js|visor_precision\.js|red_segura\.js)[?]v=([0-9a-z.\-]+)', html)
+@@ -16,11 +16,11 @@ def test_v16_version_unica():
+ 
+ def test_v16_no_cambios_algoritmicos_activados_por_version():
+     text = (ROOT / "validacion_campo/soak_r157.py").read_text(encoding="utf-8")
+-    assert 'PATCH_BUILD_R159 = "16.0.20"' in text
++    assert 'PATCH_BUILD_R159 = "16.0.52"' in text
+     assert 'PATCH_BUILD_R158 = PATCH_BUILD_R159' in text
+     assert 'PATCH_BUILD_R157 = PATCH_BUILD_R159' in text
+ 
+ def test_v16_readme_y_instalacion():
+     t = (ROOT / "README.md").read_text(encoding="utf-8")
+-    assert "**Versión V16.0.20" in t
++    assert "**Versión V16.0.52" in t
+     assert "INSTALAR_V16_0_2_SEMAFORO.bat" in t
+diff --git a/reporte_bmg.py b/reporte_bmg.py
+index d5319ff..54a6b63 100644
+--- a/reporte_bmg.py
++++ b/reporte_bmg.py
+@@ -565,8 +565,62 @@ def _copiar_estilo_fila(hoja, origen: int, destino: int, columnas: int = 55) ->
+         dst.protection = copy.copy(src.protection)
+ 
+ 
+-def _poblar_lista(hoja, resultados: list[dict], idioma: str = "es") -> dict[str, int]:
++def _actualizar_lista_existente(hoja, resultados, idioma):
++    """Actualización aditiva: no mueve filas, fórmulas ni correcciones humanas.
++
++    El libro antiguo no almacena una identidad inequívoca de etapa por fila.
++    Un número duplicado (incluido 1ST/2ST) requiere desambiguación humana;
++    se rechaza ANTES de escribir, en vez de usar silenciosamente la primera fila.
++    """
++    from openpyxl import Workbook
++    indice = {}
++    for fila in range(8, hoja.max_row + 1):
++        numero = hoja.cell(fila, 3).value
++        if numero not in (None, ""):
++            indice.setdefault(str(numero).strip(), []).append(fila)
++    numeros = [str(_campo(r, "test_number") or "").strip() for r in resultados]
++    if (len(numeros) != len(set(numeros)) or any(not n for n in numeros)
++            or any(len(indice.get(n, [])) > 1 for n in numeros)):
++        raise ValueError("Identidad ambigua: confirme número y etapa antes de actualizar el libro")
++    mapa, discrepancias, conservadas = {}, [], 0
++    temporal = Workbook().active
++    for resultado, numero in zip(resultados, numeros):
++        fila = indice.get(numero, [None])[0]
++        if fila is None:
++            etapa = str(resultado.get("tipo_st") or "").upper()
++            fila = 8 if etapa == "1ST" else 58 if etapa == "2ST" else 108
++            limite = 57 if etapa == "1ST" else 107 if etapa == "2ST" else hoja.max_row + 1
++            while fila <= limite and any(hoja.cell(fila, c).value not in (None, "")
++                                         or hoja.cell(fila, c).comment or hoja.cell(fila, c).hyperlink
++                                         for c in range(1, max(55, hoja.max_column) + 1)):
++                fila += 1
++            if fila > limite:
++                fila = max(108, hoja.max_row + 1)
++            _copiar_estilo_fila(hoja, 8, fila)
++            indice[numero] = [fila]
++        _escribir_fila(temporal, 1, resultado, idioma)
++        for columna in range(1, len(CLAVES_PLANTILLA) + 1):
++            destino, propuesta = hoja.cell(fila, columna), temporal.cell(1, columna)
++            if destino.value not in (None, ""):
++                conservadas += 1
++                if propuesta.value not in (None, "") and destino.value != propuesta.value:
++                    discrepancias.append({"celda": destino.coordinate,
++                                          "existente": destino.value, "propuesto": propuesta.value})
++            elif propuesta.value not in (None, ""):
++                destino.value = propuesta.value
++        mapa[_identidad(resultado)] = fila
++    ULTIMA_CONSERVACION[hoja.title] = conservadas
++    ULTIMAS_DISCREPANCIAS[hoja.title] = discrepancias
++    return mapa
++
++
++def _poblar_lista(hoja, resultados: list[dict], idioma: str = "es",
++                  conservar_existentes: bool = True) -> dict[str, int]:
+     """No recorta casos: conserva filas históricas y desplaza 2ST cuando hace falta."""
++    if conservar_existentes and any(hoja.cell(f, c).value not in (None, "")
++                                   for f in range(8, hoja.max_row + 1)
++                                   for c in range(1, min(55, hoja.max_column) + 1)):
++        return _actualizar_lista_existente(hoja, resultados, idioma)
+     estilo_1st = 8 if hoja.max_row >= 8 else 7
+     estilo_2st = 58 if hoja.max_row >= 58 else estilo_1st
+     for idx, clave in enumerate((*CLAVES_PLANTILLA, *COLUMNAS_MAXIMO_VIDEO), start=1):
+@@ -580,7 +634,6 @@ def _poblar_lista(hoja, resultados: list[dict], idioma: str = "es") -> dict[str,
+     inicio1, inicio2 = 8, max(58, 8 + len(g1))
+     iniciox = inicio2 + len(g2)
+     ultimo = max(107, inicio1+len(g1)-1, inicio2+len(g2)-1, iniciox+len(gx)-1)
+-    previos=_previos_por_caso(hoja)
+     for fila in range(8, max(hoja.max_row, ultimo)+1):
+         for col in range(1, 56):
+             celda=hoja.cell(fila,col); celda.value=None; celda.hyperlink=None; celda.comment=None
+@@ -590,7 +643,6 @@ def _poblar_lista(hoja, resultados: list[dict], idioma: str = "es") -> dict[str,
+         for off, resultado in enumerate(grupo):
+             fila=inicio+off; _copiar_estilo_fila(hoja, estilo, fila)
+             _escribir_fila(hoja, fila, resultado, idioma)
+-            _conservar_previos(hoja, fila, resultado, previos, informe_conservadas)
+             mapa[_identidad(resultado)] = fila
+     hoja.freeze_panes="A8"
+     hoja.auto_filter.ref=f"A7:{get_column_letter(len(CLAVES_PLANTILLA) + len(COLUMNAS_MAXIMO_VIDEO))}{max(7,ultimo)}"
+@@ -600,9 +652,10 @@ def _poblar_lista(hoja, resultados: list[dict], idioma: str = "es") -> dict[str,
+     return mapa
+ 
+ 
+-def _copiar_lista_a_rangos(libro, resultados: list[dict], idioma: str = "es") -> None:
++def _copiar_lista_a_rangos(libro, resultados: list[dict], idioma: str = "es",
++                           conservar_existentes: bool = True) -> None:
+     if HOJA_RANGOS in libro.sheetnames:
+-        _poblar_lista(libro[HOJA_RANGOS], resultados, idioma)
++        _poblar_lista(libro[HOJA_RANGOS], resultados, idioma, conservar_existentes)
+ 
+ 
+ def _limpiar_bloques_historicos_matriz(hoja) -> None:
+@@ -1359,7 +1412,9 @@ def _rellenar_lista(hoja, resultados: list[dict], config: dict,
+     # nuevos. Sólo se tocan ésas; nunca una fila que tenga datos del usuario.
+     liberadas = 0
+     if fase3.get("limpiar_ejemplos", False):
+-        de_ejemplo = _numeros_de_ejemplo(plantilla)
++        # El libro de entrada no demuestra que sus filas sean ejemplos.
++        # Sólo una lista explícitamente confirmada permite eliminarlas.
++        de_ejemplo = {str(n) for n in fase3.get("numeros_ejemplo_confirmados", [])}
+         suyos = {str(r.get("test_number") or "") for r in resultados}
+         for fila in range(8, 108):
+             numero = "".join(ch for ch in str(hoja.cell(fila, 3).value or "") if ch.isdigit())
+@@ -1456,8 +1511,23 @@ def generar_reporte_bmg(ruta_plantilla: str | Path, ruta_salida: str | Path,
+         mapa, informe_relleno = _rellenar_lista(libro[HOJA_LISTA], resultados, config,
+                                                 plantilla=ruta_plantilla)
+     else:
+-        mapa=_poblar_lista(libro[HOJA_LISTA],resultados,idioma)
+-        _copiar_lista_a_rangos(libro,resultados,idioma)
++        # Sólo la plantilla institucional distribuida es un ejemplo conocido.
++        # Una copia editada o un libro de una corrida anterior es dato del usuario.
++        import hashlib
++        institucional = Path(__file__).parent / "plantillas" / "reporte_bmg_1st_2st.xlsx"
++        es_ejemplo = (institucional.is_file() and
++                      hashlib.sha256(Path(ruta_plantilla).read_bytes()).digest() ==
++                      hashlib.sha256(institucional.read_bytes()).digest())
++        mapa=_poblar_lista(libro[HOJA_LISTA],resultados,idioma, not es_ejemplo)
++        _copiar_lista_a_rangos(libro,resultados,idioma, not es_ejemplo)
++        if not es_ejemplo:
++            informe_relleno = {
++                "modo": "conservacion",
++                "conservadas": {nombre: ULTIMA_CONSERVACION.get(nombre, 0)
++                                for nombre in (HOJA_LISTA, HOJA_RANGOS)},
++                "discrepancias": {nombre: ULTIMAS_DISCREPANCIAS.get(nombre, [])
++                                  for nombre in (HOJA_LISTA, HOJA_RANGOS)},
++            }
+     resumen=libro[HOJA_RESUMEN]
+     # R7: eliminar datos históricos precargados ANTES de dibujar cualquier
+     # etapa, para que una corrida de 1-2 filas no deje IDs de la plantilla.
+@@ -1518,6 +1588,7 @@ def generar_reporte_bmg(ruta_plantilla: str | Path, ruta_salida: str | Path,
+ # Al escribir cada caso se devuelve a la fila lo que esta corrida no supo reescribir.
+ # Nunca pisa un valor nuevo: si la corrida trae dato, manda la corrida.
+ ULTIMA_CONSERVACION: dict[str, int] = {}
++ULTIMAS_DISCREPANCIAS: dict[str, list] = {}
+ 
+ 
+ def _previos_por_caso(hoja, inicio: int = 8, fin: int | None = None):
+diff --git a/utilidades/codigos_modulo.py b/utilidades/codigos_modulo.py
+index 62038aa..2cae01b 100644
+--- a/utilidades/codigos_modulo.py
++++ b/utilidades/codigos_modulo.py
+@@ -415,6 +415,53 @@ def _textos_simples(imagen) -> list[tuple[str, float]]:
+         return []
+ 
+ 
++PROVEEDORES = ("AUTOLIV", "FORVIA")
++
++
++def normalizar_proveedor(texto: str) -> str | None:
++    """`Autoliv B.V.& Co.KG` -> `Autoliv`. Devuelve `None` si no es un proveedor conocido."""
++    limpio = "".join(caracter for caracter in str(texto or "").upper()
++                     if caracter.isalnum())
++    for proveedor in PROVEEDORES:
++        if proveedor in limpio:
++            return proveedor.capitalize()
++    return None
++
++
++def leer_proveedor(imagen, lados=(None, cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_90_COUNTERCLOCKWISE),
++                   lado_maximo: int = 1500) -> dict:
++    """Busca el proveedor en el **texto vertical** de la etiqueta del módulo.
++
++    En la etiqueta grande de VW AG el nombre va girado 90° y en cuerpo diminuto (`Autoliv
++    B.V.& Co.KG`). Por eso se mira la mitad derecha de la foto, en los tres giros y ampliada. Sin
++    esto el proveedor sólo se podía copiar como constante.
++    """
++    alto, ancho = imagen.shape[:2]
++    recorte = imagen[int(alto * 0.15):int(alto * 0.75), int(ancho * 0.35):]
++    if recorte.size == 0:
++        recorte = imagen
++    mejor: dict = {}
++    for giro, codigo in enumerate(lados):
++        vista = recorte if codigo is None else cv2.rotate(recorte, codigo)
++        escala = lado_maximo / max(vista.shape[:2])
++        if escala > 1:
++            vista = cv2.resize(vista, None, fx=escala, fy=escala, interpolation=cv2.INTER_CUBIC)
++        for texto, confianza in _textos_simples(vista):
++            proveedor = normalizar_proveedor(texto)
++            if proveedor and float(confianza) > mejor.get("confianza", 0.0):
++                mejor = {"inflator_supplier": proveedor, "texto": texto,
++                         "confianza": float(confianza), "giro": giro}
++    return mejor
++
++
++def nivel_correcto_por_sintaxis(nivel: str, con_estampa: bool) -> bool:
++    """`##K` cuando el módulo lleva estampa y `##S` cuando no la lleva (sintaxis que usa el libro)."""
++    if not re.fullmatch(r"[0-9]{2}[KS]", str(nivel or "")):
++        return False
++    familia = nivel[-1]
++    return familia == ("K" if con_estampa else "S")
++
++
+ def datos_de_variante(lineas: list[dict]) -> dict:
+     """`PAB Variante`: lo que acompaña a la etiqueta y confirma que es el mismo módulo."""
+     unido = " ".join(str(linea.get("texto", "")) for linea in lineas)
+diff --git a/utilidades/protocolo_campos.py b/utilidades/protocolo_campos.py
+index 7c0e417..3f8d773 100644
+--- a/utilidades/protocolo_campos.py
++++ b/utilidades/protocolo_campos.py
+@@ -63,18 +63,19 @@ def _g(patron: str, **kw) -> Gramatica:
+ 
+ GRAMATICAS: dict[str, Gramatica] = {
+     # número de parte estilo VW: 3 caracteres, tres grupos de 3 dígitos y letra final
+-    "module_part_number": _g(r"^[0-9A-Z]{3}\.\d{3}\.\d{3}\.[0-9A-Z]$", critico=True,
++    "module_part_number": _g(r"^[0-9A-Z]{3}\.\d{3}\.\d{3}\.[0-9A-Z]{1,2}$", critico=True,
+                              forma_legible="3 caracteres + . + 3 dígitos + . + 3 dígitos + . + letra"),
+     # el tablero puede venir con puntos (2GJ.880.204.J) o seguido (3KV0008R662)
+-    "dashboard_part_number": _g(r"^[0-9A-Z]{3}\.\d{3}\.\d{3}\.[0-9A-Z]$|^[0-9A-Z]{3}[0-9A-Z]{5,9}$",
++    "dashboard_part_number": _g(r"^[0-9A-Z]{3}\.\d{3}\.\d{3}\.[0-9A-Z]{1,2}$|^[0-9A-Z]{3}[0-9A-Z]{5,9}$",
+                                 critico=True, forma_legible="ABC.123.456.J o ABC0008R662"),
+     # número de serie: bloque fijo + espacio + 3 letras + 7 dígitos + letra
+     # (en el libro completo hay una serie que termina en dígito —`671 ZRZ05399609`—, así que la
+     #  última posición admite letra o dígito)
+     "module_serial_number": _g(r"^\d{3} [A-Z]{3}\d{7}[A-Z0-9]$", critico=True, unico=True, prefijo=7,
+                                forma_legible="3 dígitos, espacio, 3 letras, 7 dígitos y una letra"),
+-    "dashboard_serial_number": _g(r"^\d{3} [A-Z]{3}\d{7}[A-Z]$", critico=True, unico=True, prefijo=7,
+-                                  forma_legible="igual que el del módulo"),
++    "dashboard_serial_number": _g(r"^\d{3} [A-Z0-9]{3}J\d{3}[A-Z][A-Z0-9]{2,3}$", critico=True,
++                                  unico=True, prefijo=7,
++                                  forma_legible="3 dígitos, espacio, 3 caracteres, J, 3 dígitos y cola"),
+     # niveles de ingeniería: dos dígitos y una letra (02S, 16S, 66K)
+     "engineering_level": _g(r"^\d{2}[A-Z]$", catalogo=True, forma_legible="dos dígitos y una letra"),
+     # variante del módulo (`PAB · Variante`): tres letras, RDW en todo el proyecto
+@@ -100,7 +101,7 @@ GRAMATICAS: dict[str, Gramatica] = {
+     "dashboard_date": _g(r"^\d{4}-\d{2}-\d{2}$", forma_legible="AAAA-MM-DD"),
+     # derivadas
+     "week": _g(r"^\d{4}-W\d{2}$", forma_legible="AAAA-Wnn (semana ISO)"),
+-    "test_reason": _g(r"^[A-Z][A-Z0-9 .&/,-]{1,40}$", forma_legible="motivo de la prueba"),
++    "test_reason": _g(r"^[A-Z][A-Z0-9 .&/,\-()]{1,40}$", forma_legible="motivo de la prueba"),
+     "test_place": _g(r"^[A-Z][A-Za-z .&/-]{1,38}$", forma_legible="lugar de la prueba"),
+     "delay_ms": _g(r"^(\d{1,4}|--)$", forma_legible="milisegundos (entero)"),
+ }
+@@ -124,6 +125,38 @@ FAMILIA = {
+ ANIO_MINIMO, ANIO_MAXIMO = 2020, 2030
+ 
+ 
++SIN_ACENTOS = str.maketrans("ÁÉÍÓÚÜÑáéíóúüñ", "AEIOUUNaeiouun")
++
++
++def normalizar_por_campo(campo: str, texto: str) -> str:
++    """Lleva el valor a la forma en que se compara, **sin cambiar lo que dice**.
++
++    - Números de parte: mayúsculas y puntos. La etiqueta los imprime con espacios
++      (`2GJ 880 204 J`) y el libro con puntos (`2GJ.880.204.J`); sin esto, la lectura correcta no
++      pasaba la gramática y la celda se quedaba vacía.
++    - Motivo de la prueba: mayúsculas y sin acentos (`Certificación` → `CERTIFICACION`), porque el
++      campo los admite pero el libro los escribe en mayúsculas.
++    """
++    if not texto:
++        return texto
++    if campo.endswith("part_number"):
++        limpio = re.sub(r"\s+", " ", texto.upper()).strip()
++        if "." not in limpio:
++            compacto = limpio.replace(" ", "")
++            if re.fullmatch(r"[0-9A-Z]{3}\d{3}\d{3}[0-9A-Z]{1,2}", compacto):
++                return f"{compacto[:3]}.{compacto[3:6]}.{compacto[6:9]}.{compacto[9:]}"
++            # tres bloques separados por espacios: `2GJ 880 204 J` / `2GJ 880 204 AB`
++            trozos = limpio.split(" ")
++            if len(trozos) == 4 and re.fullmatch(r"[0-9A-Z]{3}", trozos[0]) \
++                    and all(re.fullmatch(r"\d{3}", t) for t in trozos[1:3]) \
++                    and re.fullmatch(r"[0-9A-Z]{1,2}", trozos[3]):
++                return ".".join(trozos)
++        return limpio
++    if campo == "test_reason":
++        return re.sub(r"\s+", " ", texto.upper().translate(SIN_ACENTOS)).strip()
++    return texto
++
++
+ def limpiar(texto) -> str:
+     """Normaliza sin destruir la estructura: NFKC, espacios simples, mayúsculas de campo."""
+     if texto is None:
+@@ -350,7 +383,7 @@ def evaluar(campo: str, valor, lexico: dict[str, set[str]] | None = None,
+     """Veredicto sobre un texto candidato para un campo."""
+     lexico = lexico or {}
+     perfil = perfil or {}
+-    texto = limpiar(valor)
++    texto = normalizar_por_campo(campo, limpiar(valor))
+     gramatica = GRAMATICAS.get(campo)
+     if gramatica is None:                      # campo sin protocolo: se acepta tal cual, marcado
+         return Veredicto(campo, texto, "valido" if texto else "invalido", 0.5,
+diff --git a/validacion_campo/soak_r157.py b/validacion_campo/soak_r157.py
+index e757f9f..f54a015 100644
+--- a/validacion_campo/soak_r157.py
++++ b/validacion_campo/soak_r157.py
+@@ -38,7 +38,7 @@ from pathlib import Path
+ ESTADOS_ACTIVOS = {"procesando", "pausando", "pausado", "cancelando", "reanudando"}
+ ESTADOS_TERMINADOS = {"inactivo", "detenido_con_avance", "completado"}
+ # Identidad por defecto del soak (criterio 1 de los invariantes).
+-PATCH_BUILD_R159 = "16.0.20"
++PATCH_BUILD_R159 = "16.0.52"
+ # Compatibilidad R15.8/R15.7: los nombres históricos se mantienen como alias
+ # de lectura y apuntan SIEMPRE a la identidad vigente.
+ PATCH_BUILD_R158 = PATCH_BUILD_R159

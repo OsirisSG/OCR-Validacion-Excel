@@ -113,7 +113,7 @@ class VideoV156TiempoEstableTests(unittest.TestCase):
         self.assertIn("function fpsGrabacionOverlayVideo", app)
         self.assertIn("metadataVieja", app)
         self.assertIn("video-revisor-controles-estables", app)
-        self.assertIn("position:sticky", css)
+        self.assertRegex(css, r"position\s*:\s*sticky")
         self.assertIn("video-mensaje-reservado", css)
 
     def test_backend_autorrepara_al_abrir_detalle(self):

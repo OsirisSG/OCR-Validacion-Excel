@@ -1,0 +1,24 @@
+{
+ "casos": 10,
+ "part_number": {
+  "2GJ.880.204.J": 10
+ },
+ "date": {
+  "2025-04-10": 9,
+  "2025-04-11": 1
+ },
+ "module_version": {
+  "RDW": 10
+ },
+ "engineering_level": {
+  "01S": 6,
+  "69K": 2,
+  "66K": 2
+ },
+ "repeticion": {
+  "part_number": 1.0,
+  "date": 0.9,
+  "module_version": 1.0,
+  "engineering_level": 0.6
+ }
+}

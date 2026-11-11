@@ -1,0 +1,213 @@
+===============================================================================
+SUPER PARCHE V16.0.52 · P42
+Libro: versionV16_0_52.xlsx · 2026-10-29 · listo para aplicar y respaldar
+===============================================================================
+
+QUÉ ES
+------
+Un solo paquete con todo lo de P42: el código, el libro nuevo, las decisiones
+tomadas, la evidencia y la explicación completa de la lógica. Se aplica sobre tu
+árbol con un comando y deja copia previa de lo que reemplaza.
+
+QUÉ CONSIGUE (medido, no estimado)
+----------------------------------
+  tablero (4 columnas × 10 casos) ........ 40/40 exactas
+  libro contra la referencia (200) ....... 199/200 cerradas · 0 huecos
+  la única diferencia es un espacio que le falta a la REFERENCIA (ver 04)
+
+CONTENIDO
+---------
+  00_LEEME.txt ................. este archivo
+  01_LOGICA_DEL_SISTEMA.txt .... LA LÓGICA COMPLETA: fuentes, orden, cómo se
+                                 determina cada dato y qué se hace cuando no se sabe
+  02_PROTOCOLO_BUSQUEDA.txt .... cobertura, segunda pasada y clasificador de pegatinas
+  03_RESULTADOS_Y_CIERRE.txt ... cifras, caso por caso, y cómo se repiten
+  04_ERRATA_REFERENCIA.txt ..... el espacio que le falta a la referencia
+  05_LABORATORIOS_EDAG.txt ..... qué hace falta para correrlo en los laboratorios
+  06_INTERFAZ.txt .............. la pantalla de confirmación: qué cambió y cómo se genera
+
+  codigo/ ...................... 17 programas + utilidades/ (27 módulos) + pruebas/
+    utilidades/tablero_campos.py .... lector del DataMatrix, del grabado, de fecha y nivel
+    evidencia_tablero.py ............ consenso por clase de pegatina, dudas, cierre
+    barrer_datamatrix.py ............ barrido de todos los códigos del lote
+    buscar_mas.py ................... segunda pasada cuando un campo está en duda
+    auditar_cobertura.py ............ ¿tengo la foto? ¿la miré?
+    revisar_dudas.py ................ abre la ventana de confirmación (HTML)
+    aprender_dudas.py ............... precedentes: sugiere, nunca decide
+    rehacer_evidencia_p42.py ........ rehace la evidencia con el lector nuevo
+    rellenar_tablero_p42.py ......... publica en el libro (sin pisar celdas)
+    corregir_por_codigo.py .......... corrige una celda probada por el código
+    verificar_contra_codigo.py ...... el libro contra el código, no contra el libro
+    cierre_libro.py ................. qué falta exactamente para el 100 %
+    medir_tablero_p42.py ............ marcador de las 40 celdas
+    medir_contra_referencia.py ...... marcador de las 200 celdas
+    comprobar_entorno_p42.py ........ autocomprobación sin fotos (2 s)
+    instalar_p42.py ................. instalador mínimo, sólo los módulos de P42
+    rescatar_libro.py ............... columnas y cabeceras del libro
+    pruebas/test_p42_datamatrix.py .. las pruebas del contrato nuevo
+
+  datos/  (el instalador los copia a la raíz del árbol)
+    decisiones_p42.json ....... las 9 decisiones por celda, con motivo y estado
+    evidencia_tablero_p42.json  la evidencia de los 10 casos
+    modulo_dm.json ............ el DataMatrix del módulo de los 10 casos
+
+  versionV16_0_52.xlsx ......... el libro nuevo (parte de V16.0.48)
+  confirmar_p42.html ........... la pantalla de confirmación ya generada (6 casos de serie),
+                                 para abrirla con doble clic sin correr nada
+  dashboard/frontend/ .......... la interfaz web del dashboard (estilos.css y app.js).
+                                 Sólo se actualiza si el árbol ya tiene esa carpeta.
+  requirements_p42.txt ......... versiones probadas
+  instalar_super_parche.py ..... instalador (respaldo + copia + comprobación)
+  INSTALAR_EN_WINDOWS.bat ...... doble clic en Windows
+  comprobar_dependencias.py .... dice qué falta y lo instala desde el wheelhouse local
+  PREPARAR_WHEELHOUSE.bat ...... (en un equipo CON internet) baja las ruedas a "wheelhouse"
+
+CÓMO SE APLICA
+--------------
+Windows:  doble clic en INSTALAR_EN_WINDOWS.bat
+          (o)  python instalar_super_parche.py "C:\ruta\al\arbol"
+
+Linux/Mac:  python3 instalar_super_parche.py /ruta/al/arbol
+
+El instalador:
+  1. comprueba que vienen todos los archivos antes de tocar nada;
+  2. guarda copia de lo que va a reemplazar en `.backup_p42/<fecha>/`;
+  3. copia el código a su sitio (utilidades/, raíz y pruebas/) y, si el árbol tiene
+     dashboard/frontend/, también la interfaz web (con copia previa, como todo);
+  4. comprueba las dependencias y, si falta alguna, la instala DESDE EL WHEELHOUSE LOCAL.
+     No llama a PyPI: en una red que lo bloquea, pip se queda esperando y el instalador
+     parece congelado. Si no hay wheelhouse, se para en 2 segundos y dice qué .whl faltan;
+  5. importa los módulos para comprobar que quedaron bien y, si se pide, corre las pruebas;
+  6. imprime los siguientes pasos.
+
+Antes de tocar nada se comprueba el manifiesto. Qué bloquea y qué no:
+  · un archivo que EJECUTA (.py, .bat) alterado o que falta  → se para, no se escribe nada
+  · documentación (.txt, .html) o el libro de muestra       → sólo avisa, y sigue
+Para verlo sin instalar nada:
+    python instalar_super_parche.py --solo-comprobar
+y para exigir que TODO coincida (el criterio antiguo):
+    python instalar_super_parche.py --solo-comprobar --estricto
+
+DESCOMPRIME EN UNA CARPETA NUEVA
+--------------------------------
+Este zip trae una carpeta propia: al descomprimirlo aparece SUPER_PARCHE_P42_V16_0_52/
+con todo dentro. No lo vuelques sobre una carpeta de una descarga anterior: se mezclan
+archivos de dos versiones, el manifiesto no cuadra y el instalador se para (con razón).
+Si ya tenías una carpeta del parche, renómbrala o bórrala antes.
+
+Si algo sale mal: la copia de `.backup_p42/<fecha>/` se repone encima y el árbol
+vuelve a como estaba. El libro anterior (V16.0.48) nunca se modifica: el parche
+escribe V16.0.52 aparte.
+
+ENTORNO VIRTUAL: SI YA TIENES LAS DEPENDENCIAS
+----------------------------------------------
+Si en el proyecto hay una carpeta .venv_ocr (o .venv, venv, env) con las librerías
+instaladas, el instalador la detecta y trabaja con ESE intérprete. No instala nada y
+no toca el Python del sistema. Mismo criterio en comprobar_dependencias.py, que además
+acepta --venv "C:\ruta\a\.venv_ocr" por si está en otro sitio.
+
+Las carpetas que mira: <proyecto>\.venv_ocr, <proyecto>\.venv, <proyecto>\venv,
+<proyecto>\env, <proyecto>\..\.venv_ocr, <carpeta del parche>\.venv_ocr y
+%USERPROFILE%\.venv_ocr. También la variable P42_VENV.
+
+SI LA RED BLOQUEA PyPI (instalar sin internet)
+----------------------------------------------
+El proyecto está en una carpeta con espacios (p. ej. "C:\Programas Base\..."): todas
+las rutas van entre comillas, no hay que mover nada.
+
+Un wheelhouse es sólo una carpeta llena de archivos .whl. El instalador la busca en:
+  · el 2º argumento:  INSTALAR_EN_WINDOWS.bat "C:\ruta\al\arbol" "D:\wheels"
+  · la variable de entorno P42_WHEELHOUSE o WHEELHOUSE
+  · carpetas llamadas wheelhouse / wheels / ruedas / paquetes, junto al .bat,
+    junto al proyecto o en el perfil del usuario
+
+Para llenarla, en un equipo CON internet:
+  doble clic en PREPARAR_WHEELHOUSE.bat   → crea .\wheelhouse
+  (equivale a:  python -m pip download -r requirements_p42.txt opencv-python-headless
+                --dest wheelhouse --only-binary :all:)
+
+Después: copiar la carpeta wheelhouse junto a INSTALAR_EN_WINDOWS.bat y ejecutarlo.
+El instalador dice, para cada una de las seis dependencias, si está y con qué versión,
+y si sobran ruedas de otro Python (p. ej. cp311 cuando se corre 3.13) lo avisa en vez
+de fallar en silencio.
+
+Comprobar sin instalar nada:
+    python comprobar_dependencias.py                    (estado y dónde buscó)
+    python comprobar_dependencias.py --simular --wheelhouse "D:\wheels"
+
+Si de verdad hay red y se quiere usar PyPI, hay que pedirlo: --permitir-pypi
+(lleva 8 s de espera y 0 reintentos: nunca se queda colgado).
+
+EL BORRADO DE LA MATRIZ, CORREGIDO
+-------------------------------
+El flujo, al escribir la matriz, limpiaba A:BC de las filas 8-107 y después escribía lo que
+había leído; los campos sin evidencia quedaban vacíos. En el libro real eso eran 141 celdas
+por hoja que ya estaban escritas y desaparecían en cada corrida.
+
+Este parche lo corrige en tu árbol: `reporte_bmg.py` guarda lo que ya había (por número de
+prueba, no por número de fila) y lo devuelve a la fila al escribir el caso. Si la corrida
+trae dato, manda la corrida; si no, se queda lo que había. El instalador lo aplica solo en
+el paso 5b y lo comprueba con una prueba que importa el módulo y verifica que conserva.
+
+    python corregir_borrado_libro.py --simular      (ver qué cambiaría)
+    python corregir_borrado_libro.py --probar       (aplicar y probar)
+    python corregir_borrado_libro.py --revertir     (repone reporte_bmg.py.bak)
+
+Medido sobre el libro real, mismo escenario:
+    sin la corrección ... 69/200 = 34,5 %   (130 huecos)
+    con la corrección ... 198/200 = 99,0 %  (1 hueco)
+
+Si el archivo no tiene los anclajes esperados (otra versión del motor), no se toca nada y
+dice cuál falló: no se aplica a ciegas.
+
+CÓMO SE ARREGLA UN LIBRO QUE SALIÓ VACÍO
+----------------------------------------
+Si el flujo volvió a generar la matriz en vez de rellenarla, el libro sale con las
+columnas en blanco aunque el anterior las tuviera escritas. No hay que rehacer nada:
+
+    python ordenar_libro.py --libro versionV16_0_52.xlsx --simular
+    python ordenar_libro.py --libro versionV16_0_52.xlsx --recuperar .backup_p42\<sello>\versionV16_0_52.xlsx
+
+Qué hace: devuelve a cada celda vacía el valor que tenía en la copia anterior (emparejando
+por número de prueba, nunca por número de fila), y de paso deja el formato legible —anchos
+que no cortan el encabezado, serie del PAB que no se monta sobre la columna vecina y el
+contador SUBTOTAL fuera de la banda de cabeceras—.
+
+Qué NO hace: cambiar un dato. Si la celda ya tiene valor y el anterior decía otra cosa, no
+la toca: la anota como discrepancia para que la mire una persona. Nunca sobrescribe el
+original (escribe al lado, con _ordenado) salvo --en-sitio. Antes de guardar comprueba que
+no se perdió ninguna celda ni ninguna imagen del .xlsx; si algo falla, no deja el archivo.
+
+RECUPERAR SÍ O NO, CELDA A CELDA  (--preguntar)
+----------------------------------------------
+El libro anterior no sólo trae lo que se perdió: también lo que ya se había corregido
+después. Traerlo a ciegas puede resucitar una lectura vieja, así que se puede preguntar:
+
+    python ordenar_libro.py --libro versionV16_0_52.xlsx ^
+        --recuperar versionV16_0_51.xlsx --preguntar --informe decisiones.md
+
+Antes de preguntar nada enseña de dónde sale cada valor, leyendo la Trazabilidad del libro
+del que se recupera:
+
+    alta     lo escribió una persona, o sale de la ruta de la carpeta (determinista)
+    media    es una lectura automática (OCR / vídeo / DataMatrix) de una corrida anterior
+    ninguna  la celda tiene valor y nadie anotó de dónde salió
+
+y ofrece: tomarlas todas (a), sólo las de confianza alta (c), verlas una a una (u) o sólo
+las dudosas (d), listar sin escribir (l), no tomar ninguna (r). La celdas que YA tienen
+valor nunca se sustituyen sin un «sí» explícito: con --tomar todos entran en la pregunta
+marcadas como conflicto, y sin preguntar se rechazan siempre.
+
+CÓMO SE COMPRUEBA EN 2 SEGUNDOS
+-------------------------------
+    python comprobar_entorno_p42.py --foto <una foto con etiqueta>
+    → «el entorno puede correr P42 sin cambios» = listo
+      (si dice otra cosa, dice exactamente qué falta)
+
+ORDEN DE LECTURA RECOMENDADO
+----------------------------
+  1. 01_LOGICA_DEL_SISTEMA.txt  (por qué el sistema decide así)
+  2. 03_RESULTADOS_Y_CIERRE.txt (qué se consiguió)
+  3. 02_PROTOCOLO_BUSQUEDA.txt  (las reglas que aguantan 100 carpetas)
+  4. 05_LABORATORIOS_EDAG.txt   (qué falta para el laboratorio)
+===============================================================================

@@ -20,7 +20,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Iterable
 
+from utilidades.validacion_formas import (CORROBORACION_MINIMA, corroborado,
+                                              filtrar_candidatos, revisar_forma)
+from utilidades.consenso_valores import NUNCA_AUTOMATICO, consensuar, rescatar
 from utilidades.persistencia import escribir_json_seguro
+from utilidades.protocolo_identidad import revisar_serie, revisar_etapa
 from utilidades.identidad import proyecto_id as resolver_proyecto_id, identidad_caso
 
 
@@ -342,12 +346,30 @@ def descubrir_casos(raiz: str | Path, tipo_st_manual: str | None = None,
         dirnames.sort()
         ruta = Path(dirpath)
         metadata = parsear_nombre_caso(ruta.name)
+        # P05: la carpeta del caso se contrasta con la serie de la base. No bloquea el
+        # caso (es un aviso, no una puerta): bloquea el trabajo de quien no lo pidió.
+        coherencia = {}
+        if metadata:
+            try:
+                coherencia = revisar_serie(metadata.get("test_number"),
+                                           metadata.get("temperature_condition"),
+                                           metadata.get("inflator_type"),
+                                           metadata.get("module_version"))
+            except Exception:                      # nunca tumbar el descubrimiento
+                coherencia = {"estado": "sin_comprobar"}
+            superior_folder = ruta.parent.name.upper()
+            if superior_folder in {"HT", "NT", "RT"} and \
+                    metadata.get("temperature_condition") != superior_folder:
+                coherencia = {**coherencia, "estado": "incoherente",
+                              "motivo": (f"la carpeta padre dice {superior_folder} y el nombre "
+                                         f"del caso dice {metadata.get('temperature_condition')}")}
         parece_caso = metadata is not None or any(n.upper() == "PHOTOS" for n in dirnames)
         if not parece_caso or ruta in vistos:
             continue
         vistos.add(ruta)
         superior = ruta.parent.name.upper()
         tipo_st = _tipo_st_para_caso(ruta, raiz, deteccion_st["tipos"])
+        etapa_coherente = revisar_etapa((metadata or {}).get("module_version"), tipo_st)
         photos = next((p for p in _hijos(ruta) if p.name.upper() == "PHOTOS"), ruta / "PHOTOS")
         nach = next((p for p in _hijos(photos) if p.name.upper() == "NACH"), photos / "NACH")
         vor = next((p for p in _hijos(photos) if p.name.upper() == "VOR"), photos / "VOR")
@@ -367,6 +389,11 @@ def descubrir_casos(raiz: str | Path, tipo_st_manual: str | None = None,
             "case_key": case_key(raiz, tipo_st, ruta, (metadata or {}).get("test_number"), proyecto_configurado), "ruta": str(ruta),
             "ruta_relativa": ruta.relative_to(raiz).as_posix(), "nombre": ruta.name,
             "tipo_st": tipo_st, "metadata_ruta": metadata or {},
+            "coherencia_serie": coherencia,
+            # P07: RDW=1ST y NAR=2ST no son sinónimos. Se comprueba contra la etapa real.
+            "coherencia_etapa": etapa_coherente,
+            "avisos_identidad": ([coherencia.get("motivo")] if coherencia.get("estado") == "incoherente" else [])
+                                + ([etapa_coherente.get("motivo")] if etapa_coherente.get("estado") == "incoherente" else []),
             "estructura_valida": valida, "validaciones": validaciones,
             "estado_deteccion": "estructura_valida" if valida else "estructura_incompleta",
             "estado": "detectada", "modo_procesamiento": "empresarial" if valida else "legacy",
@@ -398,8 +425,14 @@ def descubrir_casos(raiz: str | Path, tipo_st_manual: str | None = None,
 def normalizar_numero_parte(texto: str) -> str | None:
     limpio = re.sub(r"\s+", " ", str(texto).strip().upper())
     coincidencia = re.fullmatch(
-        r"([A-Z0-9]{2,4})[ .\-]+(\d{3})[ .\-]+(\d{3})[ .\-]+([A-Z0-9]{1,3})", limpio)
+        r"([A-Z0-9]{2,4})[ .\-/]*(\d{3})[ .\-/]+(\d{3})[ .\-/]+([A-Z0-9]{1,3})", limpio)
     return ".".join(coincidencia.groups()) if coincidencia else None
+
+
+# Catálogo NOMINAL del libro (mapa de campos §2): NT -35 °C, RT +23 °C, HT +85 °C.
+# Es una referencia declarada, no una medición: se usa solo para PROPONER la
+# categoría de una temperatura impresa, nunca para darla por confirmada.
+CATALOGO_TEMPERATURA_NOMINAL = {"NT": -35, "RT": 23, "HT": 85}
 
 
 def normalizar_temperatura(texto: str, contexto: str | None = None) -> str | None:
@@ -553,6 +586,20 @@ def extraer_candidatos_texto(texto: str, imagen: dict, contexto: dict) -> list[d
     if re.search(r"\bEDAG\s*(?:TEST\s*LAB|TESTLAB)\b", mayus):
         laboratorio = "EDAG"
 
+    def _votos(valor_normalizado: str) -> int:
+        """Cuántas veces aparece ese valor en el texto.
+
+        Nace de las etiquetas reales: el módulo lleva DOS etiquetas iguales, así
+        que un valor correcto suele aparecer dos veces y una lectura errónea una
+        sola. No decide nada por sí solo —solo da un dato más al revisor y
+        permite ordenar candidatos—.
+        """
+        limpio = re.sub(r"[^A-Z0-9]", "", str(valor_normalizado or "").upper())
+        if len(limpio) < 4:
+            return 1
+        compacto = re.sub(r"[^A-Z0-9]", "", mayus)
+        return max(1, compacto.count(limpio))
+
     def agregar(clave: str, original: str, normalizado: str, confianza: float,
                 regla: str, valido: bool = True,
                 requiere_confirmacion_manual: bool = False,
@@ -574,13 +621,17 @@ def extraer_candidatos_texto(texto: str, imagen: dict, contexto: dict) -> list[d
             "valido_regex": valido, "regla_aplicada": regla,
             "confirmacion_manual": imagen.get("fuente") == "manual",
             "requiere_confirmacion_manual": requiere_confirmacion_manual,
+            "votos": _votos(normalizado),
             "version_procesamiento": contexto.get("version_procesamiento") or "v8",
             **metadatos,
         })
 
     confianza = float(imagen.get("confianza_ocr") or 0.0)
     for m in re.finditer(
-            r"(?im)^\s*(?:PROYECTO|PROJECT|PROJEKT|MOTIVO(?:\s+DE\s+PRUEBA)?|TEST\s+REASON|PRÜFGRUND)"
+            r"(?im)^\s*(?:PROYECTO|PROJECT|PROJEKT|MOTIVO(?:\s+DE\s+PRUEBA)?|TEST\s+REASON|PRÜFGRUND"
+            # P01-R01: encabezado REAL del libro ("Versuche Begrundung"), con o
+            # sin diéresis, junto o separado, y su forma alemana de una palabra.
+            r"|VERSUCH(?:E|S)?\s*BEGR(?:Ü|UE|U)NDUNG)"
             r"\s*[:=]\s*([^\r\n]{1,100})", texto):
         original = m.group(1).strip()
         if original:
@@ -595,9 +646,32 @@ def extraer_candidatos_texto(texto: str, imagen: dict, contexto: dict) -> list[d
                 not re.search(r"(?:TEST|PRUEBA|VERSUCH)\s*(?:NO|NR|NUMBER|NUMERO)?\s*[:#.-]?\s*$", antes)):
             continue
         numero = re.sub(r"\s+", "", m.group())
+        # P01-R02: "VW316/5" es la DESIGNACIÓN DEL PROYECTO: aparece igual en los
+        # diagramas de todos los ensayos y en las etiquetas. Antes se guardaba como
+        # número de prueba y como laboratorio VW, y además impedía capturar el
+        # número real de 6 dígitos que está en la misma línea.
+        if re.search(r"\d\s*/\s*\d", m.group()):
+            agregar("_proyecto_designacion", m.group(), numero, confianza,
+                    "designacion_proyecto_visible", componente="por_identificar",
+                    observacion="Designación de proyecto visible: no es número de prueba ni laboratorio.")
+            continue
+        # P06: medido sobre el corpus real, esta rama producía dos errores publicados:
+        #   "test_number=VW316"  (el nombre del proyecto como número de prueba)
+        #   "test_place=VW"      (el prefijo del proyecto como laboratorio; el libro dice EDAG)
+        # Un número de prueba tiene SEIS dígitos. Lo demás es designación de proyecto.
+        solo_seis = re.fullmatch(r"VW[- /]?(\d{6})", numero)
+        if not solo_seis:
+            agregar("_proyecto_designacion", m.group(), numero, confianza,
+                    "designacion_proyecto_visible", componente="por_identificar",
+                    observacion="Designación de proyecto con número que no tiene seis dígitos: "
+                                "no es número de prueba.")
+            continue
         prueba_vw_detectada = True
-        agregar("test_number", m.group(), numero, confianza, "numero_prueba_vw")
-        agregar("test_place", m.group(), "VW", confianza, "laboratorio_numero_vw")
+        agregar("test_number", m.group(), solo_seis.group(1), confianza, "numero_prueba_vw")
+        agregar("test_place", m.group(), "VW", confianza, "laboratorio_numero_vw",
+                requiere_confirmacion_manual=True,
+                observacion="VW como laboratorio se propone, no se confirma: el prefijo del "
+                            "proyecto no es un lugar de ensayo.")
     if laboratorio == "VW" and not prueba_vw_detectada:
         agregar("test_place", laboratorio, laboratorio, confianza, "laboratorio_vw_explicito")
     if laboratorio == "EDAG":
@@ -622,16 +696,111 @@ def extraer_candidatos_texto(texto: str, imagen: dict, contexto: dict) -> list[d
             agregar("test_number", numero, numero, confianza, "numero_prueba_edag_wwyynn")
             agregar("week", numero, str(semana), confianza, "semana_numero_edag",
                     anio_prueba=2000 + anio, secuencia_prueba=secuencia)
+    # P01-R02 · Número de 6 dígitos impreso en la etiqueta o en el título del
+    # diagrama, sin la palabra "TEST NO" delante. Se PROPONE, no se confirma:
+    # el mapa de campos advierte que seis dígitos no bastan por sí solos.
+    if laboratorio != "EDAG":
+        for m in re.finditer(r"(?<![A-Z0-9])([0-5]\d)(\d{2})(\d{2})(?![A-Z0-9])", mayus):
+            semana, anio, secuencia = map(int, m.groups())
+            if not 1 <= semana <= 53 or not 20 <= anio <= 39 or secuencia == 0:
+                continue
+            try:
+                datetime.fromisocalendar(2000 + anio, semana, 1)
+            except ValueError:
+                continue
+            antes = mayus[max(0, m.start() - 28):m.start()]
+            if re.search(r"(?:SERIAL|S/?N|SERIE|PART|P/?N|NUMMER|NUMBER|DATUM|DATE|WOCHE|WEEK)"
+                         r"\s*[:#-]?\s*$", antes):
+                continue
+            agregar("test_number", m.group(), m.group(), confianza,
+                    "numero_prueba_impreso_sin_etiqueta", requiere_confirmacion_manual=True,
+                    observacion="Seis dígitos con semana y año coherentes, sin etiqueta TEST NO visible.")
+
     for original in re.findall(r"\b(?:RDW|RWD|ROW|NAR|N4R)\b", mayus):
         normalizado = {"RWD": "RDW", "ROW": "RDW", "N4R": "NAR"}.get(original, original)
         agregar("module_version", original, normalizado, confianza, "alias_module_version")
     for valor in re.findall(r"\b(?:NOM|OGL|UGL)\b", mayus):
         agregar("inflator_type", valor, valor, confianza, "catalogo_inflator")
+
+    # P03-R01 · El catálogo del inflador es CERRADO (NOM/OGL/UGL) y el OCR
+    # confunde la última letra: el diagrama real del caso 222521 se leyó "OGE".
+    # Una palabra de tres letras que está a UNA letra de exactamente un valor del
+    # catálogo se propone, marcada para confirmación. Con dos o más candidatos
+    # posibles no se propone nada: ahí sí habría que adivinar.
+    if not re.search(r"\b(?:NOM|OGL|UGL)\b", mayus):
+        for m in re.finditer(r"(?<![A-Z0-9])([A-Z0-9]{3})(?![A-Z0-9])", mayus):
+            palabra = m.group(1)
+            if sum(c.isalpha() for c in palabra) < 2:   # "052", "35E": no son texto
+                continue
+            cercanos = [c for c in ("NOM", "OGL", "UGL")
+                        if sum(1 for a, b in zip(palabra, c) if a != b) == 1]
+            if len(cercanos) != 1:
+                continue
+            agregar("inflator_type", palabra, cercanos[0], confianza,
+                    "catalogo_inflator_tolerante", requiere_confirmacion_manual=True,
+                    observacion=(f"'{palabra}' está a una letra de {cercanos[0]} en un catálogo "
+                                 "cerrado de tres valores: confirmar."))
     temperatura = normalizar_temperatura(mayus, contexto.get("temperature_condition"))
     if temperatura:
-        agregar("temperature_condition", texto, temperatura, confianza, "temperatura_contextual")
+        # P01-R01: si el mismo texto declara DOS categorías distintas, el valor no
+        # se elige en silencio: queda marcado como contradictorio y para revisión.
+        categorias = sorted({codigo for codigo in ("HT", "RT", "NT")
+                             if re.search(rf"\b{codigo}\b", mayus)})
+        if len(categorias) > 1:
+            agregar("temperature_condition", texto, temperatura, confianza,
+                    "temperatura_contextual_contradictoria", requiere_confirmacion_manual=True,
+                    observacion=f"Categorías contradictorias en el mismo texto: {', '.join(categorias)}")
+        elif categorias:
+            agregar("temperature_condition", texto, temperatura, confianza, "temperatura_contextual")
+        else:
+            # P01-R02: la categoría sale de un número impreso aplicando el catálogo
+            # nominal (23 -> RT). Eso es una DEDUCCIÓN, no una lectura: no puede
+            # publicarse como confirmada. Antes se emitía en silencio.
+            agregar("temperature_condition", texto, temperatura, confianza,
+                    "temperatura_por_catalogo_nominal", requiere_confirmacion_manual=True,
+                    temperatura_sugerida=temperatura,
+                    observacion=("No hay código HT/RT/NT impreso: la categoría se deduce "
+                                 "del catálogo nominal y debe confirmarse."))
+    # P02 · Serial IMPRESO en la etiqueta del módulo. En las etiquetas reales
+    # aparece como "*671  ZRZ0539991D*" (tres dígitos, código del proveedor y
+    # número), sin la palabra SERIAL delante: la regla del libro no lo veía.
+    # Se PROPONE, no se confirma: el número de serie es un campo crítico y el
+    # OCR de una etiqueta fotografiada puede confundir 0/O y 1/I.
+    # P06: el serial real SIEMPRE termina en letra (671 ZRZ0539991D, 671ZRZ0539983E,
+    # 052 3KVJ008R6E). Aceptar el final sin letra producía "671 ZRZ05399910" — un
+    # cero donde iba una D. Se exige la letra: si no está, no hay serial.
+    for m in re.finditer(r"(?<![A-Z0-9])(\d{3})\s{0,3}([A-Z]{2,4})(\d{6,8})([A-Z])(?![A-Z0-9])", mayus):
+        if not re.search(r"\d", m.group(3)):
+            continue
+        valor = f"{m.group(1)} {m.group(2)}{m.group(3)}{m.group(4)}"
+        agregar("module_serial_number", m.group(), valor, confianza, "serial_impreso_en_etiqueta",
+                requiere_confirmacion_manual=True, componente=componente_en(m.start()),
+                observacion="Serial impreso en la etiqueta sin la palabra SERIAL: confirmar.")
+
+    # P01-R02 · Temperatura IMPRESA ("+23 °C", "-35 °C", "+85 °C"). No se convierte
+    # en categoría por sí sola: se propone la que corresponde al catálogo nominal
+    # del libro y se pide confirmación. El OCR de etiquetas fotografiadas produce
+    # variantes como "+23'C" o "35 €", por eso el patrón admite ruido.
+    for m in re.finditer(r"([+-]?\s?\d{1,3})\s*(?:[°º*'\u00b4\u00a8]|\u20ac)?\s*C\b", mayus):
+        try:
+            grados = int(re.sub(r"\s+", "", m.group(1)))
+        except ValueError:
+            continue
+        sugerida = None
+        for categoria, nominal in CATALOGO_TEMPERATURA_NOMINAL.items():
+            if abs(grados - nominal) <= 3:
+                sugerida = categoria
+                break
+        agregar("_temperatura_impresa", m.group(), f"{grados:+d}",
+                confianza, "temperatura_impresa_en_etiqueta",
+                requiere_confirmacion_manual=True, componente=componente_en(m.start()),
+                temperatura_sugerida=sugerida,
+                observacion=(f"Temperatura impresa; categoría sugerida {sugerida} "
+                             "por catálogo nominal: confirmar." if sugerida else
+                             "Temperatura impresa fuera del catálogo nominal: confirmar."))
+
     for patron in re.finditer(
-            r"\b[A-Z0-9]{2,4}[ .\-]+\d{3}[ .\-]+\d{3}[ .\-]+[A-Z0-9]{1,3}\b", mayus):
+            r"\b[A-Z0-9]{2,4}[ .\-/]*\d{3}[ .\-/]+\d{3}[ .\-/]+[A-Z0-9]{1,3}\b", mayus):
         normalizado = normalizar_numero_parte(patron.group())
         if normalizado:
             componente = componente_en(patron.start())
@@ -644,6 +813,70 @@ def extraer_candidatos_texto(texto: str, imagen: dict, contexto: dict) -> list[d
             normalizado = ".".join(valor for valor in m.groups() if valor)
             agregar("dashboard_part_number", m.group(), normalizado, confianza,
                     "numero_parte_compacto_tablero", componente="tablero")
+    # ----------------------------------------------------------------------
+    # P01-R01 · Etiquetas REALES del libro que el extractor no reconocía.
+    # Se añaden con patrón estrecho y anclado a etiqueta para no inventar valores:
+    # sin etiqueta explícita no se emite candidato.
+    # ----------------------------------------------------------------------
+    for m in re.finditer(
+            r"(?im)^\s*(?:STANDORT|PLACE|LUGAR|LIEU|LUGAR\s+DE\s+ENSAYO)"
+            r"\s*[:=]\s*([^\r\n]{2,40})", texto):
+        original = re.sub(r"\s+", " ", m.group(1)).strip(" .;,-")
+        if not original:
+            continue
+        laboratorio_valor = {
+            "EDAG": "EDAG", "EDAG TESTLAB": "EDAG", "EDAG TEST LAB": "EDAG",
+            "VW": "VW", "VW AG": "VW", "VOLKSWAGEN": "VW",
+        }.get(original.upper())
+        if laboratorio_valor:
+            agregar("test_place", original, laboratorio_valor, confianza,
+                    "laboratorio_etiquetado",
+                    # VW AG puede ser fabricante, no laboratorio: se pide confirmar.
+                    requiere_confirmacion_manual=(laboratorio_valor == "VW"),
+                    componente="por_identificar")
+        else:
+            agregar("test_place", original, original, confianza,
+                    "laboratorio_etiquetado_desconocido", requiere_confirmacion_manual=True,
+                    componente="por_identificar",
+                    observacion="Laboratorio no catalogado: confirmar antes de consolidar.")
+
+    for m in re.finditer(
+            r"(?im)^\s*(?:NUMMER|NUMBER|N[ÚU]MERO|TEST\s*(?:NO|NR|NUMBER|NUMERO)[.]?)"
+            r"\s*[:=#]\s*([A-Z0-9][A-Z0-9._/ -]{2,15})", texto):
+        original = m.group(1).strip(" .;,-")
+        if not original or not re.search(r"\d", original):
+            continue
+        # Se preserva el texto tal cual: sin quitar ceros, espacios ni prefijos.
+        agregar("test_number", original, re.sub(r"\s+", "", original), confianza,
+                "numero_prueba_etiquetado", requiere_confirmacion_manual=True,
+                componente=componente_en(m.start()),
+                observacion="Número leído de etiqueta: conservar original y confirmar.")
+
+    for m in re.finditer(
+            r"(?im)^\s*(?:WOCHE|WEEK|SEMANA)\s*[:=]?\s*([0-9]{1,2})\b", texto):
+        semana = int(m.group(1))
+        if not 1 <= semana <= 53:
+            continue
+        agregar("week", m.group(1), str(semana), confianza, "semana_etiquetada")
+
+    for m in re.finditer(
+            r"(?im)^\s*(?:STAND\s*(?:ENG\.?\s*)?(?:LEVEL)?|ENG\.?\s*LEVEL"
+            r"|NIVEL\s+(?:DE\s+)?INGENIER[IÍ]A)\s*[:=]\s*([0-9]{2}[A-Z])\b", texto):
+        nivel = m.group(1).upper()
+        componente = componente_en(m.start())
+        if componente == "tablero":
+            clave = "dashboard_engineering_level"
+        elif componente == "bolsa_aire":
+            clave = "engineering_level"
+        else:
+            clave = "_nivel_por_identificar"
+        agregar(clave, m.group(1), nivel, confianza, "nivel_ingenieria_etiquetado",
+                requiere_confirmacion_manual=(clave == "_nivel_por_identificar"),
+                componente=componente,
+                observacion=("Componente por identificar: el nivel no se asigna al módulo "
+                             "ni al tablero sin evidencia." if clave == "_nivel_por_identificar"
+                             else None))
+
     # La guía identifica Autoliv en el módulo, no como lugar de prueba.
     for m in re.finditer(r"\bAUTOLIV\b", mayus):
         if componente_en(m.start()) == "bolsa_aire":
@@ -651,10 +884,18 @@ def extraer_candidatos_texto(texto: str, imagen: dict, contexto: dict) -> list[d
                     "proveedor_modulo_etiquetado", componente="bolsa_aire")
     for m in re.finditer(r"(?<![A-Z0-9])\d{2}[SK](?![A-Z0-9])", mayus):
         componente = componente_en(m.start())
-        if componente in {"bolsa_aire", "tablero"}:
-            clave = "dashboard_engineering_level" if componente == "tablero" else "engineering_level"
-            agregar(clave, m.group(), m.group(), confianza, "ingenieria_componente_visible",
-                    componente=componente)
+        # P01-R02: las etiquetas reales no dicen "MODUL"/"AIRBAG", así que el nivel
+        # se descartaba siempre. Ahora se propone como nivel por identificar.
+        if componente == "tablero":
+            clave = "dashboard_engineering_level"
+        elif componente == "bolsa_aire":
+            clave = "engineering_level"
+        else:
+            clave = "_nivel_por_identificar"
+        agregar(clave, m.group(), m.group(), confianza, "ingenieria_componente_visible",
+                componente=componente, requiere_confirmacion_manual=(clave == "_nivel_por_identificar"),
+                observacion=("Componente por identificar: no se asigna al módulo ni al tablero."
+                             if clave == "_nivel_por_identificar" else None))
     for m in re.finditer(
             r"\b(?:ENGINEERING\s+LEVEL|NIVEL\s+(?:DE\s+)?INGENIER[IÍ]A|ENTWICKLUNGSSTAND)"
             r"\s*[:=]\s*([A-Z0-9][A-Z0-9._/-]{0,30})", mayus):
@@ -687,7 +928,11 @@ def extraer_candidatos_texto(texto: str, imagen: dict, contexto: dict) -> list[d
                     "tiempo_etiquetado",
                     requiere_confirmacion_manual=(clave == "opening_time_ms"))
     # Seriales sólo cuando existe una etiqueta contextual; se preservan asteriscos y ceros.
-    for m in re.finditer(r"(?:SERIAL|S/?N|SN|SERIENNUMMER|SERIE)\s*[:#-]?\s*([A-Z0-9*][A-Z0-9* /-]{2,40})", mayus):
+    for m in re.finditer(
+            r"(?:SERIAL|S/?N|SN|SERIENNUMMER|SERIE)"
+            # P01-R01: el libro rotula "Serial No."; sin esto la serie no se leía.
+            r"\s*(?:NO|NR|NUMBER|NUMERO|NUMMER)?\.?\s*[:#-]?\s*([A-Z0-9*][A-Z0-9* /-]{2,40})",
+            mayus):
         componente = componente_en(m.start())
         original = m.group(1).strip()
         serial = normalizar_serial(original)
@@ -728,7 +973,19 @@ def extraer_candidatos_texto(texto: str, imagen: dict, contexto: dict) -> list[d
         elif info["estado"] == "ambigua":
             agregar("_fecha_ambigua", info["original"], info["original"], confianza,
                     "fecha_ambigua_pendiente", valido=False)
-    return candidatos
+    # P01-R01 · Sin duplicados dentro de la misma lectura. Dos candidatos
+    # idénticos (misma clave, valor y componente) no son dos votos: inflarían el
+    # consenso. Se conserva el primero, con su procedencia.
+    unicos: list[dict] = []
+    vistos: set[tuple] = set()
+    for candidato in candidatos:
+        firma = (candidato.get("clave"), candidato.get("valor_normalizado"),
+                 candidato.get("componente"))
+        if firma in vistos:
+            continue
+        vistos.add(firma)
+        unicos.append(candidato)
+    return unicos
 
 
 def _evidencia_ruta(caso: dict) -> list[dict]:
@@ -760,12 +1017,26 @@ def consolidar_caso(caso: dict, evidencias: Iterable[dict],
     claves_contrato = tuple(dict.fromkeys(claves or CLAVES_PLANTILLA))
     todos = [*_evidencia_ruta(caso), *list(evidencias)]
     por_clave: dict[str, list[dict]] = defaultdict(list)
+    # P08: una lectura con forma imposible NO entra en el consenso ni se publica.
+    # Se guarda con su motivo para que la cola de dudas la pueda enseñar.
+    rechazos: dict[str, list[dict]] = defaultdict(list)
     for evidencia in todos:
         if (evidencia.get("clave") in claves_contrato and
                 evidencia.get("valor_normalizado") not in {None, ""} and
                 not (evidencia.get("requiere_confirmacion_manual") and
                      not evidencia.get("confirmacion_manual"))):
-            por_clave[evidencia["clave"]].append(evidencia)
+            # Una confirmación humana no se somete a la forma: si una persona escribió
+            # el valor, sabe más que el patrón. La forma sólo criba lecturas automáticas.
+            if evidencia.get("confirmacion_manual") or evidencia.get("fuente") == "manual":
+                por_clave[evidencia["clave"]].append(evidencia)
+                continue
+            revision = revisar_forma(evidencia["clave"], evidencia["valor_normalizado"])
+            if revision["valido"]:
+                por_clave[evidencia["clave"]].append(evidencia)
+            else:
+                rechazos[evidencia["clave"]].append({
+                    "valor": revision["valor"], "motivo": revision["motivo"],
+                    "fuente": evidencia.get("fuente"), "imagen": evidencia.get("imagen")})
     campos: dict[str, dict] = {}
     conflictos: list[str] = []
     for clave in claves_contrato:
@@ -793,7 +1064,10 @@ def consolidar_caso(caso: dict, evidencias: Iterable[dict],
             continue
         if len(valores_manuales) == 1:
             valor_manual = valores_manuales[0]
-            alternativas = sorted(v for v in por_valor if v != valor_manual)
+            # P08: las alternativas incluyen también lo que la forma descartó; si no,
+            # la revisión humana parecería haber resuelto menos de lo que resolvió.
+            alternativas = sorted({v for v in por_valor if v != valor_manual}
+                                  | {r["valor"] for r in rechazos.get(clave, [])})
             coincidencias_manual = [i for i in manuales_confirmados
                                      if str(i.get("valor_normalizado")) == valor_manual]
             campos[clave] = {
@@ -903,12 +1177,76 @@ def consolidar_caso(caso: dict, evidencias: Iterable[dict],
         except ValueError:
             pass
 
+    # P08: ningún valor se publica con menos respaldo del que exige su campo, y todo
+    # valor rechazado por forma queda anotado (aunque el campo acabe vacío).
+    a_confirmar: list[str] = []
+    for clave, campo in campos.items():
+        if rechazos.get(clave):
+            campo["rechazados"] = rechazos[clave]
+        valor = campo.get("valor")
+        humano = (campo.get("confirmacion_manual") is True
+                  or str(campo.get("fuente_preferida") or "") == "manual"
+                  or str(campo.get("estado") or "") in {"extraido_manual", "inferido_regla_confirmada"})
+        if valor in (None, ""):
+            if rechazos.get(clave) and str(campo.get("estado", "")).startswith("faltante"):
+                campo.update(estado="forma_invalida", requiere_revision=True,
+                             decision_v15_10="PROPUESTA",
+                             motivo="ninguna lectura con forma válida")
+                a_confirmar.append(clave)
+            continue
+        if humano:
+            continue
+        fuentes = campo.get("fuentes") or [i.get("imagen") for i in campo.get("candidatos") or []]
+        if not corroborado(clave, fuentes):
+            campo.update(valor_propuesto=valor, valor=None, estado="pendiente_corroboracion",
+                         requiere_revision=True, decision_v15_10="PROPUESTA",
+                         motivo=(f"una sola fuente sostiene «{valor}»; este campo necesita "
+                                 f"{CORROBORACION_MINIMA.get(clave, 1)} lecturas independientes"))
+            a_confirmar.append(clave)
+
+    evidencias_por_clave: dict[str, list[dict]] = defaultdict(list)
+    for evidencia in todos:
+        if evidencia.get("clave") in claves_contrato and evidencia.get("valor_normalizado") not in (None, ""):
+            evidencias_por_clave[evidencia["clave"]].append(evidencia)
+    # P09: medido sobre los 10 casos reales, NINGUNA de las 13 lecturas de nivel coincidió con
+    # el libro (`01S` leído como `02S`, `69K` como `03S`). Que dos lecturas coincidan en un
+    # error sistemático no lo convierte en acierto: el nivel no se publica sin una persona o
+    # una regla de aprendizaje confirmada, y sus lecturas quedan como opciones de la duda.
+    for clave in NUNCA_AUTOMATICO:
+        campo = campos.get(clave) or {}
+        valor = campo.get("valor")
+        if valor in (None, "") or campo.get("confirmacion_manual") \
+                or campo.get("fuente_preferida") == "manual" \
+                or campo.get("estado") in {"extraido_manual", "inferido_regla_confirmada"}:
+            continue
+        campo["opciones_consenso"] = consensuar(clave, evidencias_por_clave.get(clave, []))["opciones"]
+        campo.update(valor_propuesto=valor, valor=None, estado="solo_lecturas_automaticas",
+                     requiere_revision=True, decision_v15_10="PROPUESTA",
+                     motivo=("el nivel no se publica sólo con lecturas automáticas: se midió "
+                             "que se lee mal de forma sistemática"))
+        a_confirmar.append(clave)
+
+    # P09: lo que quedó en blanco se intenta sacar de la duda con el consenso ponderado
+    # (pesos por procedencia, reparación estructural, unanimidad donde hace falta). Nunca se
+    # pisa una decisión ya tomada ni una confirmación humana.
+    evidencias_por_clave: dict[str, list[dict]] = defaultdict(list)
+    for evidencia in todos:
+        if evidencia.get("clave") in claves_contrato and evidencia.get("valor_normalizado") not in (None, ""):
+            evidencias_por_clave[evidencia["clave"]].append(evidencia)
+    for clave in rescatar(campos, evidencias_por_clave, excluir=set(conflictos)):
+        if clave not in a_confirmar:
+            a_confirmar.remove(clave) if clave in a_confirmar else None
+    campos_a_consulta = [k for k, v in campos.items()
+                         if v.get("valor") in (None, "") and v.get("opciones_consenso")]
+
     faltantes = [k for k, v in campos.items() if str(v.get("estado", "")).startswith("faltante")]
     requiere_revision = bool(conflictos or any(campos[k].get("requiere_revision") for k in campos))
     return {"project_id": caso.get("project_id"), "case_key": caso["case_key"],
             "test_number": caso.get("metadata_ruta", {}).get("test_number"),
             "tipo_st": caso.get("tipo_st"), "campos": campos, "candidatos": todos,
             "campos_faltantes": faltantes, "conflictos": conflictos,
+            "campos_a_confirmar": a_confirmar,
+            "campos_a_consulta": campos_a_consulta,
             "requiere_revision": requiere_revision}
 
 

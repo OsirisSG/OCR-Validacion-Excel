@@ -539,7 +539,7 @@ function EstadoVacio() {
     <div class="icono"><${Icono} tipo="carpeta" /></div>
     <h2 style=${{ margin: "0 0 6px" }}>Aún no hay datos procesados</h2>
     <p style=${{ margin: 0 }}>Ejecuta el pipeline sobre una carpeta de lote y vuelve a cargar esta página:</p>
-    <p style=${{ margin: "10px 0 0" }}><code>python pipeline.py &lt;ruta_raiz&gt;</code></p>
+    <p style=${{ margin: "10px 0 0" }}><code>python pipeline.py ${"<ruta_raiz>"}</code></p>
   </div>`;
 }
 
@@ -632,7 +632,7 @@ function MatrizApertura({ matriz, colores }) {
       <div>
         <h3 class="titulo-seccion" style=${{ margin: 0 }}>Matriz de tiempo de apertura</h3>
         <p class="subtitulo-seccion" style=${{ marginBottom: 0 }}>
-          1ST y 2ST en un solo resumen. Se muestran únicamente casos existentes; las categorías vacías no crean casillas. Haz clic en una prueba para localizar su carpeta en el Listado.
+          1ST y 2ST en un solo resumen. Se muestran únicamente casos existentes; las categorías vacías no crean casillas. Haz clic en una prueba para abrir en Listado su carpeta.
         </p>
       </div>
       <div class="leyenda-apertura" aria-label="Leyenda tiempo de apertura">
@@ -659,6 +659,7 @@ function MatrizApertura({ matriz, colores }) {
                   style=${{ background: paleta[item.estado] || paleta.gris }}
                   title=${tituloCelda(item)}
                   aria-label=${`${item.test_number} · ${tituloCelda(item)}`}
+                  aria-description=${trazaCelda(item)}
                   onClick=${() => abrirEnListado(item)}>${item.test_number}</button>`)}
             </div>
             <div class="matriz-columna-meta"><strong>${col.temperatura}</strong><span>${col.generador}</span>
@@ -676,6 +677,7 @@ function MatrizApertura({ matriz, colores }) {
           style=${{ background: paleta[item.estado] || paleta.gris }}
           title=${tituloCelda(item)}
           aria-label=${`${item.test_number} · ${tituloCelda(item)}`}
+                  aria-description=${trazaCelda(item)}
           onClick=${() => abrirEnListado(item)}>${item.test_number}</button>`)}
       </div>
     </section>` : null}
@@ -889,7 +891,7 @@ function DialogoRangosApertura({ config, onCancelar, onProcesar, proyectos, suge
       </div>
       <p class="mono dialogo-rangos-combinacion" role="status">${String(combinacion)}</p>
       <p class="subtitulo-seccion">${t("Reglas")}: <span class="mono">${t("verde")} ≤ V</span>,
-        <span class="mono">V &lt; ${t("amarillo")} ≤ A</span>, <span class="mono">${t("rojo")} &gt; A</span>.
+        <span class="mono">${"V < "}${t("amarillo")}${" ≤ A"}</span>, <span class="mono">${t("rojo")}${" > A"}</span>.
         ${t("El gris nunca se sustituye por 0 ms.")}</p>
       <label class="dialogo-rangos-guardar">
         <input type="checkbox" checked=${guardarPreferencia}

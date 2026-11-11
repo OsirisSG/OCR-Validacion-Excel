@@ -51,7 +51,9 @@ def test_numero_no_identifica_semana_edag_sin_laboratorio():
 
 def test_vw_como_prueba_y_vw_ag_fabricante_no_se_confunden():
     assert valores(extraer("TEST VW123456"), "test_place") == ["VW"]
-    assert valores(extraer("TEST VW123456"), "test_number") == ["VW123456"]
+    # P06: el número de prueba es el número, no la designación del proyecto con prefijo.
+    # El libro guarda "222504", no "VW222504": el prefijo se separa (ver test_p06).
+    assert valores(extraer("TEST VW123456"), "test_number") == ["123456"]
     assert valores(extraer("AIRBAG VW AG\n2GJ 880 204 J"), "test_place") == []
     assert valores(extraer("AIRBAG VW AG\n2GJ 880 204 J"), "week") == []
     assert valores(extraer("AIRBAG\nSERIAL: VW123456"), "test_place") == []
@@ -207,4 +209,9 @@ def test_pipeline_conecta_perfil_de_extraccion_sin_modelo_real(tmp_path, monkeyp
         estructura, config, archivo_salida=tmp_path / "resultado.json", contenido="fotos")
     campos = resultado["resultados"][0]["campos"]
     assert campos["module_date"]["valor"] == "2025-04-10"
-    assert campos["engineering_level"]["valor"] == "02S"
+    # P08: el nivel exige dos lecturas independientes concordantes. Con una sola
+    # imagen el valor se PROPONE pero no se publica (en la ejecución real, `02S`
+    # salió de dos lecturas de la misma foto y el libro decía `01S` tres veces).
+    assert campos["engineering_level"]["valor"] is None
+    assert campos["engineering_level"]["valor_propuesto"] == "02S"
+    assert campos["engineering_level"]["estado"] == "pendiente_corroboracion"

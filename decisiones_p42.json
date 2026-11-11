@@ -1,0 +1,83 @@
+[
+ {
+  "caso": "222504",
+  "campo": "dashboard_serial_number",
+  "codificada": "052 3KVJ008R6E1",
+  "publicada": "052 3KVJ008R6E",
+  "fuente_decision": "revision_visual_de_la_etiqueta",
+  "estado": "manual_revisada_por_agente",
+  "nota": "La etiqueta imprime *052 3KVJ008R6E1 y el último glifo es un trazo vertical limpio (recorte cola_222504.jpg). El libro tiene 13 caracteres. Se publica el valor del libro y NO se convierte nada por regla: la diferencia queda registrada aquí."
+ },
+ {
+  "caso": "222521",
+  "campo": "dashboard_serial_number",
+  "codificada": "052 3KVJ008R69$",
+  "publicada": "052 3KVJ008R69S",
+  "fuente_decision": "revision_visual_de_la_etiqueta",
+  "estado": "pendiente_de_confirmar",
+  "nota": "El código trae el byte 0x24 ('$') y el libro tiene 'S'. El glifo impreso está dañado (recorte etiqueta_222521.jpg). No hay forma de saber desde el código si el campo de negocio lleva S; pendiente de la plantilla del proveedor o de una foto mejor."
+ },
+ {
+  "caso": "222530",
+  "campo": "dashboard_serial_number",
+  "codificada": "052 3KVJ008R6RE",
+  "publicada": "052 3KVJ008R6R",
+  "fuente_decision": "revision_visual_de_la_etiqueta",
+  "estado": "pendiente_de_confirmar",
+  "nota": "El código trae un carácter más ('E') que el libro. Coherente con la hipótesis de campo de 14 caracteres, pero sin confirmar."
+ },
+ {
+  "caso": "232561",
+  "campo": "dashboard_serial_number",
+  "codificada": "052 3KVJ008R4O9",
+  "publicada": "052 3KVJ008R40S",
+  "fuente_decision": "revision_visual_de_la_etiqueta",
+  "estado": "pendiente_de_confirmar",
+  "nota": "El código trae 'O' donde el libro tiene '0' y '9' donde tiene 'S'. El último glifo impreso está mucho más claro que el resto (recorte cola_232561.jpg). Dos sustituciones: la más frágil de las seis."
+ },
+ {
+  "caso": "232566",
+  "campo": "dashboard_serial_number",
+  "codificada": "052 3KVJ008R6YL",
+  "publicada": "052 3KVJ008R6YI",
+  "fuente_decision": "revision_visual_de_la_etiqueta",
+  "estado": "pendiente_de_confirmar",
+  "nota": "El código trae 'L' y el libro 'I'. Confusión clásica de letra de puntos, sin confirmar con una foto mejor."
+ },
+ {
+  "caso": "252581",
+  "campo": "dashboard_serial_number",
+  "codificada": "052 3KVJ008R5D%",
+  "publicada": "052 3KVJ008R5D",
+  "fuente_decision": "revision_visual_de_la_etiqueta",
+  "estado": "pendiente_de_confirmar",
+  "nota": "El código trae el byte 0x25 ('%') de más. No hay recorte guardado de este caso para revisar a ojo: su foto necesitó las variantes de contraste."
+ },
+ {
+  "caso": "252581",
+  "campo": "dashboard_part_number",
+  "codificada": "2GJ.857.003.G",
+  "publicada": "2GJ.857.003.G",
+  "fuente_decision": "payload_datamatrix",
+  "estado": "autorizado_por_usuario",
+  "nota": "A6 autorizado por el usuario el 2026-10-29: el grabado del plástico no dio lectura en este caso y se usa el número de parte del DataMatrix, que es el mismo en los 10 casos. Queda marcado para que se vea de dónde salió."
+ },
+ {
+  "caso": "252590",
+  "campo": "dashboard_part_number",
+  "codificada": "2GJ.857.003.G",
+  "publicada": "2GJ.857.003.G",
+  "fuente_decision": "payload_datamatrix",
+  "estado": "autorizado_por_usuario",
+  "nota": "A6 autorizado por el usuario el 2026-10-29: el grabado del plástico no dio lectura en este caso y se usa el número de parte del DataMatrix, que es el mismo en los 10 casos. Queda marcado para que se vea de dónde salió."
+ },
+ {
+  "caso": "232564",
+  "campo": "dashboard_date",
+  "codificada": "2025-05-17",
+  "publicada": "2025-05-17",
+  "fuente_decision": "sticker_del_tablero_unico",
+  "estado": "autorizado_por_usuario",
+  "nota": "Regla del usuario (2026-10-29): cuando en el caso hay UNA SOLA foto del sticker del tablero, esa lectura basta. Es NACH/IMG_4408.JPG, que dice «…12:38:17.PM … 17/05/2025 … 497653401XBS». Las otras fechas del caso son de etiquetas de proveedor («Lieferant : Farbe:») y del módulo."
+ }
+]

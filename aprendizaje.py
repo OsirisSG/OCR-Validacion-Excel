@@ -1515,6 +1515,29 @@ class GestorAprendizaje:
                 "motivo": str(motivo or "").strip(), "usuario": usuario,
                 "estado_imagen": "revisada_sin_datos"}
 
+    def sugerir_motivo_sin_datos(self, ruta_imagen: str | Path) -> dict:
+        """Motivo propuesto para marcar una imagen como «sin datos».
+
+        Las 93 filas que hay en la base tienen el motivo vacío: «sin datos» sin decir
+        por qué no enseña nada. Esto mira el texto OCR ya guardado de esa imagen y
+        propone un motivo del catálogo cerrado de `utilidades.relevancia_texto`.
+        """
+        from utilidades.relevancia_texto import clasificar, motivo_para_imagen_sin_datos
+        ruta = Path(ruta_imagen)
+        if not self.db.exists() or not ruta.is_file():
+            return {"motivo": "", "clase": "desconocida", "disponible": False}
+        imagen_hash = hash_archivo(ruta)
+        with self._conectar() as con:
+            filas = con.execute("SELECT texto_ocr FROM observaciones WHERE imagen_hash=?",
+                                (imagen_hash,)).fetchall()
+        texto = " ".join(str(f[0]) for f in filas if f[0])
+        clasificacion = clasificar(texto)
+        return {"imagen_hash": imagen_hash, "motivo": motivo_para_imagen_sin_datos(texto),
+                "clase": clasificacion["clase"], "disponible": True,
+                "observaciones": len(filas), "metricas": {
+                    k: clasificacion[k] for k in ("tokens", "tokens_utiles", "ratio_util",
+                                                  "caracteres_utiles")}}
+
     def imagen_sin_datos(self, ruta_imagen: str | Path) -> dict | None:
         ruta = Path(ruta_imagen)
         if not self.db.exists() or not ruta.is_file():

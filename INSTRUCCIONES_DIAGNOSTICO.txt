@@ -1,0 +1,24 @@
+V-Matrix - creador de ZIP diagnostico V3 corregido
+
+¿Que se corrigio?
+- Se evita Add-Content en un bucle, que disparaba "Stream was not readable".
+- El informe se construye en memoria y se escribe una sola vez.
+- Se excluyen tipos comunes de archivos con llaves y secretos.
+- Se advierte si algun archivo esta bloqueado y no pudo copiarse.
+
+INSTRUCCIONES EN WINDOWS
+1. Extraer los 2 archivos BAT y PS1 de este ZIP.
+2. Colocarlos directamente en la carpeta de tu proyecto:
+   C:\Programas Base\OCR-Validacion-Excel-ocr-gpu-produccion
+3. Si Windows solicita reemplazar los archivos anteriores, aceptar SOLO para el BAT/PS1 del diagnostico.
+4. Doble clic en CREAR_ZIP_OCR_DIAGNOSTICO_V3.bat.
+5. Esperar a que diga "ZIP CREADO CORRECTAMENTE".
+6. Buscar el ZIP con _DIAGNOSTICO_ en tu Escritorio.
+7. Antes de compartirlo, comprobar que no contiene credenciales, contrasenas ni datos personales.
+8. Subir el ZIP resultante a la conversacion.
+
+No hace falta ejecutar como administrador. No aplica parches ni modifica codigo de tu proyecto.
+No comprime entornos virtuales, paquetes node_modules, videos ni archivos ZIP.
+Conserva configuraciones de diagnostico, logs y estado (revisar por datos sensibles).
+
+NOTA: estos dos archivos NO contienen el proyecto. Son herramientas para generar el ZIP desde tu PC.

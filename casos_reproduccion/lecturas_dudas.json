@@ -1,0 +1,460 @@
+{
+ "222504": {
+  "carpeta": {
+   "test_number": "222504",
+   "module_version": "RDW",
+   "temperature_condition": "NT",
+   "inflator_type": "NOM"
+  },
+  "diagrama": {
+   "test_number": "222504",
+   "module_version": "RDW",
+   "temperature_condition": "NT",
+   "inflator_type": "NOM"
+  },
+  "barra_video": {},
+  "ocr": {
+   "_proyecto_designacion": {
+    "VW316/5": 23,
+    "VW316": 22
+   },
+   "test_number": {
+    "222504": 91,
+    "333504": 23,
+    "133217": 22,
+    "203132": 22
+   },
+   "_temperatura_impresa": {
+    "+300": 70,
+    "+35": 22,
+    "+31": 22
+   },
+   "_nivel_por_identificar": {
+    "02S": 111,
+    "03S": 23
+   },
+   "module_serial_number": {
+    "671 ZAZO539983E": 1,
+    "671 ZRZ0539983E": 25,
+    "671 ZZ0539983E": 23
+   },
+   "temperature_condition": {
+    "NT": 23,
+    "RT": 22,
+    "HT": 22
+   },
+   "inflator_type": {
+    "NOM": 91
+   }
+  }
+ },
+ "222509": {
+  "carpeta": {
+   "test_number": "222509",
+   "module_version": "RDW",
+   "temperature_condition": "NT",
+   "inflator_type": "NOM"
+  },
+  "diagrama": {
+   "test_number": "222509",
+   "module_version": "RDW",
+   "temperature_condition": "NT",
+   "inflator_type": "NOM"
+  },
+  "barra_video": {},
+  "ocr": {
+   "_proyecto_designacion": {
+    "VW316/S": 3
+   },
+   "test_number": {
+    "222509": 91,
+    "233509": 22
+   },
+   "module_serial_number": {
+    "671 ZRZ0539999L": 2,
+    "671 ZRZO539999L": 23,
+    "671 ZAZ0539999L": 1
+   },
+   "inflator_type": {
+    "NOM": 71
+   },
+   "_nivel_por_identificar": {
+    "02S": 248,
+    "03S": 22
+   },
+   "_temperatura_impresa": {
+    "+300": 90,
+    "+678": 22,
+    "+78": 22
+   },
+   "module_part_number": {
+    "2GJ.880.204.J": 22
+   },
+   "temperature_condition": {
+    "NT": 22,
+    "RT": 22,
+    "HT": 22
+   }
+  }
+ },
+ "222521": {
+  "carpeta": {
+   "test_number": "222521",
+   "module_version": "RDW",
+   "temperature_condition": "NT",
+   "inflator_type": "OGL"
+  },
+  "diagrama": {
+   "test_number": "222521",
+   "module_version": "RDW",
+   "temperature_condition": "NT"
+  },
+  "barra_video": {},
+  "ocr": {
+   "_nivel_por_identificar": {
+    "66K": 2,
+    "03S": 66
+   },
+   "test_number": {
+    "222521": 91,
+    "212521": 23
+   },
+   "_temperatura_impresa": {
+    "+300": 92
+   },
+   "module_part_number": {
+    "2GJ.880.204.J": 68,
+    "26J.880.204.J": 23
+   },
+   "inflator_type": {
+    "NOM": 2,
+    "UGL": 22
+   },
+   "temperature_condition": {
+    "NT": 23,
+    "RT": 22,
+    "HT": 22
+   },
+   "_proyecto_designacion": {
+    "VW316/5": 44
+   }
+  }
+ },
+ "222530": {
+  "carpeta": {
+   "test_number": "222530",
+   "module_version": "RDW",
+   "temperature_condition": "NT",
+   "inflator_type": "UGL"
+  },
+  "diagrama": {
+   "test_number": "222530",
+   "module_version": "RDW",
+   "temperature_condition": "NT",
+   "inflator_type": "UGL"
+  },
+  "barra_video": {},
+  "ocr": {
+   "_temperatura_impresa": {
+    "+300": 165,
+    "+237": 22
+   },
+   "module_part_number": {
+    "26J.880.204.J": 1,
+    "2GJ.880.204.J": 2
+   },
+   "inflator_type": {
+    "UGL": 69,
+    "NOM": 26
+   },
+   "test_number": {
+    "222530": 134,
+    "142025": 22
+   },
+   "_nivel_por_identificar": {
+    "69K": 2
+   },
+   "_proyecto_designacion": {
+    "VW316": 69
+   },
+   "temperature_condition": {
+    "NT": 22,
+    "RT": 22,
+    "HT": 22
+   }
+  }
+ },
+ "252581": {
+  "carpeta": {
+   "test_number": "252581",
+   "module_version": "RDW",
+   "temperature_condition": "RT",
+   "inflator_type": "NOM"
+  },
+  "diagrama": {
+   "test_number": "252581",
+   "module_version": "RDW",
+   "temperature_condition": "RT",
+   "inflator_type": "NOM"
+  },
+  "barra_video": {},
+  "ocr": {
+   "test_number": {
+    "252581": 68
+   },
+   "inflator_type": {
+    "NOM": 76
+   },
+   "temperature_condition": {
+    "RT": 23,
+    "HT": 23,
+    "NT": 22
+   },
+   "_nivel_por_identificar": {
+    "03S": 87,
+    "02S": 131,
+    "16S": 22,
+    "13S": 21
+   },
+   "module_serial_number": {
+    "671 ZAZ0539985G": 2
+   },
+   "_temperatura_impresa": {
+    "+204": 23,
+    "+300": 67,
+    "+8": 23,
+    "+872": 22,
+    "+18": 22
+   },
+   "module_part_number": {
+    "GJ.880.204.J": 1
+   }
+  }
+ },
+ "252590": {
+  "carpeta": {
+   "test_number": "252590",
+   "module_version": "RDW",
+   "temperature_condition": "RT",
+   "inflator_type": "NOM"
+  },
+  "diagrama": {
+   "test_number": "252590",
+   "temperature_condition": "RT",
+   "inflator_type": "NOM"
+  },
+  "barra_video": {},
+  "ocr": {
+   "_temperatura_impresa": {
+    "+423": 44,
+    "+1": 1,
+    "+300": 88,
+    "+8": 43,
+    "+578": 22,
+    "+5": 21,
+    "+33": 21
+   },
+   "inflator_type": {
+    "NOM": 73
+   },
+   "_nivel_por_identificar": {
+    "02S": 44,
+    "03S": 107
+   },
+   "module_part_number": {
+    "2GJ.880.204.J": 44
+   },
+   "test_number": {
+    "253512": 22
+   },
+   "temperature_condition": {
+    "RT": 22,
+    "HT": 22,
+    "NT": 21
+   }
+  }
+ },
+ "232550": {
+  "carpeta": {
+   "test_number": "232550",
+   "module_version": "RDW",
+   "temperature_condition": "HT",
+   "inflator_type": "NOM"
+  },
+  "diagrama": {
+   "test_number": "232550",
+   "module_version": "RDW",
+   "temperature_condition": "HT",
+   "inflator_type": "NOM"
+  },
+  "barra_video": {},
+  "ocr": {
+   "inflator_type": {
+    "NOM": 116
+   },
+   "_nivel_por_identificar": {
+    "02S": 179,
+    "03S": 44
+   },
+   "module_part_number": {
+    "GJ.880.204.3": 1,
+    "GJ.880.204.J": 23,
+    "123.301.221.15": 1
+   },
+   "_temperatura_impresa": {
+    "+578": 1,
+    "+534": 1,
+    "+300": 66
+   },
+   "module_serial_number": {
+    "671 ZRZO539991D": 1,
+    "671 ZRZ0539991D": 1
+   },
+   "test_number": {
+    "232550": 45,
+    "123301": 1
+   },
+   "temperature_condition": {
+    "RT": 23,
+    "NT": 22,
+    "HT": 22
+   },
+   "module_version": {
+    "RDW": 22
+   }
+  }
+ },
+ "232561": {
+  "carpeta": {
+   "test_number": "232561",
+   "module_version": "RDW",
+   "temperature_condition": "HT",
+   "inflator_type": "OGL"
+  },
+  "diagrama": {
+   "test_number": "232561",
+   "module_version": "RDW",
+   "temperature_condition": "HT",
+   "inflator_type": "OGL"
+  },
+  "barra_video": {},
+  "ocr": {
+   "test_number": {
+    "232561": 45,
+    "142025": 23,
+    "162051": 22
+   },
+   "_temperatura_impresa": {
+    "+830": 23,
+    "+300": 69
+   },
+   "module_part_number": {
+    "2GJ.880.204.J": 63,
+    "26J.880.204.J": 23,
+    "2GJ.880.204.4": 23,
+    "GJ.880.204.J": 23
+   },
+   "inflator_type": {
+    "UGL": 1,
+    "OGL": 44,
+    "NOM": 22
+   },
+   "temperature_condition": {
+    "RT": 23,
+    "HT": 23,
+    "NT": 22
+   },
+   "_nivel_por_identificar": {
+    "03S": 45
+   }
+  }
+ },
+ "232564": {
+  "carpeta": {
+   "test_number": "232564",
+   "module_version": "RDW",
+   "temperature_condition": "HT",
+   "inflator_type": "OGL"
+  },
+  "diagrama": {
+   "test_number": "232564",
+   "module_version": "RDW",
+   "temperature_condition": "HT",
+   "inflator_type": "OGL"
+  },
+  "barra_video": {},
+  "ocr": {
+   "inflator_type": {
+    "NOM": 23,
+    "OGL": 88
+   },
+   "_temperatura_impresa": {
+    "+300": 69
+   },
+   "module_part_number": {
+    "2GJ.880.204.J": 94
+   },
+   "_proyecto_designacion": {
+    "VW316": 115
+   },
+   "test_number": {
+    "232564": 45,
+    "042025": 22
+   },
+   "temperature_condition": {
+    "RT": 23,
+    "NT": 22,
+    "HT": 22
+   },
+   "_nivel_por_identificar": {
+    "03S": 22
+   }
+  }
+ },
+ "232566": {
+  "carpeta": {
+   "test_number": "232566",
+   "module_version": "RDW",
+   "temperature_condition": "HT",
+   "inflator_type": "UGL"
+  },
+  "diagrama": {
+   "test_number": "232566",
+   "module_version": "RDW",
+   "temperature_condition": "HT",
+   "inflator_type": "UGL"
+  },
+  "barra_video": {},
+  "ocr": {
+   "_temperatura_impresa": {
+    "+300": 68,
+    "+800": 1,
+    "+2": 44
+   },
+   "module_part_number": {
+    "26J.880.204.J": 1,
+    "2GJ.880.204.J": 24
+   },
+   "test_number": {
+    "232566": 115
+   },
+   "temperature_condition": {
+    "RT": 23,
+    "NT": 22,
+    "HT": 22
+   },
+   "inflator_type": {
+    "UGL": 91,
+    "NOM": 4
+   },
+   "_nivel_por_identificar": {
+    "69K": 2,
+    "03S": 45
+   },
+   "_proyecto_designacion": {
+    "VW316/5": 22,
+    "VW316/S": 22
+   }
+  }
+ }
+}

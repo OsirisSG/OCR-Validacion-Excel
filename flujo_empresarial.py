@@ -538,10 +538,25 @@ def interpretar_fecha_impresa(texto: str | None, formato: str | None = None) -> 
     return {"original": original, "interpretacion": None, "estado": "no_reconocida"}
 
 
+# P44 · marcas IMPRESAS de cada etiqueta, tomadas de la guía de posición de códigos del usuario
+# (Guia_de_posicion_de_codigos_en_las_imagenes.pdf) y medidas con OCR sobre sus fotos: las
+# etiquetas reales casi nunca dicen «AIRBAG»/«DASHBOARD» con espacios limpios.
+#  - tablero: sticker de fecha «N/P:… IP Part W Barcode» (IP = instrument panel)
+#  - módulo:  «Airbag Module APM…», «Autoliv B.V.», «VW316 PAB», «ZRZ02S»
+MARCAS_TABLERO_ETIQUETA = re.compile(r"N\s*/\s*P\s*[:.]|IP\s*PART|INT\s*316\s*IP")
+AUTOLIV_OCR = re.compile(r"\bAUTOL(?:IV|[IVLMN1|]{1,2})(?:\b|(?=B\.?\s*V))")
+MARCAS_MODULO_ETIQUETA = re.compile(
+    r"AIRBAG\s*MODUL|\bAUTOL(?:IV|[IVLMN1|]{1,2})(?:\b|(?=B\.?\s*V))|DACHAU|NOETHER|VW\s*316\s*/?\s*PAB|ZRZ\s*0?\d")
+# (no se usa «2GJ880» solo como marca: P02 decidió que un N/P compacto sin más contexto no se
+# propone; con otra marca del módulo en la misma etiqueta sí)
+
+
 def _componente_contextual(texto: str) -> str:
     mayus = str(texto or "").upper()
-    tablero = bool(re.search(r"DASH|INSTRUMENT|I-?TAFEL|TABLERO", mayus))
-    bolsa = bool(re.search(r"\b(?:AIRBAG|AIR\s*BAG|PAB|MODULE|MODUL)\b", mayus))
+    tablero = bool(re.search(r"DASH|INSTRUMENT|I-?TAFEL|TABLERO", mayus)
+                   or MARCAS_TABLERO_ETIQUETA.search(mayus))
+    bolsa = bool(re.search(r"\b(?:AIRBAG|AIR\s*BAG|PAB|MODULE|MODUL)\b", mayus)
+                 or MARCAS_MODULO_ETIQUETA.search(mayus))
     if tablero and not bolsa:
         return "tablero"
     if bolsa and not tablero:
@@ -579,6 +594,9 @@ def extraer_candidatos_texto(texto: str, imagen: dict, contexto: dict) -> list[d
                 else componente_declarado)
 
     formato_fecha = opcion("formato_fecha")
+    # P44 · formato declarado SÓLO para la etiqueta del módulo (`10.04.25` = 10 abr 2025 en la
+    # guía del usuario). No se aplica a otras etiquetas: el contrato pide DMY sólo con perfil.
+    formato_fecha_modulo = opcion("formato_fecha_modulo")
     if not formato_fecha:
         fm = re.search(r"\b(?:DMY|DD[./-]MM[./-](?:YYYY|YY))\b", mayus)
         formato_fecha = fm.group() if fm else None
@@ -878,11 +896,31 @@ def extraer_candidatos_texto(texto: str, imagen: dict, contexto: dict) -> list[d
                              else None))
 
     # La guía identifica Autoliv en el módulo, no como lugar de prueba.
-    for m in re.finditer(r"\bAUTOLIV\b", mayus):
+    # P44 · el OCR real devuelve «AutolivB.V.&Co.KG» (sin espacio): se acepta AUTOLIV seguido de B.V.
+    # P48 · con EasyOCR la marca sale «Autolm B V», «Autoln B», «Autoll»: AUTOL + 1-2 letras
+    # confundibles con IV y luego fin de palabra o «B.V.». Ninguna otra marca empieza por AUTOL.
+    # P49 · gancho de la guía: la dirección impresa de Autoliv (Emmy-Noether-Str. 7a, 85221 Dachau)
+    # confirma el proveedor aunque «Autoliv» salga ilegible.
+    # P51 · el número interno de Autoliv impreso en la etiqueta (651538300 / X651538300C-01-14)
+    for m in (list(re.finditer(AUTOLIV_OCR, mayus)) + list(re.finditer(r"DACHAU|NOETHER|85221", mayus))
+              + list(re.finditer(r"(?<!\d)65153\d{4}(?!\d)", mayus))):
         if componente_en(m.start()) == "bolsa_aire":
             agregar("inflator_supplier", m.group(), "Autoliv", confianza,
                     "proveedor_modulo_etiquetado", componente="bolsa_aire")
+    # P44 · en la etiqueta del módulo el OCR pega «ZRZ02S2GJ880204J»: el nivel va tras ZRZ y el
+    # N/P después. Se proponen igual que siempre (el nivel NUNCA se publica sin confirmación).
+    # P49 · medido contra el libro (12/11): la columna K es la ESTAMPA amarilla (01S/66K/69K), no
+    # el «ZRZ 02S» impreso en la etiqueta (02S en los 10 casos). Ese texto queda sólo para auditoría.
+    for m in re.finditer(r"ZRZ\s*(\d{2}[SK])(?=\s*\d[A-Z]{2}|\b)", mayus):
+        agregar("_nivel_texto_zrz", m.group(1), m.group(1), confianza,
+                "nivel_tras_zrz_etiqueta_modulo", componente="bolsa_aire", valido=False)
+    if componente_declarado == "bolsa_aire":
+        for m in re.finditer(r"(?<![0-9])(\d[A-Z]{2})\s?(880)\s?(\d{3})\s?([A-Z])(?![A-Z0-9])", mayus):
+            agregar("module_part_number", m.group(), ".".join(m.groups()), confianza,
+                    "numero_parte_compacto_modulo", componente="bolsa_aire")
     for m in re.finditer(r"(?<![A-Z0-9])\d{2}[SK](?![A-Z0-9])", mayus):
+        if re.search(r"ZRZ\s*$", mayus[max(0, m.start() - 6):m.start()]):
+            continue                          # P49 · el «ZRZ 02S» de la etiqueta no es la columna K
         componente = componente_en(m.start())
         # P01-R02: las etiquetas reales no dicen "MODUL"/"AIRBAG", así que el nivel
         # se descartaba siempre. Ahora se propone como nivel por identificar.
@@ -929,7 +967,8 @@ def extraer_candidatos_texto(texto: str, imagen: dict, contexto: dict) -> list[d
                     requiere_confirmacion_manual=(clave == "opening_time_ms"))
     # Seriales sólo cuando existe una etiqueta contextual; se preservan asteriscos y ceros.
     for m in re.finditer(
-            r"(?:SERIAL|S/?N|SN|SERIENNUMMER|SERIE)"
+            # P44 · sin borde delante, «MARGUESNORTE» contenía «SN» y daba la serie «ORTE»
+            r"(?<![A-Z0-9])(?:SERIAL|S/?N|SN|SERIENNUMMER|SERIE)"
             # P01-R01: el libro rotula "Serial No."; sin esto la serie no se leía.
             r"\s*(?:NO|NR|NUMBER|NUMERO|NUMMER)?\.?\s*[:#-]?\s*([A-Z0-9*][A-Z0-9* /-]{2,40})",
             mayus):
@@ -954,8 +993,10 @@ def extraer_candidatos_texto(texto: str, imagen: dict, contexto: dict) -> list[d
     # Fechas impresas: conservar siempre el original; sólo consolidar una interpretación segura.
     patron_fecha = r"\b(?:\d{1,4}[./-]\d{1,2}[./-]\d{1,4}|\d{1,2}\s+[A-Z]{3,4}\s+(?:20\d{2}|\d{2}))\b"
     for fm in re.finditer(patron_fecha, mayus):
-        info = interpretar_fecha_impresa(fm.group(), formato=formato_fecha)
         componente = componente_en(fm.start())
+        info = interpretar_fecha_impresa(
+            fm.group(), formato=formato_fecha or (formato_fecha_modulo if componente == "bolsa_aire"
+                                                  else None))
         if info["estado"] == "interpretada":
             antes = mayus[max(0, fm.start()-32):fm.start()]
             if (re.search(r"TEST\s*DATE|DATUM\s*(?:TEST)?|FECHA\s*(?:DE\s*)?PRUEBA", antes)
@@ -967,9 +1008,13 @@ def extraer_candidatos_texto(texto: str, imagen: dict, contexto: dict) -> list[d
                 clave = "module_date"
             else:
                 clave = "_fecha_por_identificar"
+            # P45 · de qué etiqueta del módulo sale la fecha (regla del usuario: si la etiqueta
+            # PROTOTYPES y la del módulo discrepan, MANDA la del módulo)
+            etiqueta = ("prototipo" if "PROTOTYP" in mayus else
+                        "modulo" if MARCAS_MODULO_ETIQUETA.search(mayus) else "")
             agregar(clave, info["original"], info["interpretacion"], confianza,
                     f"fecha_impresa:{info.get('regla','segura')}", valido=not clave.startswith("_"),
-                    componente=componente)
+                    componente=componente, **({"etiqueta": etiqueta} if etiqueta else {}))
         elif info["estado"] == "ambigua":
             agregar("_fecha_ambigua", info["original"], info["original"], confianza,
                     "fecha_ambigua_pendiente", valido=False)
@@ -1009,10 +1054,46 @@ def _evidencia_ruta(caso: dict) -> list[dict]:
     return salida
 
 
+def _perfil_edag(perfil: dict | None, campos: dict) -> tuple[bool, str]:
+    """¿Hay perfil EDAG EXPLÍCITO para este caso? Pura.
+
+    P43 · contrato del libro (Diccionario de datos, `week`): «Sólo perfil EDAG: WW del número de
+    prueba WWYYNN, corroborado con la fecha». Vale el perfil declarado en la configuración
+    (`empresarial.perfil_extraccion.laboratorio: EDAG`) o un `test_place` EDAG publicado desde
+    una regla explícita (rótulo «EDAG Testlab» / «Lugar: EDAG») o confirmado por una persona.
+    """
+    if str((perfil or {}).get("laboratorio") or "").strip().upper() == "EDAG":
+        return True, "perfil_extraccion.laboratorio = EDAG"
+    lugar = campos.get("test_place") or {}
+    if (str(lugar.get("valor") or "").strip().upper() == "EDAG"
+            and not lugar.get("requiere_revision") and lugar.get("estado") != "conflicto"):
+        reglas = {str(c.get("regla_aplicada") or "") for c in lugar.get("candidatos") or []}
+        if (lugar.get("confirmacion_manual") or lugar.get("estado") in {"extraido_manual", "confirmado_manual"}
+                or reglas & {"laboratorio_edag_explicito", "laboratorio_etiquetado"}):
+            return True, "test_place EDAG explícito"
+    return False, ""
+
+
+def _numero_wwyynn(numero) -> tuple[int, int, int] | None:
+    """(semana, año completo, secuencia) de un número de prueba WWYYNN válido, o None. Pura."""
+    texto = str(numero or "").strip()
+    if not re.fullmatch(r"\d{6}", texto):
+        return None
+    semana, anio, secuencia = int(texto[:2]), 2000 + int(texto[2:4]), int(texto[4:])
+    if not secuencia:
+        return None
+    try:
+        datetime.fromisocalendar(anio, semana, 1)
+    except ValueError:
+        return None
+    return semana, anio, secuencia
+
+
 def consolidar_caso(caso: dict, evidencias: Iterable[dict],
                      requeridos: set[str] | None = None,
                      reglas_confirmadas: Iterable[dict] = (),
-                     claves: Iterable[str] | None = None) -> dict:
+                     claves: Iterable[str] | None = None,
+                     perfil: dict | None = None) -> dict:
     requeridos = requeridos or CAMPOS_REQUERIDOS_DEFAULT
     claves_contrato = tuple(dict.fromkeys(claves or CLAVES_PLANTILLA))
     todos = [*_evidencia_ruta(caso), *list(evidencias)]
@@ -1084,6 +1165,21 @@ def consolidar_caso(caso: dict, evidencias: Iterable[dict],
         if ruta:
             seguro = str(ruta[0]["valor_normalizado"])
             incompatibles = sorted(v for v in lectura_valores if v != seguro)
+            # P48 · la carpeta Y el pie de ≥2 vídeos dicen lo mismo; lo que discrepa es solo OCR
+            # genérico y con menos lecturas que las que apoyan a la carpeta → manda la carpeta,
+            # y las lecturas discrepantes quedan anotadas como alternativas.
+            apoyo = [i for i in por_valor.get(seguro, []) if i.get("fuente") != "ruta_carpeta"]
+            videos_apoyo = {str(i.get("imagen") or i.get("video") or id(i))
+                            for i in apoyo if i.get("fuente") == "barra_video"}
+            disidentes = [i for v in incompatibles for i in por_valor.get(v, [])]
+            if (incompatibles and len(videos_apoyo) >= 2 and len(disidentes) < len(apoyo)
+                    and all(i.get("fuente") == "ocr" for i in disidentes)):
+                campos[clave] = {"valor": seguro, "estado": "extraido_ruta",
+                                 "confianza": 1.0, "inferido": False,
+                                 "regla": "ruta_corroborada_por_video",
+                                 "alternativas_ocr": incompatibles,
+                                 "candidatos": items, "fuentes": [caso["ruta_relativa"]]}
+                continue
             if incompatibles:
                 conflictos.append(clave)
                 campos[clave] = {"valor": seguro, "valor_seguro_ruta": seguro,
@@ -1103,7 +1199,8 @@ def consolidar_caso(caso: dict, evidencias: Iterable[dict],
             estado = ("confirmado_multiples_imagenes" if len(imagenes) > 1 else
                       "extraido_manual" if "manual" in fuentes else
                       "extraido_video" if "video" in fuentes else
-                      "extraido_qr" if "qr" in fuentes else "extraido_ocr")
+                      "extraido_qr" if "qr" in fuentes else
+                      "extraido_tablero_p42" if "tablero_p42" in fuentes else "extraido_ocr")
             campos[clave] = {"valor": valor, "estado": estado,
                              "confianza": round(min(0.99, confianza_base + 0.03 * (len(imagenes) - 1)), 4),
                              "inferido": False, "candidatos": coincidencias, "fuentes": imagenes,
@@ -1123,6 +1220,40 @@ def consolidar_caso(caso: dict, evidencias: Iterable[dict],
                     campos[clave]["soporte"] = temporal.get("soporte")
                     campos[clave]["estado_consenso"] = temporal.get("estado_consenso")
                     campos[clave]["algoritmo_consenso"] = temporal.get("algoritmo_consenso")
+        elif (clave == "module_date" and len(por_valor) > 1
+              and len({v for v, xs in por_valor.items()
+                       if any(x.get("etiqueta") == "modulo" for x in xs)}) == 1
+              and all(any(x.get("etiqueta") == "modulo" for x in xs)
+                      or all(x.get("etiqueta") == "prototipo" for x in xs)
+                      for xs in por_valor.values())):
+            # P45 · REGLA DEL USUARIO (11/11/2026): la etiqueta del MÓDULO tiene prioridad sobre la
+            # de PROTOTYPES. Sólo si las lecturas del módulo son unánimes y lo que discrepa viene
+            # únicamente de etiquetas PROTOTYPES; la otra fecha queda anotada como alternativa.
+            valor = next(v for v, xs in por_valor.items()
+                         if any(x.get("etiqueta") == "modulo" for x in xs))
+            coincidencias = por_valor[valor]
+            imagenes = sorted({i.get("imagen") for i in coincidencias if i.get("imagen")})
+            campos[clave] = {"valor": valor, "estado": "prioridad_etiqueta_modulo",
+                             "confianza": max(float(i.get("confianza_ocr") or 0) for i in coincidencias),
+                             "inferido": False, "candidatos": coincidencias, "fuentes": imagenes,
+                             "fuente_preferida": "ocr", "regla": "etiqueta_modulo_sobre_prototipo",
+                             "alternativas_prototipo": sorted(v for v in por_valor if v != valor)}
+        elif (clave in {"module_part_number", "module_serial_number", "module_date", "inflator_supplier"}
+              and len({v for v, xs in por_valor.items()
+                       if any(x.get("fuente") == "etiqueta_modulo" for x in xs)}) == 1
+              and all(any(x.get("fuente") == "etiqueta_modulo" for x in xs)
+                      or all(x.get("fuente") == "ocr" for x in xs) for xs in por_valor.values())):
+            # P49 · el lector DEDICADO de la etiqueta del módulo manda sobre el OCR genérico
+            # («26J.880.204.J», «671 ZZ0539983E»…); lo genérico queda como alternativa.
+            valor = next(v for v, xs in por_valor.items()
+                         if any(x.get("fuente") == "etiqueta_modulo" for x in xs))
+            coincidencias = por_valor[valor]
+            campos[clave] = {"valor": valor, "estado": "lector_etiqueta_modulo",
+                             "confianza": max(float(i.get("confianza_ocr") or 0) for i in coincidencias),
+                             "inferido": False, "candidatos": coincidencias,
+                             "fuentes": sorted({i.get("imagen") for i in coincidencias if i.get("imagen")}),
+                             "fuente_preferida": "ocr", "regla": "lector_dedicado_sobre_ocr_generico",
+                             "alternativas_ocr": sorted(v for v in por_valor if v != valor)}
         elif len(por_valor) > 1:
             conflictos.append(clave)
             campos[clave] = {"valor": None, "estado": "conflicto",
@@ -1170,16 +1301,54 @@ def consolidar_caso(caso: dict, evidencias: Iterable[dict],
                                   "anio_fecha_prueba": fecha_iso.year,
                                   "observacion": "La semana/año EDAG no coincide con la fecha de prueba."}
             elif not campo_semana.get("valor") and campo_semana.get("estado") != "conflicto":
-                campos["week"] = {"valor": fecha_iso.week, "estado": "derivado",
-                                  "fuente": "test_date", "confianza":
-                                  campos["test_date"].get("confianza"), "inferido": False,
-                                  "requiere_revision": False}
+                # P43 · GUARDA EDAG. Antes se publicaba la semana ISO de CUALQUIER fecha de prueba
+                # («derivado», sin revisión), sin perfil EDAG y sin mirar el WW del número: con
+                # 512504 y fecha 2025-05-28 publicaba 22. Ahora sólo con perfil EDAG explícito,
+                # número WWYYNN válido y semana/año ISO de la fecha IGUALES a WW/YY.
+                es_edag, motivo_edag = _perfil_edag(perfil, campos)
+                numero = (campos.get("test_number") or {}).get("valor") or \
+                    (caso.get("metadata_ruta") or {}).get("test_number")
+                partes = _numero_wwyynn(numero)
+                fecha_segura = not campos["test_date"].get("requiere_revision")
+                contexto_semana = {"semana_fecha_prueba": fecha_iso.week,
+                                   "anio_fecha_prueba": fecha_iso.year}
+                if not es_edag and "week" not in campos:
+                    pass                      # el contrato no tiene semana: nada que anotar
+                elif not es_edag:
+                    campos["week"] = {**campo_semana, **contexto_semana, "valor": None,
+                                      "derivacion_semana": "no_aplicable",
+                                      "motivo": "la semana sólo se deriva con perfil EDAG "
+                                                "explícito (configuración o rótulo EDAG Testlab)"}
+                elif not partes or not fecha_segura:
+                    campos["week"] = {**campo_semana, **contexto_semana, "valor": None,
+                                      "derivacion_semana": "sin_corroboracion",
+                                      "requiere_revision": True,
+                                      "motivo": ("número de prueba sin forma WWYYNN válida"
+                                                 if not partes else
+                                                 "la fecha de prueba está pendiente de revisión")}
+                elif (partes[0], partes[1]) != (fecha_iso.week, fecha_iso.year):
+                    if "week" not in conflictos:
+                        conflictos.append("week")
+                    campos["week"] = {**campo_semana, **contexto_semana, "valor": None,
+                                      "estado": "conflicto", "requiere_revision": True,
+                                      "semana_numero": partes[0], "anio_numero": partes[1],
+                                      "derivacion_semana": "contradiccion",
+                                      "observacion": "La semana/año EDAG del número no coincide "
+                                                     "con la fecha de prueba."}
+                else:
+                    campos["week"] = {"valor": partes[0], "estado": "derivado_edag",
+                                      "fuente": "test_number+test_date",
+                                      "regla": "semana_edag_wwyynn_corroborada_por_fecha",
+                                      "perfil_edag": motivo_edag, **contexto_semana,
+                                      "confianza": campos["test_date"].get("confianza"),
+                                      "inferido": False, "requiere_revision": False}
         except ValueError:
             pass
 
     # P08: ningún valor se publica con menos respaldo del que exige su campo, y todo
     # valor rechazado por forma queda anotado (aunque el campo acabe vacío).
     a_confirmar: list[str] = []
+    no_rescatar: set[str] = set()
     for clave, campo in campos.items():
         if rechazos.get(clave):
             campo["rechazados"] = rechazos[clave]
@@ -1197,6 +1366,21 @@ def consolidar_caso(caso: dict, evidencias: Iterable[dict],
         if humano:
             continue
         fuentes = campo.get("fuentes") or [i.get("imagen") for i in campo.get("candidatos") or []]
+        if (clave == "module_date" and len({str(f) for f in fuentes if f}) < 2
+                and not any(c.get("etiqueta") == "modulo"
+                            or re.fullmatch(r"\s*\d{1,2}\.\d{1,2}\.\d{2}\s*", str(c.get("valor_original") or ""))
+                            for c in campo.get("candidatos") or [])):
+            # P48 · medido el 12/11: «11/04/2025» leído en UNA foto (formato distinto al de la
+            # etiqueta del módulo, «10.04.25») se publicó y era otra etiqueta. Con una sola foto,
+            # la fecha solo se publica si viene de la etiqueta del módulo (marcas del módulo o el
+            # formato de su fecha, dd.mm.aa); si no, va a dudas.
+            campo.update(valor_propuesto=valor, valor=None, estado="pendiente_corroboracion",
+                         requiere_revision=True, decision_v15_10="PROPUESTA",
+                         motivo=(f"«{valor}» sale de una sola foto y no de la etiqueta del "
+                                 "módulo: se confirma en el formulario de dudas"))
+            a_confirmar.append(clave)
+            no_rescatar.add(clave)          # el consenso ponderado no la vuelve a publicar
+            continue
         if not corroborado(clave, fuentes):
             campo.update(valor_propuesto=valor, valor=None, estado="pendiente_corroboracion",
                          requiere_revision=True, decision_v15_10="PROPUESTA",
@@ -1219,6 +1403,20 @@ def consolidar_caso(caso: dict, evidencias: Iterable[dict],
                 or campo.get("fuente_preferida") == "manual" \
                 or campo.get("estado") in {"extraido_manual", "inferido_regla_confirmada"}:
             continue
+        # P49 · el nivel del TABLERO sí se publica cuando el lector P42 llegó a consenso: dos
+        # fotos distintas del sticker dicen lo mismo. Medido el 12/11: 13 de 13 lecturas «03S»
+        # iguales al libro. (La medición P09 que bloqueó los niveles era del MÓDULO, leído del
+        # «ZRZ 02S» equivocado.)
+        if clave == "dashboard_engineering_level":
+            consenso = {str(c.get("imagen")) for c in campo.get("candidatos") or []
+                        if c.get("fuente") == "tablero_p42" and c.get("estado_p42") == "consenso"
+                        and str(c.get("valor_normalizado")) == str(valor)}
+            otros = {str(c.get("valor_normalizado")) for c in campo.get("candidatos") or []
+                     if c.get("valor_normalizado") not in (None, "")}
+            if len(consenso) >= 2 and otros == {str(valor)}:
+                campo.update(estado="consenso_tablero_p42", regla="nivel_tablero_consenso_dos_fotos",
+                             requiere_revision=False)
+                continue
         campo["opciones_consenso"] = consensuar(clave, evidencias_por_clave.get(clave, []))["opciones"]
         campo.update(valor_propuesto=valor, valor=None, estado="solo_lecturas_automaticas",
                      requiere_revision=True, decision_v15_10="PROPUESTA",
@@ -1233,7 +1431,7 @@ def consolidar_caso(caso: dict, evidencias: Iterable[dict],
     for evidencia in todos:
         if evidencia.get("clave") in claves_contrato and evidencia.get("valor_normalizado") not in (None, ""):
             evidencias_por_clave[evidencia["clave"]].append(evidencia)
-    for clave in rescatar(campos, evidencias_por_clave, excluir=set(conflictos)):
+    for clave in rescatar(campos, evidencias_por_clave, excluir=set(conflictos) | no_rescatar):
         if clave not in a_confirmar:
             a_confirmar.remove(clave) if clave in a_confirmar else None
     campos_a_consulta = [k for k, v in campos.items()

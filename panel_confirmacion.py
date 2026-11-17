@@ -41,6 +41,167 @@ def inicio():
     return HTMLResponse(PAGINA)
 
 
+# P48 · fotos de la evidencia. Solo se sirven las rutas que ya están en las dudas (lista
+# cerrada por token): el panel no puede leer ningún otro archivo de la computadora.
+FOTOS: dict[str, dict] = {}
+_CACHE_FOTOS: dict[tuple, bytes] = {}
+
+
+def _token(*partes) -> str:
+    import hashlib
+    return hashlib.sha1("|".join(str(p) for p in partes).encode("utf-8")).hexdigest()[:16]
+
+
+def _para_cliente(dudas: list[dict]) -> list[dict]:
+    """Copia de las dudas con la evidencia convertida en tokens (sin rutas de disco)."""
+    salida = []
+    for duda in dudas:
+        opciones = []
+        for opcion in duda.get("opciones") or []:
+            fotos = []
+            for ev in opcion.get("evidencia") or []:
+                dato = {"foto": ev.get("foto", ""), "fuente": ev.get("fuente", ""),
+                        "texto": ev.get("texto", ""), "con_caja": bool(ev.get("caja"))}
+                if ev.get("ruta") and Path(ev["ruta"]).is_file():
+                    dato["token"] = _token(ev["ruta"], ev.get("caja"), ev.get("giro"))
+                    FOTOS[dato["token"]] = {"ruta": ev["ruta"], "caja": ev.get("caja"),
+                                            "giro": ev.get("giro") or 0}
+                if ev.get("recorte") and Path(ev["recorte"]).is_file():
+                    dato["token_recorte"] = _token(ev["recorte"])
+                    FOTOS[dato["token_recorte"]] = {"ruta": ev["recorte"], "caja": None, "giro": 0}
+                fotos.append(dato)
+            opciones.append({**{k: v for k, v in opcion.items() if k != "evidencia"}, "fotos": fotos})
+        salida.append({**duda, "opciones": opciones})
+    return salida
+
+
+def _dibujar(dato: dict, tam: str) -> bytes:
+    import cv2
+    import numpy as np
+    imagen = cv2.imdecode(np.fromfile(dato["ruta"], dtype=np.uint8), cv2.IMREAD_COLOR)
+    if imagen is None:
+        raise HTTPException(415, "no se pudo abrir la imagen")
+    if dato.get("giro"):
+        from ocr_engine import rotar_imagen_libre       # mismo giro que usó el OCR
+        imagen = rotar_imagen_libre(imagen, float(dato["giro"]))
+    alto, ancho = imagen.shape[:2]
+    caja = [int(v) for v in dato["caja"]] if dato.get("caja") else None
+    if caja and (caja[0] >= ancho or caja[1] >= alto or caja[0] + caja[2] <= 0 or caja[1] + caja[3] <= 0):
+        caja = None                                     # la caja no cae en esta foto: sin recuadro
+    x0, y0 = 0, 0
+    if caja and tam == "mini":                          # la miniatura enfoca el área leída
+        x, y, w, h = caja
+        cx, cy = x + w / 2, y + h / 2
+        lado = max(w, h) * 1.6 + 60
+        x0, y0 = int(max(0, cx - lado)), int(max(0, cy - lado * 0.75))
+        x1, y1 = int(min(ancho, cx + lado)), int(min(alto, cy + lado * 0.75))
+        if x1 > x0 and y1 > y0:
+            imagen = imagen[y0:y1, x0:x1]
+        else:
+            x0, y0 = 0, 0
+    limite = 1600 if tam == "grande" else 260
+    factor = min(1.0, limite / max(imagen.shape[:2]))
+    if factor < 1:
+        imagen = cv2.resize(imagen, None, fx=factor, fy=factor, interpolation=cv2.INTER_AREA)
+    if caja:                                            # el recuadro se dibuja ya a escala
+        x, y, w, h = caja
+        grosor = 2 if tam == "mini" else 3
+        m = 3 + grosor
+        p0 = (int((x - x0) * factor) - m, int((y - y0) * factor) - m)
+        p1 = (int((x - x0 + w) * factor) + m, int((y - y0 + h) * factor) + m)
+        cv2.rectangle(imagen, p0, p1, (0, 140, 255), grosor)
+    ok, datos = cv2.imencode(".jpg", imagen, [cv2.IMWRITE_JPEG_QUALITY, 88])
+    if not ok:
+        raise HTTPException(500, "no se pudo preparar la imagen")
+    return datos.tobytes()
+
+
+@app.get("/api/foto/{token}")
+def api_foto(token: str, tam: str = "mini"):
+    from fastapi.responses import Response
+    dato = FOTOS.get(token)
+    if dato is None:
+        raise HTTPException(404, "foto no disponible")
+    clave = (token, tam)
+    if clave not in _CACHE_FOTOS:
+        if len(_CACHE_FOTOS) > 400:
+            _CACHE_FOTOS.clear()
+        _CACHE_FOTOS[clave] = _dibujar(dato, "grande" if tam == "grande" else "mini")
+    return Response(_CACHE_FOTOS[clave], media_type="image/jpeg",
+                    headers={"Cache-Control": "private, max-age=3600"})
+
+
+class Lote(BaseModel):
+    ids: list[str]
+
+
+@app.post("/api/decidir_lote")
+def api_decidir_lote(lote: Lote):
+    """P49 · «usar la recomendada» en varias dudas a la vez (p. ej. el motivo en los 10 casos)."""
+    if ESTADO is None:
+        raise HTTPException(503, "panel sin libro cargado")
+    hechas = []
+    for id_duda in lote.ids:
+        duda = ESTADO.por_id.get(id_duda)
+        recomendada = (duda or {}).get("opcion_recomendada")
+        if duda is None or recomendada in (None, ""):
+            continue
+        hechas.append(ESTADO.decidir(id_duda, recomendada))
+    return {"decididas": len(hechas)}
+
+
+class Decision(BaseModel):
+    id: str
+    valor: str
+
+
+class Varias(BaseModel):
+    decisiones: list[Decision]
+
+
+@app.post("/api/decidir_varias")
+def api_decidir_varias(varias: Varias):
+    """P52 · varias dudas, cada una con SU valor (p. ej. la serie verificada de cada tablero).
+
+    Solo se acepta un valor que sea una de las opciones de esa duda: el panel no inventa."""
+    if ESTADO is None:
+        raise HTTPException(503, "panel sin libro cargado")
+    hechas = 0
+    for d in varias.decisiones:
+        duda = ESTADO.por_id.get(d.id)
+        if duda is None or d.valor not in {str(o.get("valor")) for o in duda.get("opciones") or []}:
+            continue
+        ESTADO.decidir(d.id, d.valor)
+        hechas += 1
+    return {"decididas": hechas}
+
+
+class Revision(BaseModel):
+    campo: str
+    valor: str
+
+
+@app.post("/api/revisar")
+def api_revisar(revision: Revision):
+    """P48 · «otro valor»: se comprueba la forma del campo; si no cuadra se avisa, no se bloquea."""
+    from datetime import datetime
+
+    from utilidades.validacion_formas import revisar_forma
+    texto = revision.valor.strip()
+    if revision.campo.endswith("date"):                 # fechas: se aceptan las formas del libro
+        for formato in ("%Y-%m-%d", "%d.%m.%y", "%d.%m.%Y", "%d/%m/%Y", "%d/%m/%y", "%d-%m-%Y"):
+            try:
+                return {"valido": True, "motivo": "",
+                        "valor": datetime.strptime(texto, formato).strftime("%Y-%m-%d")}
+            except ValueError:
+                continue
+        return {"valido": False, "motivo": "no se reconoce como fecha (ej. 2025-04-10 o 10.04.25)",
+                "valor": texto}
+    resultado = revisar_forma(revision.campo, texto)
+    return {"valido": bool(resultado.get("valido")), "motivo": resultado.get("motivo") or "",
+            "valor": resultado.get("valor") or texto}
+
+
 @app.get("/api/estado")
 def api_estado():
     if ESTADO is None:
@@ -58,7 +219,7 @@ def api_estado():
 def api_dudas():
     if ESTADO is None:
         raise HTTPException(503, "panel sin libro cargado")
-    return {"dudas": ESTADO.dudas, "decisiones": ESTADO.decisiones,
+    return {"dudas": _para_cliente(ESTADO.dudas), "decisiones": ESTADO.decisiones,
             "resumen": resumen_dudas(ESTADO.dudas)}
 
 
@@ -147,6 +308,40 @@ PAGINA = """<!doctype html>
  #aviso{font-size:13px;color:var(--ok)}
  .vacio{background:#fff;border:1px dashed var(--linea);border-radius:12px;padding:26px;
         text-align:center;color:var(--gris)}
+ .pieza{font-size:12.5px;color:var(--gris);margin:2px 0 6px}
+ .lotes{background:#fff;border:1px solid var(--linea);border-radius:12px;padding:10px 14px;margin-bottom:14px}
+ .lotes h3{font-size:13px;margin:0 0 6px;color:var(--gris);font-weight:600}
+ .lote{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:5px 0;
+       border-top:1px solid #eef1f4;font-size:13px}
+ .lote:first-of-type{border-top:0}
+ .lote b{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px}
+ .lote button{font:inherit;font-size:12px;border:1px solid var(--acento);color:var(--acento);background:#fff;
+              border-radius:7px;padding:3px 10px;cursor:pointer;white-space:nowrap}
+ .reco{font-size:11px;color:var(--ok);font-weight:600;margin-left:auto;white-space:nowrap}
+ .pieza b{color:var(--tinta);font-weight:600}
+ .opw{display:flex;gap:8px;align-items:stretch}
+ .opw .op{flex:1}
+ .minis{display:flex;gap:5px;align-items:center}
+ .minis img{height:56px;width:auto;max-width:96px;object-fit:cover;border-radius:6px;
+            border:1px solid var(--linea);cursor:zoom-in;background:#eef2f6}
+ .minis img:hover{border-color:#b9c9d8}
+ .minis .sinfoto{font-size:11px;color:#9aa7b3;padding:0 4px;white-space:nowrap}
+ .otro{margin-top:6px;text-align:right}
+ .otro a{font-size:12px;color:#8a97a3;cursor:pointer;text-decoration:none;border-bottom:1px dotted #c3ccd4}
+ .otro a:hover{color:var(--acento);border-color:var(--acento)}
+ .otro form{display:inline-flex;gap:6px;align-items:center}
+ .otro form[hidden],.otro a[hidden]{display:none}
+ .otro input{font:inherit;font-size:13px;border:1px solid var(--linea);border-radius:7px;padding:4px 8px;
+             width:210px;background:#fbfcfd}
+ .otro input:focus{outline:none;border-color:#9fb6cc;background:#fff}
+ .otro button{font:inherit;font-size:12px;border:1px solid var(--linea);background:#fff;border-radius:7px;
+              padding:4px 10px;color:var(--gris);cursor:pointer}
+ .otro .forma{display:block;font-size:11.5px;color:var(--alerta);margin-top:3px}
+ .propio{font-size:12.5px;color:var(--acento);margin-top:6px}
+ #visor{position:fixed;inset:0;background:rgba(10,18,26,.82);display:none;align-items:center;
+        justify-content:center;flex-direction:column;z-index:20;cursor:zoom-out;padding:18px}
+ #visor img{max-width:96vw;max-height:84vh;border-radius:8px;background:#fff}
+ #visor .pie{color:#dfe7ee;font-size:13px;margin-top:10px;text-align:center;max-width:90vw}
 </style></head><body>
 <header>
   <h1>Panel de dudas</h1>
@@ -154,8 +349,10 @@ PAGINA = """<!doctype html>
 </header>
 <main>
   <div class="barra" id="filtros"></div>
+  <div id="lotes"></div>
   <div id="lista"></div>
 </main>
+<div id="visor"><img id="visor-img" alt=""><div class="pie" id="visor-pie"></div></div>
 <footer>
   <span id="aviso">Nada elegido todavía.</span>
   <span>
@@ -165,20 +362,65 @@ PAGINA = """<!doctype html>
 </footer>
 <script>
 let DATOS = {dudas: [], decisiones: {}, resumen: {}};
-let filtro = 'todos';
+let filtro = 'con';
+
+function conPropuesta(d) { return d.opciones.some(o => o.valor !== null); }
 
 function pintarFiltros() {
+  const con = DATOS.dudas.filter(conPropuesta).length, sin = DATOS.dudas.length - con;
   const c = DATOS.resumen.por_motivo || {};
-  const chips = [['todos', `Todas (${DATOS.resumen.dudas ?? 0})`],
+  const chips = [['con', `Con propuesta (${con})`],
     ['fuentes_en_conflicto', `Fuentes en conflicto (${c.fuentes_en_conflicto || 0})`],
-    ['sin_lectura_valida', `Sin lectura (${c.sin_lectura_valida || 0})`]];
+    ['sin', `Sin propuesta (${sin})`], ['todos', `Todas (${DATOS.dudas.length})`]];
   document.getElementById('filtros').innerHTML = chips.map(([k, t]) =>
     `<button class="chip ${filtro === k ? 'on' : ''}" data-f="${k}">${t}</button>`).join('');
   document.querySelectorAll('.chip').forEach(b => b.onclick = () => { filtro = b.dataset.f; pintarFiltros(); pintarLista(); });
+  pintarLotes();
+}
+
+function pintarLotes() {
+  // P49 · una fila por campo con la misma recomendación en varios casos: se acepta de una vez
+  const grupos = {};
+  DATOS.dudas.filter(conPropuesta).forEach(d => {
+    if (DATOS.decisiones[d.id]) return;
+    const reco = d.opciones.find(o => o.valor !== null);
+    const k = d.campo + '||' + reco.valor;
+    (grupos[k] = grupos[k] || {campo: d.campo, pieza: d.pieza, valor: reco.valor, fuente: reco.fuente, ids: []}).ids.push(d.id);
+  });
+  const filas = Object.values(grupos).filter(g => g.ids.length >= 2).sort((a, b) => b.ids.length - a.ids.length);
+  // P52 · series verificadas por dígito de control: cada caso con SU serie, una decisión para todas
+  const verif = {completa: [], sin: []};
+  DATOS.dudas.forEach(d => {
+    if (DATOS.decisiones[d.id]) return;
+    const c = d.opciones.find(o => o.fuente === 'serie_verificada' || (o.fuentes || []).includes('serie_verificada'));
+    const b = d.opciones.find(o => o.fuente === 'serie_verificada_sin_control' || (o.fuentes || []).includes('serie_verificada_sin_control'));
+    if (c) verif.completa.push({id: d.id, valor: String(c.valor)});
+    if (b) verif.sin.push({id: d.id, valor: String(b.valor)});
+  });
+  const htmlVerif = verif.completa.length ? `<div class="lote"><span>Serie del tablero verificada por dígito de control
+      <span class="resp">· ${verif.completa.length} casos (cada uno con su serie)</span></span>
+      <button id="verifCompleta">Completa</button> <button id="verifSin">Sin dígito de control</button></div>` : '';
+  document.getElementById('lotes').innerHTML = (filas.length || htmlVerif) ? `<div class="lotes"><h3>Aceptar de una vez (la opción recomendada es la misma en varios casos)</h3>${htmlVerif}${
+    filas.map((g, i) => `<div class="lote"><span>${esc(g.pieza || g.campo)} · <b>${esc(g.valor)}</b>
+      <span class="resp">(${g.fuente.replace(/_/g, ' ')}) · ${g.ids.length} casos</span></span>
+      <button data-i="${i}">Usar en los ${g.ids.length}</button></div>`).join('')}</div>` : '';
+  const enviar = async lista => { await fetch('/api/decidir_varias', {method: 'POST',
+      headers: {'Content-Type': 'application/json'}, body: JSON.stringify({decisiones: lista})}); await cargar(); };
+  if (htmlVerif) {
+    document.getElementById('verifCompleta').onclick = () => enviar(verif.completa);
+    document.getElementById('verifSin').onclick = () => enviar(verif.sin);
+  }
+  document.querySelectorAll('.lote button[data-i]').forEach(b => b.onclick = async () => {
+    await fetch('/api/decidir_lote', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ids: filas[+b.dataset.i].ids})});
+    await cargar();
+  });
 }
 
 function pintarLista() {
-  const dudas = DATOS.dudas.filter(d => filtro === 'todos' || d.motivo === filtro);
+  const dudas = DATOS.dudas.filter(d => filtro === 'todos' || (filtro === 'con' ? conPropuesta(d)
+      : filtro === 'sin' ? !conPropuesta(d) : d.motivo === filtro))
+    .sort((a, b) => (a.campo + a.caso).localeCompare(b.campo + b.caso));
   if (!dudas.length) {
     document.getElementById('lista').innerHTML = '<div class="vacio">No hay dudas pendientes. Todo lo que el programa pudo leer está en el libro.</div>';
     return;
@@ -188,12 +430,19 @@ function pintarLista() {
     const opciones = d.opciones.map((o, i) => {
       const valor = o.valor === null ? 'No lo tengo' : o.valor;
       const marcada = sel && String(sel.valor) === String(o.valor);
-      return `<button class="op ${marcada ? 'sel' : ''}" data-id="${d.id}" data-val="${o.valor === null ? '' : o.valor}">
-        <span class="val">${valor}</span>
+      return `<div class="opw"><button class="op ${marcada ? 'sel' : ''}" data-id="${d.id}" data-val="${o.valor === null ? '' : esc(o.valor)}">
+        <span class="val">${esc(valor)}</span>
         <span class="fuente ${o.fuente}">${o.fuente.replace(/_/g, ' ')}</span>
-        <span class="resp">${o.respaldo}${o.confianza ? ' · confianza ' + o.confianza : ''}</span>
-      </button>`;
+        <span class="resp">${esc(o.respaldo)}${o.confianza ? ' · confianza ' + o.confianza : ''}</span>
+        ${o.valor !== null && o.valor === (d.opciones.find(x => x.valor !== null) || {}).valor ? '<span class="reco">★ recomendada</span>' : ''}
+      </button>${miniaturas(o, d)}</div>`;
     }).join('');
+    const propio = sel && !d.opciones.some(o => String(o.valor) === String(sel.valor))
+      ? `<div class="propio">Elegiste un valor escrito por ti: <b>${esc(sel.valor)}</b></div>` : '';
+    const otro = `<div class="otro" data-id="${d.id}" data-campo="${d.campo}">
+        <a class="otro-link">+ otro valor</a>
+        <form hidden><input placeholder="escribe el valor correcto" autocomplete="off">
+          <button type="submit">Usar</button></form><span class="forma"></span></div>`;
     const descartadas = (d.opciones_descartadas || []).length
       ? `<div class="detalle">Descartado por la serie: ${d.opciones_descartadas.map(o => o.valor).join(', ')}</div>` : '';
     const donde = (d.donde_mirar || []).length
@@ -202,12 +451,64 @@ function pintarLista() {
       <h2><span class="caso">${d.caso}</span><span class="campo">${d.campo}</span>
         ${d.columna ? `<span class="resp"> · columna ${d.columna}</span>` : ''}
         <span class="motivo ${d.motivo === 'fuentes_en_conflicto' ? 'm-conflicto' : 'm-sin'}">${d.motivo.replace(/_/g, ' ')}</span></h2>
+      ${d.pieza ? `<div class="pieza">Pieza: <b>${esc(d.pieza)}</b></div>` : ''}
       <div class="detalle">${d.detalle}</div>
       ${donde}${descartadas}
-      <div class="ops">${opciones}</div>
+      <div class="ops">${opciones}</div>${propio}${otro}
     </section>`;
   }).join('');
   document.querySelectorAll('.op').forEach(b => b.onclick = () => decidir(b.dataset.id, b.dataset.val));
+  document.querySelectorAll('.minis img').forEach(i => i.onclick = () => abrirVisor(i));
+  document.querySelectorAll('.otro').forEach(prepararOtro);
+}
+
+function esc(t) {
+  return String(t ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function miniaturas(o, d) {
+  if (o.valor === null) return '';
+  const fotos = (o.fotos || []).slice(0, 3);
+  if (!fotos.length) return '';
+  return `<div class="minis">${fotos.map(f => {
+    const tok = f.token_recorte || f.token;
+    if (!tok) return `<span class="sinfoto" title="${esc(f.foto)}">${esc(f.fuente)}</span>`;
+    const pie = `${d.pieza ? d.pieza + ' · ' : ''}${f.foto} · ${f.fuente}${f.texto ? ' · leído: «' + f.texto + '»' : ''}${f.con_caja ? '' : ' · (sin recuadro: no se encontró la posición exacta)'}`;
+    return `<img loading="lazy" src="/api/foto/${tok}?tam=mini" data-grande="${f.token || tok}" data-pie="${esc(pie)}" alt="${esc(f.foto)}" title="${esc(f.foto)}">`;
+  }).join('')}</div>`;
+}
+
+function abrirVisor(img) {
+  document.getElementById('visor-img').src = `/api/foto/${img.dataset.grande}?tam=grande`;
+  document.getElementById('visor-pie').textContent = img.dataset.pie;
+  document.getElementById('visor').style.display = 'flex';
+}
+document.getElementById('visor').onclick = () => { document.getElementById('visor').style.display = 'none'; };
+document.addEventListener('keydown', e => { if (e.key === 'Escape') document.getElementById('visor').style.display = 'none'; });
+
+function prepararOtro(caja) {
+  const enlace = caja.querySelector('.otro-link'), form = caja.querySelector('form');
+  const entrada = form.querySelector('input'), aviso = caja.querySelector('.forma');
+  let confirmado = null;
+  enlace.onclick = () => { enlace.hidden = true; form.hidden = false; entrada.focus(); };
+  entrada.oninput = () => { confirmado = null; aviso.textContent = ''; form.querySelector('button').textContent = 'Usar'; };
+  form.onsubmit = async ev => {
+    ev.preventDefault();
+    const valor = entrada.value.trim();
+    if (!valor) return;
+    if (confirmado !== valor) {
+      const r = await (await fetch('/api/revisar', {method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({campo: caja.dataset.campo, valor})})).json();
+      if (r.valido) { await decidir(caja.dataset.id, r.valor); return; }
+      if (!r.valido) {
+        aviso.textContent = `No tiene la forma habitual de este campo${r.motivo ? ' (' + r.motivo + ')' : ''}. Pulsa otra vez para usarlo igual.`;
+        form.querySelector('button').textContent = 'Usar igual';
+        confirmado = valor;
+        return;
+      }
+    }
+    await decidir(caja.dataset.id, valor);
+  };
 }
 
 async function decidir(id, valor) {
@@ -248,6 +549,8 @@ def main() -> None:
     ap.add_argument("--libro", required=True, help="libro .xlsx de trabajo")
     ap.add_argument("--lecturas", help="JSON con las lecturas por caso")
     ap.add_argument("--base", help="aprendizaje.sqlite3 de donde sacar las lecturas")
+    ap.add_argument("--validacion", help="P45 · JSON de validación de la corrida (tablero P42, "
+                    "lecturas OCR, variantes de la serie y vocabulario del libro histórico)")
     ap.add_argument("--hoja", default=None)
     ap.add_argument("--mapa", help="JSON {caso: fila} para filas sin número legible")
     ap.add_argument("--puerto", type=int, default=8099)
@@ -259,6 +562,17 @@ def main() -> None:
     lecturas: dict = {}
     if args.lecturas:
         lecturas = json.loads(Path(args.lecturas).read_text(encoding="utf-8"))
+    elif args.validacion:
+        from configuracion import RAIZ_PROYECTO, cargar_config
+        from utilidades.dudas_y_opciones import lecturas_desde_validacion
+        from utilidades.vocabulario_libro import rutas_configuradas, vocabulario
+        config = cargar_config()
+        lecturas, ambiguos = lecturas_desde_validacion(
+            json.loads(Path(args.validacion).read_text(encoding="utf-8")),
+            vocabulario(rutas_configuradas(config, RAIZ_PROYECTO)))
+        if ambiguos:
+            print("AVISO · números repetidos en varias etapas (no se ofrecen sus lecturas): "
+                  + ", ".join(ambiguos))
     elif args.base:
         from openpyxl import load_workbook
         wb = load_workbook(libro, data_only=True)
@@ -272,7 +586,8 @@ def main() -> None:
     import uvicorn
     print(f"Panel de dudas · libro: {libro} · {len(ESTADO.filas)} casos · "
           f"{len(ESTADO.dudas)} dudas · http://127.0.0.1:{args.puerto}")
-    uvicorn.run(app, host="0.0.0.0", port=args.puerto, log_level="warning")
+    # P48 · solo esta computadora: el panel ahora muestra fotos del cliente
+    uvicorn.run(app, host="127.0.0.1", port=args.puerto, log_level="warning")
 
 
 if __name__ == "__main__":

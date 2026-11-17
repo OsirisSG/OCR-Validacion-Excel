@@ -35,6 +35,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 import cv2
+import numpy as np
 
 from utilidades import codigos_modulo as CM
 from utilidades import tablero_campos as T
@@ -59,7 +60,13 @@ def fotos_de_caso(carpeta: Path) -> list[Path]:
 
 
 def _leer(pista_ruta: Path, lado: int) -> object:
-    imagen = cv2.imread(str(pista_ruta))
+    # P43 · `np.fromfile` + `imdecode` en vez de `cv2.imread`: en Windows `imread` no abre rutas
+    # con caracteres no ASCII y devolvía None en silencio (la foto «desaparecía» del recuento).
+    try:
+        datos = np.fromfile(str(pista_ruta), dtype=np.uint8)
+    except OSError:
+        return None
+    imagen = cv2.imdecode(datos, cv2.IMREAD_COLOR) if datos.size else None
     if imagen is None:
         return None
     alto, ancho = imagen.shape[:2]
@@ -69,23 +76,14 @@ def _leer(pista_ruta: Path, lado: int) -> object:
     return imagen
 
 
-def lista_de_candidatas(carpeta: Path, cupos: dict | None = None) -> dict:
-    """Paso 1: qué fotos pueden tener algo del tablero, con cupo por tipo."""
-    cupos = cupos or CUPOS
-    candidatas = []
-    revisadas = 0
-    for ruta in fotos_de_caso(carpeta):
-        imagen = _leer(ruta, 1000)
-        if imagen is None:
-            continue
-        revisadas += 1
-        pista = T.pista_de_tablero(imagen)
-        del imagen
-        if revisadas % 25 == 0:
-            gc.collect()
-        if pista["algo"]:
-            candidatas.append({"ruta": str(ruta), "pista": pista})
+def elegir_candidatas(candidatas: list[dict], cupos: dict | None = None) -> list[dict]:
+    """Qué fotos con pista se leen con OCR, con cupo por tipo. Pura.
 
+    P43 · extraída de `lista_de_candidatas` sin cambiar la regla, para que el flujo normal
+    (`tablero_integracion`) elija igual que la herramienta P42. Cada candidata es
+    `{"ruta": …, "pista": …}`; se devuelve en el orden de lectura y sin repetir ruta.
+    """
+    cupos = cupos or CUPOS
     elegidas: list[dict] = []
     vistos: set[str] = set()
     for tipo, cupo in cupos.items():
@@ -115,8 +113,42 @@ def lista_de_candidatas(carpeta: Path, cupos: dict | None = None) -> dict:
                 continue
             vistos.add(candidata["ruta"])
             elegidas.append(candidata)
+    return elegidas
+
+
+def lista_de_candidatas(carpeta: Path, cupos: dict | None = None) -> dict:
+    """Paso 1: qué fotos pueden tener algo del tablero, con cupo por tipo."""
+    cupos = cupos or CUPOS
+    candidatas = []
+    revisadas = 0
+    for ruta in fotos_de_caso(carpeta):
+        imagen = _leer(ruta, 1000)
+        if imagen is None:
+            continue
+        revisadas += 1
+        pista = T.pista_de_tablero(imagen)
+        del imagen
+        if revisadas % 25 == 0:
+            gc.collect()
+        if pista["algo"]:
+            candidatas.append({"ruta": str(ruta), "pista": pista})
+
+    elegidas = elegir_candidatas(candidatas, cupos)
     return {"caso": carpeta.name, "caso_numero": carpeta.name.split()[0],
             "fotos": revisadas, "con_pista": len(candidatas), "elegidas": elegidas}
+
+
+def relativa_al_caso(ruta: Path, nombre_caso: str) -> str:
+    """Ruta de la foto relativa a la carpeta del caso (`nach/img_4408.jpg`). Pura.
+
+    P43 · las lecturas guardaban sólo `foto` y `carpeta` (nombre del padre); con eso no se
+    distinguían dos fotos del mismo nombre en subcarpetas distintas.
+    """
+    partes = list(Path(ruta).parts)
+    if nombre_caso in partes:
+        indice = len(partes) - 1 - partes[::-1].index(nombre_caso)
+        return Path(*partes[indice + 1:]).as_posix().lower()
+    return Path(ruta).name.lower()
 
 
 def leer_tramo(caso: dict, desde: int, hasta: int, parcial: Path, catalogo, salida: Path) -> int:
@@ -136,10 +168,14 @@ def leer_tramo(caso: dict, desde: int, hasta: int, parcial: Path, catalogo, sali
             continue
         campos = T.leer_foto_de_tablero(imagen, motor, catalogo, pista=candidata["pista"])
         ruta = Path(candidata["ruta"])
+        relativa = relativa_al_caso(ruta, caso["caso"])
+        # P43 · examinada aunque no dé ningún campo: «mirada» no es «produjo una lectura»
+        if relativa not in registro.setdefault("examinadas", []):
+            registro["examinadas"].append(relativa)
         for campo, dato in campos.items():
             registro["lecturas"].setdefault(campo, []).append({
                 "valor": dato.get("valor"), "confianza": round(float(dato.get("confianza") or 0), 3),
-                "foto": ruta.name, "carpeta": ruta.parent.name,
+                "foto": ruta.name, "carpeta": ruta.parent.name, "ruta_relativa": relativa,
                 "origen": str(dato.get("origen", ""))[:60],
                 # P40: de qué ancla sale (la fecha de la pestaña azul vale más) y si es un descarte
                 "ancla": str(dato.get("ancla", "") or ""), "descartada": bool(dato.get("descartada")),
@@ -401,6 +437,98 @@ def fundir_caso(anterior: dict, nuevo: dict, campos_cerrados) -> dict:
     return salida
 
 
+def cerrar_registro(registro: dict, clave: str, salida: Path | None = None) -> tuple[dict, list]:
+    """Consenso de UN caso a partir de sus lecturas acumuladas. Sin E/S salvo buscar capturas.
+
+    P43 · extraída de `cerrar` sin cambiar ninguna regla P42 (`filtrar_fechas`, `_solo_clase`,
+    regla de la foto única del sticker, `consensuar_completo`, `motivos_de_duda`). Devuelve
+    `(resultado, campos_cerrados)`; NO funde con ningún JSON anterior: eso lo decide quien llama.
+    """
+    resultado = {"caso": registro.get("caso", ""), "caso_numero": clave,
+                 "fotos": registro.get("fotos", 0),
+                 "fotos_con_pista": registro.get("con_pista", 0)}
+    cerrados = []
+    for campo in CAMPOS:
+        lecturas = (registro.get("lecturas") or {}).get(campo) or []
+        descartadas = 0
+        if campo == "dashboard_date":
+            lecturas, descartadas = filtrar_fechas(lecturas)
+            if descartadas and not lecturas:
+                # sólo había fechas del DataMatrix del módulo: el campo se CIERRA vacío y en
+                # duda (si no se cerrara, `fundir_caso` conservaría la fecha mala de antes)
+                cerrados.append(campo)
+                resultado[campo] = None
+                resultado.setdefault("dudoso", {})[campo] = True
+                resultado.setdefault("por_que_dudoso", {})[campo] = (
+                    f"{descartadas} lectura(s) de fecha descartadas: venían del DataMatrix del "
+                    f"módulo, no del sticker de la fecha")
+                continue
+        if campo == "dashboard_part_number":
+            # las lecturas de `grabado_banda_*` son del número impreso en la etiqueta del
+            # **módulo** (`2GJ.880.204.J`): para el número moldeado del tablero no valen
+            lecturas = [l for l in lecturas
+                        if not str(l.get("origen", "")).startswith("grabado_banda")]
+        # P42 · revisión de Astra (F6): el voto por posiciones fabrica valores (`R6E` + `R6E1`
+        # → un valor que nadie leyó; `11/04` + `06/05` + `17/05` → `11/05`). Se vota **por
+        # valor completo** en todos los campos, no sólo en la fecha.
+        if campo == "dashboard_date":
+            del_tablero = _solo_clase(lecturas)
+            if len(del_tablero) == 1 and str(del_tablero[0].get("clase") or "") == "tablero":
+                # REGLA DEL USUARIO (2026-10-29): si en el caso hay **una sola** foto del
+                # sticker del tablero, esa lectura basta. Hay muchas fechas en un caso
+                # (proveedor, módulo, tablero) y no significan lo mismo; cuando la del
+                # tablero es única no hay con qué contradecirla, y su firma —hora + N/P—
+                # no la produce ninguna de las otras. Si hubiera dos o más, votan entre
+                # ellas: ahí sí hay algo que decidir.
+                consenso = {"valor": del_tablero[0]["valor"], "votos": 1,
+                            "dudoso": False, "posiciones_dudosas": [],
+                            "reparto": {del_tablero[0]["valor"]: 1},
+                            "descartadas_por_largo": 0,
+                            "exenta": "unica_foto_del_sticker_del_tablero"}
+            else:
+                consenso = consensuar_completo(del_tablero, minimo=MINIMOS.get(campo, 2))
+        else:
+            consenso = consensuar_completo(lecturas, minimo=MINIMOS.get(campo, 2))
+        if not consenso:
+            continue
+        cerrados.append(campo)
+        resultado[campo] = consenso["valor"]
+        resultado.setdefault("votos", {})[campo] = dict(
+            Counter(str(l["valor"]) for l in lecturas).most_common(5))
+        resultado.setdefault("confianza", {})[campo] = round(
+            max(float(l.get("confianza") or 0) for l in lecturas), 2)
+        # P37: ya no hay excepción para el número de parte. Lo que llega aquí ya lo decidió el
+        # voto del caso en `leer_parte_por_parecido` y `agregar_parte` sólo deja pasar lo
+        # publicado; si aun así las lecturas no concuerdan, es duda.
+        motivos = motivos_de_duda(campo, consenso, lecturas)
+        resultado.setdefault("dudoso", {})[campo] = bool(motivos)
+        if motivos:
+            resultado.setdefault("por_que_dudoso", {})[campo] = "; ".join(motivos)
+        mejor = max(lecturas, key=lambda l: (str(l.get("clase") or "") == "tablero",
+                                             float(l.get("confianza") or 0)))
+        capturas = (sorted(salida.glob(f"{clave}_{campo}_*.jpg"))
+                    if salida is not None and Path(salida).is_dir() else [])
+        resultado.setdefault("fuente", {})[campo] = {
+            "foto": mejor.get("foto", ""), "carpeta": mejor.get("carpeta", ""),
+            "origen": mejor.get("origen", ""), "lecturas": len(lecturas),
+            # P42 · revisión de Astra (F5): el valor **tal como se codificó/leyó** y el
+            # payload original viajan hasta la hoja de trazabilidad.
+            "valor_codificado": str(mejor.get("valor", "")),
+            "texto": str(mejor.get("texto", ""))[:200],
+            "cola_cruda": str(mejor.get("cola_cruda", "")),
+            "clase_cola": str(mejor.get("clase_cola", "")),
+            "payload_hex": str(mejor.get("payload_hex", ""))[:400],
+            "formato": str(mejor.get("formato", "")),
+            "version_decode": str(mejor.get("version_decode", "")),
+            "conflicto": list(mejor.get("conflicto") or []),
+            "posiciones_dudosas": consenso["posiciones_dudosas"],
+            "descartadas_por_largo": consenso.get("descartadas_por_largo", 0),
+            "descartadas_datamatrix": descartadas,
+            "de_pestana_azul": sum(1 for l in lecturas if l.get("ancla") == "pestana_azul"),
+            "captura": str(capturas[0]) if capturas else ""}
+    return resultado, cerrados
+
+
 def cerrar(parcial: Path, json_path: Path, salida: Path) -> dict:
     """Paso 3: consenso por caso y escrito del JSON de evidencia (fundiendo por campo)."""
     acumulado = json.loads(parcial.read_text(encoding="utf-8"))
@@ -408,87 +536,7 @@ def cerrar(parcial: Path, json_path: Path, salida: Path) -> dict:
     if json_path.exists():
         resultados = json.loads(json_path.read_text(encoding="utf-8"))
     for clave, registro in sorted(acumulado.items()):
-        resultado = {"caso": registro.get("caso", ""), "caso_numero": clave,
-                     "fotos": registro.get("fotos", 0),
-                     "fotos_con_pista": registro.get("con_pista", 0)}
-        cerrados = []
-        for campo in CAMPOS:
-            lecturas = (registro.get("lecturas") or {}).get(campo) or []
-            descartadas = 0
-            if campo == "dashboard_date":
-                lecturas, descartadas = filtrar_fechas(lecturas)
-                if descartadas and not lecturas:
-                    # sólo había fechas del DataMatrix del módulo: el campo se CIERRA vacío y en
-                    # duda (si no se cerrara, `fundir_caso` conservaría la fecha mala de antes)
-                    cerrados.append(campo)
-                    resultado[campo] = None
-                    resultado.setdefault("dudoso", {})[campo] = True
-                    resultado.setdefault("por_que_dudoso", {})[campo] = (
-                        f"{descartadas} lectura(s) de fecha descartadas: venían del DataMatrix del "
-                        f"módulo, no del sticker de la fecha")
-                    continue
-            if campo == "dashboard_part_number":
-                # las lecturas de `grabado_banda_*` son del número impreso en la etiqueta del
-                # **módulo** (`2GJ.880.204.J`): para el número moldeado del tablero no valen
-                lecturas = [l for l in lecturas
-                            if not str(l.get("origen", "")).startswith("grabado_banda")]
-            # P42 · revisión de Astra (F6): el voto por posiciones fabrica valores (`R6E` + `R6E1`
-            # → un valor que nadie leyó; `11/04` + `06/05` + `17/05` → `11/05`). Se vota **por
-            # valor completo** en todos los campos, no sólo en la fecha.
-            if campo == "dashboard_date":
-                del_tablero = _solo_clase(lecturas)
-                if len(del_tablero) == 1 and str(del_tablero[0].get("clase") or "") == "tablero":
-                    # REGLA DEL USUARIO (2026-10-29): si en el caso hay **una sola** foto del
-                    # sticker del tablero, esa lectura basta. Hay muchas fechas en un caso
-                    # (proveedor, módulo, tablero) y no significan lo mismo; cuando la del
-                    # tablero es única no hay con qué contradecirla, y su firma —hora + N/P—
-                    # no la produce ninguna de las otras. Si hubiera dos o más, votan entre
-                    # ellas: ahí sí hay algo que decidir.
-                    consenso = {"valor": del_tablero[0]["valor"], "votos": 1,
-                                "dudoso": False, "posiciones_dudosas": [],
-                                "reparto": {del_tablero[0]["valor"]: 1},
-                                "descartadas_por_largo": 0,
-                                "exenta": "unica_foto_del_sticker_del_tablero"}
-                else:
-                    consenso = consensuar_completo(del_tablero, minimo=MINIMOS.get(campo, 2))
-            else:
-                consenso = consensuar_completo(lecturas, minimo=MINIMOS.get(campo, 2))
-            if not consenso:
-                continue
-            cerrados.append(campo)
-            resultado[campo] = consenso["valor"]
-            resultado.setdefault("votos", {})[campo] = dict(
-                Counter(str(l["valor"]) for l in lecturas).most_common(5))
-            resultado.setdefault("confianza", {})[campo] = round(
-                max(float(l.get("confianza") or 0) for l in lecturas), 2)
-            # P37: ya no hay excepción para el número de parte. Lo que llega aquí ya lo decidió el
-            # voto del caso en `leer_parte_por_parecido` y `agregar_parte` sólo deja pasar lo
-            # publicado; si aun así las lecturas no concuerdan, es duda.
-            motivos = motivos_de_duda(campo, consenso, lecturas)
-            resultado.setdefault("dudoso", {})[campo] = bool(motivos)
-            if motivos:
-                resultado.setdefault("por_que_dudoso", {})[campo] = "; ".join(motivos)
-            mejor = max(lecturas, key=lambda l: (str(l.get("clase") or "") == "tablero",
-                                                 float(l.get("confianza") or 0)))
-            capturas = sorted(salida.glob(f"{clave}_{campo}_*.jpg"))
-            resultado.setdefault("fuente", {})[campo] = {
-                "foto": mejor.get("foto", ""), "carpeta": mejor.get("carpeta", ""),
-                "origen": mejor.get("origen", ""), "lecturas": len(lecturas),
-                # P42 · revisión de Astra (F5): el valor **tal como se codificó/leyó** y el
-                # payload original viajan hasta la hoja de trazabilidad.
-                "valor_codificado": str(mejor.get("valor", "")),
-                "texto": str(mejor.get("texto", ""))[:200],
-                "cola_cruda": str(mejor.get("cola_cruda", "")),
-                "clase_cola": str(mejor.get("clase_cola", "")),
-                "payload_hex": str(mejor.get("payload_hex", ""))[:400],
-                "formato": str(mejor.get("formato", "")),
-                "version_decode": str(mejor.get("version_decode", "")),
-                "conflicto": list(mejor.get("conflicto") or []),
-                "posiciones_dudosas": consenso["posiciones_dudosas"],
-                "descartadas_por_largo": consenso.get("descartadas_por_largo", 0),
-                "descartadas_datamatrix": descartadas,
-                "de_pestana_azul": sum(1 for l in lecturas if l.get("ancla") == "pestana_azul"),
-                "captura": str(capturas[0]) if capturas else ""}
+        resultado, cerrados = cerrar_registro(registro, clave, salida)
         resultados[clave] = fundir_caso(resultados.get(clave, {}), resultado, cerrados)
 
     json_path.write_text(json.dumps(resultados, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -548,6 +596,14 @@ def main(argv: list[str] | None = None) -> int:
         casos = [c for c in sorted(raiz.iterdir()) if c.is_dir() and fotos_de_caso(c)]
         if args.caso:
             casos = [c for c in casos if c.name.split()[0] == args.caso]
+        repetidos = sorted({c.name.split()[0] for c in casos
+                            if sum(1 for o in casos if o.name.split()[0] == c.name.split()[0]) > 1})
+        if repetidos:
+            # P43 · dos carpetas con el mismo número (p. ej. 1ST y 2ST) se pisaban en la lista y
+            # sus lecturas se mezclaban. Aquí no hay etapa con la que distinguirlas: se detiene.
+            raise SystemExit("identidad ambigua: varias carpetas de caso con el número "
+                             + ", ".join(repetidos) + ". Procese cada etapa por separado "
+                             "(--fotos de una sola etapa) o use el flujo normal (pipeline.py).")
         for carpeta in casos:
             numero = carpeta.name.split()[0]
             listas[numero] = lista_de_candidatas(carpeta, leer_cupos(args.cupos))

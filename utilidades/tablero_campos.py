@@ -862,6 +862,12 @@ def leer_foto_de_tablero(imagen, motor=None, catalogo=None, pista=None) -> dict:
                 "valor": serie["valor"], "confianza": serie["confianza"],
                 "origen": serie["texto"], "dudoso": serie["dudoso"],
                 "recorte": recorte_codigo}
+        elif serie.get("valor") and "dashboard_serial_number" in campos:
+            # P45 · el texto IMPRESO junto al DataMatrix se conservaba sólo si no había código; ahora
+            # viaja aparte para poder confirmar (o no) el último carácter que trae el DataMatrix.
+            campos["dashboard_serial_number"]["impreso"] = {
+                "valor": serie["valor"], "confianza": serie["confianza"],
+                "texto": serie.get("texto", ""), "dudoso": serie.get("dudoso")}
         if fecha.get("fecha") and not fecha_ancla.get("fecha"):
             campos["dashboard_date"] = {
                 "valor": fecha["fecha"], "confianza": fecha["confianza"],

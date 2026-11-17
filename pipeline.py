@@ -109,9 +109,21 @@ def ejecutar_pipeline(ruta_raiz: str | Path, config: dict | None = None,
                       perfil_rendimiento: str | None = None,
                       contenido: str = "todo",
                       criterios_apertura: dict | None = None,
-                      proyecto: dict | None = None) -> dict:
-    """Corre las Fases 0-3 y retorna un dict con artefactos y resumen por fase."""
+                      proyecto: dict | None = None,
+                      tablero_p42: bool | None = None,
+                      dir_artefactos: str | Path | None = None,
+                      limpiar_artefactos: bool = False) -> dict:
+    """Corre las Fases 0-3 y retorna un dict con artefactos y resumen por fase.
+
+    P43: ``tablero_p42`` activa/desactiva la lectura P42 del tablero para ESTA ejecución
+    (None = lo que diga config.yaml). Los artefactos de la corrida (recortes, informe de
+    cobertura, dudas) van a un directorio único creado con ``tempfile.mkdtemp`` dentro de
+    ``dir_artefactos`` (por defecto ``.cache_ocr/corridas``). ``limpiar_artefactos`` borra
+    los recortes al terminar, pero conserva los informes JSON/TXT.
+    """
     config = deepcopy(config or cargar_config())
+    if tablero_p42 is not None:
+        config.setdefault("empresarial", {}).setdefault("tablero_p42", {})["activar"] = bool(tablero_p42)
     # V15.9.2 (C7): el proyecto declarado por el usuario aplica SOLO a esta
     # ejecución: ``config`` es una copia local y nunca se escribe la
     # configuración global ni se cambia el proyecto elegido por otra fuente.
@@ -327,6 +339,14 @@ def ejecutar_pipeline(ruta_raiz: str | Path, config: dict | None = None,
             "roi_manual": roi_manual,
             "zoom_forzado": zoom_forzado,
         })
+    dir_corrida = None
+    if usar_empresarial and ((config.get("empresarial") or {}).get("tablero_p42") or {}).get("activar"):
+        import tempfile
+        base_artefactos = Path(dir_artefactos) if dir_artefactos else RAIZ_PROYECTO / ".cache_ocr" / "corridas"
+        base_artefactos.mkdir(parents=True, exist_ok=True)
+        dir_corrida = Path(tempfile.mkdtemp(prefix=f"corrida_{ejecucion_id[:12]}_", dir=str(base_artefactos)))
+        argumentos_validacion["dir_corrida"] = dir_corrida
+        resumen["dir_corrida"] = str(dir_corrida)
     t_validacion = time.monotonic()
     if usar_empresarial:
         firma_validador = inspect.signature(validar_lote_empresarial).parameters
@@ -351,6 +371,8 @@ def ejecutar_pipeline(ruta_raiz: str | Path, config: dict | None = None,
         "resultados": conteo,
         "aprendizaje": validacion.get("aprendizaje"),
     }
+    if validacion.get("informe_tablero_p42"):
+        resumen["fases"]["tablero_p42"] = dict(validacion["informe_tablero_p42"])
 
     # C7: la identidad autoritativa se persiste con los resultados y viaja a
     # los generadores Excel (ES/EN/DE) para identificación coherente (P07).
@@ -434,6 +456,12 @@ def ejecutar_pipeline(ruta_raiz: str | Path, config: dict | None = None,
     ruta_excel = Path(archivos_excel.get(idiomas[0])
                       or next(iter(archivos_excel.values()), None)
                       or next(iter(archivos_borrador.values())))
+    # P50 · el formulario de dudas se abre solo al terminar (nunca tumba la corrida)
+    try:
+        from utilidades.abrir_panel import abrir_panel_dudas
+        validacion["panel_dudas"] = abrir_panel_dudas(ruta_excel, validacion.get("archivo_salida"), config)
+    except Exception as exc:                                     # noqa: BLE001
+        validacion["panel_dudas"] = {"abierto": False, "motivo": f"{type(exc).__name__}: {exc}"[:200]}
     validacion["idiomas_exportacion"] = idiomas
     validacion["archivos_excel"] = archivos_excel
     validacion["nombre_excel_base"] = str(ruta_base)
@@ -462,6 +490,10 @@ def ejecutar_pipeline(ruta_raiz: str | Path, config: dict | None = None,
         "borradores": archivos_borrador,
         "publicable": bool(archivos_excel) and not archivos_borrador,
         "idiomas": idiomas, "plantilla": seleccion_plantilla}
+    if dir_corrida is not None and limpiar_artefactos:
+        import shutil
+        shutil.rmtree(Path(dir_corrida) / "tablero_p42", ignore_errors=True)
+        resumen["artefactos_limpiados"] = True
     resumen["duracion_segundos"] = round(time.time() - t0, 1)
     resumen["metricas_rendimiento"] = gestor_recursos.snapshot(forzar=True)
     # V15.9.4 (ALTA-N6): OCR terminado NO implica Excel publicado. El mensaje
@@ -508,6 +540,12 @@ if __name__ == "__main__":
                         help="Idioma del Excel. Repite la opción para generar varios desde la misma instantánea.")
     parser.add_argument("--perfil-rendimiento", choices=["estable", "alto", "maximo"],
                         default=None, help="Perfil SOP. Por defecto usa ALTO desde config.yaml.")
+    parser.add_argument("--tablero-p42", choices=["config", "si", "no"], default="config",
+                        help="Lectura P42 del tablero en esta corrida (por defecto, lo que diga config.yaml).")
+    parser.add_argument("--dir-artefactos", default=None,
+                        help="Carpeta donde crear el directorio ÚNICO de artefactos de la corrida.")
+    parser.add_argument("--limpiar-artefactos", action="store_true",
+                        help="Borra los recortes del tablero al terminar (conserva informes).")
     args = parser.parse_args()
     resumen = ejecutar_pipeline(
         args.ruta_raiz.strip().strip('"\''), nombre_excel=args.excel,
@@ -515,5 +553,7 @@ if __name__ == "__main__":
         ruta_plantilla=args.plantilla, modo_ejecucion=args.modo,
         ruta_inventario=args.inventario, zoom_forzado=args.zoom,
         idiomas_exportacion=args.idioma_exportacion,
-        perfil_rendimiento=args.perfil_rendimiento)
+        perfil_rendimiento=args.perfil_rendimiento,
+        tablero_p42={"config": None, "si": True, "no": False}[args.tablero_p42],
+        dir_artefactos=args.dir_artefactos, limpiar_artefactos=args.limpiar_artefactos)
     print(json.dumps(resumen, ensure_ascii=False, indent=2))

@@ -172,7 +172,65 @@ empresarial:
   proyecto_id: null
   # Opciones sólo con evidencia del perfil: laboratorio EDAG/VW,
   # componente bolsa_aire/tablero y formato_fecha DMY. Vacío conserva ambigüedades.
-  perfil_extraccion: {}
+  # P44 · `formato_fecha_modulo: DMY` lo indica la guía del usuario (etiqueta del módulo
+  # «10.04.25» = 10-abr-2025). Sólo se aplica a fechas de una etiqueta identificada como módulo.
+  perfil_extraccion:
+    formato_fecha_modulo: DMY
+  # P43 · la semana (`week`) sólo se deriva con perfil EDAG explícito: para un lote EDAG,
+  # declare aquí `perfil_extraccion: {laboratorio: EDAG}` (o que el overlay diga «EDAG Testlab»).
+  # P46 · overlay del vídeo EDAG (pie y cabecera): fecha de prueba, lugar, número; motivo propuesto
+  overlay_video:
+    activar: true
+    maximo_videos: 4
+    muestras: 3
+  # P45 · libros con el vocabulario histórico (opciones del panel de dudas). Vacío = plantilla BMG.
+  # NUNCA el Book corregido de evaluación.
+  vocabulario_libros: []
+  # P49 · etiqueta del MÓDULO con su lector dedicado (N/P, serie vertical, fecha, Autoliv y
+  # estampa del nivel). Sólo fotos con ganchos de la etiqueta; máximo por caso.
+  etiqueta_modulo:
+    activar: true
+    maximo_fotos: 6
+    maximo_fotos_rescate: 6     # P50 · si ninguna foto tiene ganchos, fotos VOR sin ganchos
+  # P50 · al terminar la corrida (dashboard o pipeline) se abre el formulario de dudas
+  panel_dudas:
+    abrir_al_terminar: true
+    puerto: 8099
+  # P49 · CONSTANTES DEL PROYECTO (decisión del usuario, 12/11/2026). Se escriben SOLO en celdas
+  # sin lectura y quedan marcadas «constante_proyecto · pendiente» en la Trazabilidad.
+  # PENDIENTE DE ARREGLAR: sustituirlas por una lectura real (proveedor del tablero y láser).
+  # P50 · decisiones con evidencia de varias fuentes o varios casos (ver decisiones_lote.py):
+  # nivel K por estampa + nomenclatura ##S/##K, lote del tablero (R, Q), proveedor por N/P, motivo.
+  decisiones_lote:
+    activar: true
+    # P52 · fecha y N/P del módulo: si ≥N casos de la corrida tienen el mismo valor y ninguna
+    # lectura dice otro, se aplica a los casos con la etiqueta del módulo vista. 0 = desactivado.
+    unanime_lote: 6
+    # P51 · regla del usuario: lo que el pie del vídeo diga en la posición del motivo se imprime;
+    # estas palabras se traducen (p. ej. «BMG» → «IT BMG»). Añade aquí otras si aparecen.
+    mapa_motivos:
+      BMG: IT BMG
+  constantes_proyecto:
+    dashboard_supplier: FORVIA
+    laser_opening: "3mm ¨C¨"
+  # P43 · lectura P42 del TABLERO dentro de la corrida normal (antes sólo herramientas sueltas).
+  # Si falta el OCR (rapidocr) el caso queda «ocr_no_disponible», nunca «sin dato».
+  tablero_p42:
+    activar: true
+    # Reservado: hoy `tablero_campos.leer_foto_de_tablero` no usa el catálogo. Vacío a propósito
+    # (nunca se rellena con valores del Book corregido).
+    catalogo: []
+    segunda_pasada: true          # ante duda en dashboard_date, buscar más (buscar_mas.py)
+    maximo_fotos_segunda: 400
+    presupuesto_segunda_s: 300    # por caso; lo no mirado queda PENDIENTE, no «sin dato»
+    guardar_recortes: true
+    # P44 · caché por contenido de foto + firma del código lector (re-corridas mucho más rápidas)
+    cache: true
+    ruta_cache: ""                # vacío = .cache_ocr/tablero_p42.sqlite3
+    # P52 · la serie del tablero lleva un dígito de control Code 39 (mod 43) al final. Si el
+    # DataMatrix lo cumple, la serie está verificada. completa = se escribe tal cual (con $→S y
+    # sin %), sin_control = sin el último carácter, preguntar = va al formulario de dudas.
+    serie_control: completa
   archivo_cache: .cache_ocr/imagenes.sqlite3
   archivo_cache_legacy: .cache_ocr/imagenes_legacy.sqlite3
   archivo_avance_ids: .cache_ocr/avances_ids.json
@@ -215,6 +273,12 @@ aprendizaje:
   # Una lectura exacta debe corregirse igual en imágenes distintas al menos dos
   # veces antes de convertirse en regla automática.
   minimo_soporte_exacto: 2
+  # P47 · marcas «imagen sin datos» (saltan el OCR de la foto):
+  #   respetar | solo_con_motivo (por defecto: las marcas sin motivo ya no saltan el OCR) | ignorar
+  imagenes_sin_datos: solo_con_motivo
+  # P47 · descartes «no es texto» por región: respetar | sin_datos_probables (por defecto: no se
+  # aplica un descarte cuyo texto parece fecha, ZRZ, 2GJ o N/P) | ignorar
+  regiones_no_texto: sin_datos_probables
   minimo_soporte_caracter: 3
   minimo_soporte_patron: 2
   dominancia_minima: 0.80

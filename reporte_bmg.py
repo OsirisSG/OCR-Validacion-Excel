@@ -516,6 +516,32 @@ def _como_numero(clave: str, valor):
     return int(texto) if texto.isdigit() else valor
 
 
+# P51 · petición del usuario: la temperatura se lee por color. Caliente (HT) en rojo, frío
+# (NT/KT) en azul, ambiente (RT) en color neutro. Sólo cambia el color de la letra.
+COLOR_TEMPERATURA = {"HT": "FFFF0000", "NT": "FF00B0F0", "KT": "FF00B0F0", "RT": "FF000000"}
+
+
+def _colorear_columna_temperatura(hoja) -> None:
+    """Todas las filas con temperatura escrita, procesadas o conservadas (sólo formato)."""
+    if "temperature_condition" not in CLAVES_PLANTILLA:
+        return
+    columna = CLAVES_PLANTILLA.index("temperature_condition") + 1
+    for fila in range(8, hoja.max_row + 1):
+        celda = hoja.cell(fila, columna)
+        if celda.value not in (None, ""):
+            _colorear_temperatura(celda, celda.value)
+
+
+def _colorear_temperatura(celda, valor) -> None:
+    color = COLOR_TEMPERATURA.get(str(valor or "").strip().upper())
+    if not color:
+        return
+    fuente = copy.copy(celda.font)
+    celda.font = Font(name=fuente.name, size=fuente.size, bold=fuente.bold, italic=fuente.italic,
+                      underline=fuente.underline, strike=fuente.strike, vertAlign=fuente.vertAlign,
+                      color=color)
+
+
 def _escribir_fila(hoja, fila: int, resultado: dict, idioma: str = "es") -> None:
     canonico = resultado.get("resultado_caso_canonico")
     if ("campos" in resultado or "videos" in resultado or "video_apertura" in resultado
@@ -532,11 +558,29 @@ def _escribir_fila(hoja, fila: int, resultado: dict, idioma: str = "es") -> None
                      if apertura.get("estado") in {"VERIFICADO_HUMANO", "AUTO_VERIFICABLE"} else None)
         celda = hoja.cell(fila, indice)
         valor = _como_numero(clave, valor)
+        if clave == "delay_ms" and isinstance(valor, str) and __import__("re").fullmatch(
+                r"\s*(--|\d{1,4}\s?ms)\s*", valor, flags=2):
+            # P50 · el libro escribe el delay como texto: «--» (sin retardo) o «5ms»
+            celda.value = valor.strip()
+            continue
         if clave in {"opening_time_ms", "forvia_measurement_ms", "full_inflation_time_ms", "delay_ms"}:
             valor = (_tiempo_apertura_final(valor) if clave == "opening_time_ms"
                      else _tiempo_ms(valor))
             celda.number_format = "0.000"
+        if (clave.endswith("date") and isinstance(valor, str)
+                and __import__("re").fullmatch(r"\d{4}-\d{2}-\d{2}", valor.strip())):
+            # P52 · las fechas se escriben como FECHA de Excel (el libro corregido las tiene así),
+            # no como texto: se pueden ordenar/filtrar y coinciden con las correcciones humanas.
+            from datetime import datetime as _dt
+            try:
+                valor = _dt.strptime(valor.strip(), "%Y-%m-%d")
+                if celda.number_format in (None, "", "General"):
+                    celda.number_format = "mm-dd-yy"
+            except ValueError:
+                pass
         celda.value = valor
+        if clave == "temperature_condition":
+            _colorear_temperatura(celda, valor)
     valor_maximo, estado = _resumen_maximo(resultado)
     columna = len(CLAVES_PLANTILLA) + 1
     hoja.cell(fila, columna).value = valor_maximo
@@ -608,9 +652,15 @@ def _actualizar_lista_existente(hoja, resultados, idioma):
                                           "existente": destino.value, "propuesto": propuesta.value})
             elif propuesta.value not in (None, ""):
                 destino.value = propuesta.value
+                if hasattr(propuesta.value, "year") and destino.number_format in (None, "", "General"):
+                    destino.number_format = propuesta.number_format     # P52 · fecha como fecha
+        if "temperature_condition" in CLAVES_PLANTILLA:     # P51 · color por temperatura (sólo formato)
+            celda_t = hoja.cell(fila, CLAVES_PLANTILLA.index("temperature_condition") + 1)
+            _colorear_temperatura(celda_t, celda_t.value)
         mapa[_identidad(resultado)] = fila
     ULTIMA_CONSERVACION[hoja.title] = conservadas
     ULTIMAS_DISCREPANCIAS[hoja.title] = discrepancias
+    _colorear_columna_temperatura(hoja)
     return mapa
 
 
@@ -649,6 +699,7 @@ def _poblar_lista(hoja, resultados: list[dict], idioma: str = "es",
     hoja.column_dimensions[get_column_letter(len(CLAVES_PLANTILLA) + 1)].width = 27
     hoja.column_dimensions[get_column_letter(len(CLAVES_PLANTILLA) + 2)].width = 26
     ULTIMA_CONSERVACION[hoja.title]=informe_conservadas["conservadas"]
+    _colorear_columna_temperatura(hoja)
     return mapa
 
 
@@ -957,17 +1008,47 @@ def _crear_leyenda_matriz(hoja, fila: int, colores: dict, idioma: str, reglas: d
 
 
 
+def _celda(valor):
+    """P47 · openpyxl sólo acepta escalares: un dict/lista vacío (`votos={}`) tumbaba la corrida."""
+    if valor is None:
+        return ""
+    if isinstance(valor, (str, int, float, bool)):
+        return valor
+    if isinstance(valor, (dict, list, tuple, set)):
+        if not valor:
+            return ""
+        try:
+            import json as _json
+            return _json.dumps(sorted(valor) if isinstance(valor, set) else valor,
+                               ensure_ascii=False, default=str)[:500]
+        except (TypeError, ValueError):
+            return str(valor)[:500]
+    try:
+        from datetime import date, datetime, time as _t
+        if isinstance(valor, (date, datetime, _t)):
+            return valor
+    except ImportError:
+        pass
+    return str(valor)[:500]
+
+
 def _crear_trazabilidad(libro, resultados: list[dict], idioma: str) -> None:
     nombre=_t(idioma,"trace")[:31]
     if nombre in libro.sheetnames: del libro[nombre]
     ws=libro.create_sheet(nombre)
     keys=("project","stage","case","component","field","image","region","original","corrected","orientation","rule","source","version")
-    ws.append([_t(idioma,k) for k in keys])
+    # P43 · columnas añadidas AL FINAL (no cambian la posición de las anteriores): estado de la
+    # evidencia, motivo, votos y confianza. Así un pendiente del tablero se ve en la hoja.
+    extra={"es":("Estado evidencia","Motivo","Votos","Confianza"),
+           "en":("Evidence state","Reason","Votes","Confidence"),
+           "de":("Evidenzstatus","Grund","Stimmen","Konfidenz")}.get(idioma,("Estado evidencia","Motivo","Votos","Confianza"))
+    ws.append([_celda(v) for v in [*(_t(idioma,k) for k in keys), *extra]])
     for c in ws[1]: c.font=Font(bold=True,color="FFFFFF"); c.fill=_relleno("#1D4ED8")
     for r in resultados:
         cands=r.get("candidatos") or (r.get("consolidado") or {}).get("candidatos") or []
         for cand in cands:
-            ws.append([r.get("project_id") or cand.get("proyecto") or "",r.get("tipo_st") or cand.get("etapa") or "",_identidad(r),cand.get("componente") or "por_identificar",cand.get("clave") or "",cand.get("imagen") or "",str(cand.get("bbox_original") or ""),cand.get("valor_original") or "",cand.get("texto_correcto") or cand.get("valor_normalizado") or "",cand.get("orientacion_grados") or 0,cand.get("regla_aplicada") or "",cand.get("fuente") or "",cand.get("version_procesamiento") or ""])
+            estado_cand=cand.get("estado_p42") or ("pendiente_confirmacion" if cand.get("requiere_confirmacion_manual") and not cand.get("confirmacion_manual") else "")
+            ws.append([_celda(v) for v in [r.get("project_id") or cand.get("proyecto") or "",r.get("tipo_st") or cand.get("etapa") or "",_identidad(r),cand.get("componente") or "por_identificar",cand.get("clave") or "",cand.get("imagen") or "",str(cand.get("bbox_original") or ""),cand.get("valor_original") or "",cand.get("texto_correcto") or cand.get("valor_normalizado") or "",cand.get("orientacion_grados") or 0,cand.get("regla_aplicada") or "",cand.get("fuente") or "",cand.get("version_procesamiento") or "",estado_cand,str(cand.get("motivo_p42") or cand.get("observacion") or "")[:300],cand.get("votos") if cand.get("votos") is not None else "",cand.get("confianza_ocr") if cand.get("confianza_ocr") is not None else ""]])
             ruta_abs=str(cand.get("imagen_absoluta") or "").strip()
             if ruta_abs:
                 celda=ws.cell(ws.max_row,6)
@@ -978,7 +1059,7 @@ def _crear_trazabilidad(libro, resultados: list[dict], idioma: str) -> None:
                 except Exception:
                     pass
     ws.freeze_panes="A2"; ws.auto_filter.ref=ws.dimensions
-    for col,width in {1:18,2:10,3:38,4:20,5:28,6:42,7:24,8:32,9:32,10:12,11:26,12:20,13:20}.items(): ws.column_dimensions[get_column_letter(col)].width=width
+    for col,width in {1:18,2:10,3:38,4:20,5:28,6:42,7:24,8:32,9:32,10:12,11:26,12:20,13:20,14:24,15:48,16:8,17:10}.items(): ws.column_dimensions[get_column_letter(col)].width=width
 
 
 def _crear_diccionario(libro, idioma: str) -> None:

@@ -1,0 +1,260 @@
+/* =============================================================================
+   sencillo.css — P54 · «Modo sencillo» (pantalla de inicio del dashboard).
+   Usa los tokens de estilos.css (--fondo, --tarjeta, --acento…): claro y noche
+   salen solos. Todas las clases empiezan por `sen-`: no pisa nada del resto.
+   Sólo se anima `transform` y `opacity`. Sin fuentes ni recursos de red.
+   ============================================================================= */
+
+.sen-contenedor { max-width: 760px; }
+.sen-escena {
+  display: flex; flex-direction: column; gap: 16px;
+  min-height: calc(100svh - 150px); justify-content: center; padding: 24px 0 48px;
+}
+@keyframes sen-entra { from { opacity: 0; transform: translateY(18px) scale(.985); } }
+.sen-hero, .sen-tarjeta { animation: sen-entra .55s cubic-bezier(.2, .8, .2, 1) both; }
+.sen-tarjeta { animation-delay: 70ms; }
+
+/* ---------- Cabecera ---------- */
+.sen-cabecera .cabecera-inner { gap: 12px; }
+.sen-avanzado {
+  display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 16px;
+  border-radius: 999px; border: 1px solid var(--borde); background: var(--tarjeta);
+  color: var(--texto-2); font-weight: 600; font-size: 14px; text-decoration: none;
+  transition: transform .2s cubic-bezier(.34, 1.56, .64, 1), border-color .2s, color .2s;
+}
+.sen-avanzado svg { width: 18px; height: 18px; }
+.sen-avanzado:hover { border-color: var(--acento); color: var(--acento); transform: translateY(-1px); }
+.sen-avanzado:focus-visible, .sen-tema:has(input:focus-visible) .sen-tema-pista,
+.sen-pegar:focus-visible, .sen-reciente:focus-visible, .sen-segmentos button:focus-visible,
+.sen-opcion:has(input:focus-visible), .sen-interruptor:has(input:focus-visible) .sen-pista {
+  outline: 2px solid var(--acento); outline-offset: 2px;
+}
+.tab-sencillo { opacity: .8; }
+
+/* Interruptor día/noche: el astro cruza la pista y aparecen estrellas. */
+.sen-tema { position: relative; display: inline-flex; align-items: center; min-height: 44px; cursor: pointer; }
+.sen-tema input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
+.sen-tema-pista {
+  position: relative; display: block; width: 62px; height: 32px; border-radius: 999px; overflow: hidden;
+  background: #bfe4ed; border: 1px solid var(--borde); transition: background-color .35s;
+}
+.sen-tema-astro {
+  position: absolute; top: 4px; left: 4px; width: 22px; height: 22px; border-radius: 50%;
+  background: #f6c64b; box-shadow: 0 0 0 4px rgba(246, 198, 75, .28);
+  transition: transform .45s cubic-bezier(.34, 1.56, .64, 1), background-color .35s, box-shadow .35s;
+}
+.sen-estrella {
+  position: absolute; width: 3px; height: 3px; border-radius: 50%; background: #fff;
+  opacity: 0; transform: scale(.2); transition: opacity .3s, transform .45s cubic-bezier(.34, 1.56, .64, 1);
+}
+.sen-estrella.e1 { left: 12px; top: 8px; } .sen-estrella.e2 { left: 22px; top: 18px; } .sen-estrella.e3 { left: 30px; top: 9px; }
+.sen-tema input:checked + .sen-tema-pista { background: #0b1b2a; }
+.sen-tema input:checked + .sen-tema-pista .sen-tema-astro {
+  transform: translateX(30px); background: #e8eef2; box-shadow: inset -6px -2px 0 0 #b9c7d1;
+}
+.sen-tema input:checked + .sen-tema-pista .sen-estrella { opacity: 1; transform: scale(1); }
+
+/* ---------- Titular ---------- */
+.sen-hero { text-align: center; }
+.sen-hero h1 { margin: 0; font-size: clamp(26px, 5vw, 38px); line-height: 1.12; letter-spacing: -.02em; }
+.sen-hero p { margin: 8px auto 0; color: var(--texto-2); max-width: 46ch; }
+
+/* ---------- Tarjeta ---------- */
+.sen-tarjeta {
+  background: var(--tarjeta); border: 1px solid var(--borde); border-radius: 20px;
+  padding: 26px; box-shadow: var(--sombra);
+}
+.sen-formulario { display: flex; flex-direction: column; gap: 24px; }
+.sen-paso { min-width: 0; }
+.sen-dos { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+.sen-etiqueta { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 15px; margin-bottom: 10px; }
+.sen-num {
+  display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 50%;
+  background: var(--acento-suave); color: var(--acento); border: 1px solid var(--borde);
+  font-size: 12.5px; font-weight: 700; font-variant-numeric: tabular-nums;
+}
+.sen-ayuda { margin: 8px 0 0; font-size: 13px; color: var(--texto-3); }
+.sen-nota { margin: 0; text-align: center; font-size: 13px; color: var(--texto-3); }
+
+/* Campo de la carpeta */
+.sen-campo-ruta {
+  display: flex; align-items: center; gap: 10px; min-height: 56px; padding: 0 8px 0 16px;
+  border-radius: 14px; border: 1px solid var(--borde); background: var(--superficie-2, var(--fondo));
+  transition: border-color .2s;
+}
+.sen-campo-ruta:focus-within { border-color: var(--acento); outline: 2px solid var(--acento); outline-offset: 2px; }
+.sen-campo-ruta > svg { width: 22px; height: 22px; color: var(--acento); flex: none; }
+.sen-campo-ruta input {
+  flex: 1; min-width: 0; height: 54px; border: 0; outline: 0; background: none; color: var(--texto);
+  font: 500 15px ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+.sen-campo-ruta input::placeholder { color: var(--texto-3); font-weight: 400; }
+.sen-pegar {
+  display: inline-flex; align-items: center; gap: 6px; min-height: 44px; padding: 0 12px; flex: none;
+  border-radius: 10px; border: 1px solid var(--borde); background: var(--tarjeta); color: var(--texto-2);
+  font-weight: 600; font-size: 13px; cursor: pointer;
+  transition: transform .2s cubic-bezier(.34, 1.56, .64, 1), border-color .2s, color .2s;
+}
+.sen-pegar svg { width: 16px; height: 16px; }
+.sen-pegar:hover { border-color: var(--acento); color: var(--acento); }
+.sen-pegar:active { transform: scale(.95); }
+.sen-recientes { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.sen-reciente {
+  max-width: 100%; min-height: 44px; padding: 0 14px; border-radius: 999px; cursor: pointer;
+  border: 1px dashed var(--borde-fuerte); background: none; color: var(--texto-2);
+  font: 500 12.5px ui-monospace, "Cascadia Mono", Consolas, monospace;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left;
+  transition: border-color .2s, color .2s;
+}
+.sen-reciente:hover { border-color: var(--acento); color: var(--acento); }
+
+/* Laboratorio */
+.sen-opciones { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.sen-opcion {
+  position: relative; display: flex; align-items: center; gap: 12px; min-height: 60px; padding: 10px 14px;
+  border-radius: 14px; border: 1px solid var(--borde); background: var(--superficie-2, var(--fondo));
+  cursor: pointer; transition: transform .2s cubic-bezier(.34, 1.56, .64, 1), border-color .2s;
+}
+.sen-opcion input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: inherit; }
+.sen-opcion svg { width: 22px; height: 22px; color: var(--texto-3); flex: none; }
+.sen-opcion strong { display: block; line-height: 1.2; }
+.sen-opcion small { color: var(--texto-3); font-size: 12.5px; }
+.sen-opcion:hover:not(.no) { transform: translateY(-1px); border-color: var(--borde-fuerte); }
+.sen-opcion.sel { border-color: var(--acento); box-shadow: inset 0 0 0 1px var(--acento); }
+.sen-opcion.sel svg { color: var(--acento); }
+.sen-opcion.no { cursor: not-allowed; opacity: .55; border-style: dashed; }
+
+/* Idioma: selector segmentado con fondo que se desliza */
+.sen-segmentos {
+  position: relative; display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; padding: 4px;
+  border-radius: 14px; background: var(--superficie-2, var(--fondo)); border: 1px solid var(--borde); isolation: isolate;
+}
+.sen-segmentos::before {
+  content: ""; position: absolute; z-index: -1; inset: 4px auto 4px 4px; width: calc((100% - 16px) / 3);
+  border-radius: 10px; background: var(--acento-solido);
+  transition: transform .45s cubic-bezier(.34, 1.4, .64, 1);
+}
+.sen-segmentos[data-sel="1"]::before { transform: translateX(calc(100% + 4px)); }
+.sen-segmentos[data-sel="2"]::before { transform: translateX(calc(200% + 8px)); }
+.sen-segmentos button {
+  min-height: 44px; border: 0; background: none; color: var(--texto-2); font: inherit; font-weight: 600;
+  font-size: 14px; border-radius: 10px; cursor: pointer; transition: color .2s;
+}
+.sen-segmentos button.sel { color: var(--sobre-acento); }
+
+/* Vídeos: interruptor */
+.sen-interruptor { position: relative; display: inline-flex; align-items: center; gap: 12px; min-height: 52px; cursor: pointer; }
+.sen-interruptor input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
+.sen-pista {
+  position: relative; display: block; width: 68px; height: 38px; border-radius: 999px; flex: none;
+  background: var(--borde); transition: background-color .3s;
+}
+.sen-perilla {
+  position: absolute; top: 4px; left: 4px; width: 30px; height: 30px; border-radius: 50%;
+  display: grid; place-items: center; background: var(--tarjeta); color: var(--texto-3);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .25);
+  transition: transform .4s cubic-bezier(.34, 1.56, .64, 1), color .3s;
+}
+.sen-perilla svg { width: 16px; height: 16px; }
+.sen-interruptor input:checked ~ .sen-pista { background: var(--acento-solido); }
+.sen-interruptor input:checked ~ .sen-pista .sen-perilla { transform: translateX(30px); color: var(--acento-solido); }
+.sen-interruptor-texto { font-weight: 600; }
+
+/* ---------- Botones ---------- */
+.sen-boton {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  min-height: 46px; padding: 0 18px; border-radius: 999px; font-weight: 600; text-decoration: none;
+}
+.sen-boton svg { width: 18px; height: 18px; }
+.sen-peligro { color: var(--rojo, #c0392b); }
+.sen-peligro:hover:not(:disabled) { border-color: var(--rojo, #c0392b); background: none; }
+/* El botón principal: brillo que lo cruza y flecha que avanza. */
+.sen-procesar { position: relative; overflow: hidden; isolation: isolate; padding: 0 26px; }
+.sen-procesar.sen-grande { min-height: 58px; font-size: 17px; font-weight: 700; width: 100%; }
+.sen-procesar::after {
+  content: ""; position: absolute; z-index: -1; top: 0; bottom: 0; left: 0; width: 45%;
+  background: linear-gradient(100deg, transparent, rgba(255, 255, 255, .28), transparent);
+  transform: translateX(-130%) skewX(-18deg);
+}
+.sen-procesar:hover:not(:disabled)::after { transform: translateX(330%) skewX(-18deg); transition: transform .75s cubic-bezier(.2, .8, .2, 1); }
+.sen-procesar svg { transition: transform .3s cubic-bezier(.34, 1.56, .64, 1); }
+.sen-procesar:hover:not(:disabled) svg { transform: translateX(5px); }
+.sen-procesar:hover:not(:disabled) { background: var(--acento-solido); border-color: var(--acento-solido); }
+.sen-procesar:disabled { opacity: .45; cursor: not-allowed; }
+
+/* ---------- Avisos ---------- */
+.sen-aviso-error { border-color: var(--rojo, #c0392b); border-left-width: 4px; display: flex; flex-direction: column; gap: 4px; }
+.sen-aviso-error h2 { margin: 0 0 4px; font-size: 19px; }
+.sen-aviso-error p { margin: 0 0 12px; color: var(--texto-2); }
+.sen-reanudar { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; padding: 16px 20px; }
+.sen-reanudar > span { flex: 1; min-width: 200px; color: var(--texto-2); }
+.sen-reanudar strong { color: var(--texto); }
+
+/* ---------- En marcha ---------- */
+.sen-progreso, .sen-listo, .sen-cargando { text-align: center; display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 36px 26px; }
+.sen-sobre { margin: 6px 0 0; font: 600 12px ui-monospace, "Cascadia Mono", Consolas, monospace; letter-spacing: .08em; text-transform: uppercase; color: var(--texto-3); }
+.sen-porcentaje { margin: 0; line-height: 1; font-variant-numeric: tabular-nums; }
+.sen-porcentaje strong { font-size: clamp(56px, 14vw, 88px); letter-spacing: -.04em; }
+.sen-porcentaje span { font-size: 24px; color: var(--texto-3); margin-left: 4px; }
+.sen-barra { width: 100%; max-width: 440px; height: 8px; border-radius: 999px; background: var(--borde); overflow: hidden; }
+.sen-barra span { display: block; height: 100%; border-radius: inherit; background: var(--acento); transform-origin: left; transition: transform .8s cubic-bezier(.2, .8, .2, 1); }
+.sen-mensaje { margin: 4px 0 0; color: var(--texto-2); max-width: 52ch; overflow-wrap: anywhere; }
+.sen-datos { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; width: 100%; max-width: 440px; margin: 10px 0 4px; }
+.sen-datos div { border: 1px solid var(--borde); border-radius: 12px; padding: 10px 6px; }
+.sen-datos dt { font: 600 11px ui-monospace, "Cascadia Mono", Consolas, monospace; letter-spacing: .06em; text-transform: uppercase; color: var(--texto-3); }
+.sen-datos dd { margin: 2px 0 0; font-weight: 700; font-variant-numeric: tabular-nums; }
+.sen-acciones { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; margin: 8px 0; }
+
+/* Carga: una hoja que el escáner recorre mientras «lee» */
+.sen-escaner { position: relative; width: 96px; height: 112px; }
+.sen-hoja {
+  position: absolute; inset: 6px 14px; border-radius: 10px; border: 2px solid var(--borde-fuerte);
+  background: var(--superficie-2, var(--fondo)); overflow: hidden;
+  display: flex; flex-direction: column; justify-content: center; gap: 9px; padding: 0 12px;
+  animation: sen-flota 2.6s ease-in-out infinite;
+}
+.sen-hoja i { display: block; height: 5px; border-radius: 3px; background: var(--borde-fuerte); transform-origin: left; animation: sen-linea 2.2s cubic-bezier(.2, .8, .2, 1) infinite; }
+.sen-hoja i:nth-child(1) { width: 100%; }
+.sen-hoja i:nth-child(2) { width: 72%; animation-delay: .18s; }
+.sen-hoja i:nth-child(3) { width: 88%; animation-delay: .36s; }
+.sen-hoja i:nth-child(4) { width: 54%; animation-delay: .54s; }
+.sen-haz {
+  position: absolute; left: 0; right: 0; top: 0; height: 26px;
+  background: linear-gradient(to bottom, transparent, color-mix(in srgb, var(--acento) 45%, transparent));
+  border-bottom: 2px solid var(--acento);
+  animation: sen-barrido 2.2s cubic-bezier(.45, 0, .55, 1) infinite;
+}
+.sen-chispa { position: absolute; width: 6px; height: 6px; border-radius: 50%; background: var(--acento); opacity: 0; animation: sen-chispa 2.2s ease-out infinite; }
+.sen-chispa.c1 { left: 2px; top: 30px; } .sen-chispa.c2 { right: 0; top: 54px; animation-delay: .7s; } .sen-chispa.c3 { left: 8px; bottom: 12px; animation-delay: 1.3s; }
+.sen-escaner.pausado * { animation-play-state: paused; }
+@keyframes sen-flota { 50% { transform: translateY(-4px); } }
+@keyframes sen-barrido { 0% { transform: translateY(-30px); } 100% { transform: translateY(104px); } }
+@keyframes sen-linea { 0%, 12% { transform: scaleX(.25); opacity: .35; } 45%, 100% { transform: scaleX(1); opacity: 1; } }
+@keyframes sen-chispa { 0% { opacity: 0; transform: scale(.3); } 25% { opacity: 1; transform: scale(1); } 60%, 100% { opacity: 0; transform: scale(1.6) translateY(-8px); } }
+
+/* ---------- Listo ---------- */
+.sen-listo h2 { margin: 6px 0 0; font-size: clamp(26px, 5vw, 36px); letter-spacing: -.02em; }
+.sen-palomita { width: 92px; height: 92px; }
+.sen-palomita circle { fill: none; stroke: color-mix(in srgb, var(--verde, #1c7d46) 30%, transparent); stroke-width: 5; }
+.sen-palomita path { fill: none; stroke: var(--verde, #1c7d46); stroke-width: 6; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 80; stroke-dashoffset: 80; animation: sen-palomita .7s .25s cubic-bezier(.2, .8, .2, 1) forwards; }
+@keyframes sen-palomita { to { stroke-dashoffset: 0; } }
+.sen-exportar { width: 100%; margin-top: 10px; padding-top: 16px; border-top: 1px solid var(--borde); text-align: left; }
+
+/* ---------- Celular ---------- */
+@media (max-width: 640px) {
+  .sen-escena { justify-content: flex-start; padding-top: 12px; min-height: 0; }
+  .sen-tarjeta { padding: 20px 16px; border-radius: 16px; }
+  .sen-dos, .sen-opciones { grid-template-columns: 1fr; }
+  .sen-avanzado span { display: none; }
+  .sen-avanzado { padding: 0; width: 44px; justify-content: center; }
+  .sen-pegar span { display: none; }
+  .sen-acciones .sen-boton { flex: 1 1 100%; }
+}
+
+/* ---------- Reducir movimiento ---------- */
+@media (prefers-reduced-motion: reduce) {
+  .sen-hero, .sen-tarjeta, .sen-hoja, .sen-hoja i, .sen-haz, .sen-chispa { animation: none !important; }
+  .sen-haz { transform: translateY(40px); }
+  .sen-palomita path { animation: none !important; stroke-dashoffset: 0; }
+  .sen-procesar::after { display: none; }
+}

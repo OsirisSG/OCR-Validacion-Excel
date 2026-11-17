@@ -5571,16 +5571,28 @@ function EstadoColaExcel() {
 }
 
 function App() {
-  const [ruta, setRuta] = useState(location.hash || "#/resumen");
+  // P54 · «modo sencillo»: sin `#/…` en la dirección se abre la pantalla de inicio
+  // (sencillo.js). Quien eligió «Análisis avanzado» vuelve a entrar por el resumen.
+  const modoSencillo = window.OCRModoSencillo || null;
+  const rutaPorDefecto = () => (modoSencillo && typeof window.VistaSencilla === "function"
+    ? modoSencillo.rutaInicial() : "#/resumen");
+  const [ruta, setRuta] = useState(location.hash || rutaPorDefecto());
   const [tema, alternarTema] = usarTema();
   useEffect(() => {
-    const alHash = () => setRuta(location.hash || "#/resumen");
+    const alHash = () => setRuta(location.hash || rutaPorDefecto());
     window.addEventListener("hashchange", alHash);
     return () => window.removeEventListener("hashchange", alHash);
   }, []);
   const [vista, arg] = ruta.replace(/^#\//, "").split("/");
   const actual = vista === "tabla" ? "tabla" : vista === "carga" ? "carga"
     : vista === "detalle" ? "" : "resumen";
+
+  if (vista === "inicio" && modoSencillo && typeof window.VistaSencilla === "function") {
+    return html`
+      <${modoSencillo.CabeceraSencilla} tema=${tema} alternarTema=${alternarTema} />
+      <main class="contenedor sen-contenedor"><${window.VistaSencilla} /></main>
+    `;
+  }
 
   return html`
     <header class="cabecera">
@@ -5594,6 +5606,8 @@ function App() {
           <a class="tab" href="#/resumen" aria-current=${actual === "resumen" ? "page" : undefined}><${Icono} tipo="grid" />Resumen</a>
           <a class="tab" href="#/tabla" aria-current=${actual === "tabla" ? "page" : undefined}><${Icono} tipo="lista" />Listado</a>
           <a class="tab" href="#/carga" aria-current=${actual === "carga" ? "page" : undefined}><${Icono} tipo="carpeta" />Procesar carpeta</a>
+          ${modoSencillo && html`<a class="tab tab-sencillo" href="#/inicio" onClick=${() => modoSencillo.fijarModo("sencillo")}
+            title=${t("Vuelve a la pantalla de inicio, con sólo lo necesario para procesar una carpeta")}>${t("Modo sencillo")}</a>`}
         </nav>
         <span class="espacio"></span>
         <select class="selector-idioma" value=${window.OCR_I18N?.get?.()||"es"} onChange=${e=>window.OCR_I18N?.set?.(e.target.value)} aria-label="Idioma"><option value="es">ES</option><option value="en">EN</option><option value="de">DE</option></select>

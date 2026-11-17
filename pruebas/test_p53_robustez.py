@@ -182,7 +182,7 @@ def test_la_pagina_cumple_la_guia_visual_y_no_usa_la_red():
     import panel_confirmacion as pc
     html = pc.PAGINA
     for obligatorio in ("html[data-theme=light]", "prefers-reduced-motion", ":focus-visible",
-                        "tema-switch", "[hidden]{display:none", "+ otro valor", 'id="visor"', "Pieza:",
+                        "tema-switch", "[hidden]{display:none", "Otro texto", 'id="visor"', "Pieza:",
                         "/api/deshacer", "/api/decidir_varias", "<noscript>"):
         assert obligatorio in html, obligatorio
     # sin CDNs ni fuentes externas: el cliente no tiene red

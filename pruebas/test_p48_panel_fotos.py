@@ -123,7 +123,7 @@ def test_otro_valor_avisa_la_forma_y_se_puede_usar(panel):
 
 def test_la_pagina_trae_la_casilla_sutil_y_el_visor(panel):
     html = panel.inicio().body.decode("utf-8")
-    assert "+ otro valor" in html and 'id="visor"' in html and "Pieza:" in html
+    assert "Otro texto" in html and 'id="visor"' in html and "Pieza:" in html
 
 
 def test_el_panel_solo_escucha_en_esta_computadora():

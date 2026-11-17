@@ -125,6 +125,9 @@
     const [dialogoDetencion, setDialogoDetencion] = useState(false);
     const [otraCarpeta, setOtraCarpeta] = useState(false);
     const [reloj, setReloj] = useState(Date.now());
+    // P54 · formulario de dudas de la última corrida (dónde está y si se puede abrir)
+    const [dudas, setDudas] = useState(null);
+    const [abriendoDudas, setAbriendoDudas] = useState(false);
 
     useEffect(() => { guardarBorrador({ ruta, laboratorio, conVideo }); }, [ruta, laboratorio, conVideo]);
 
@@ -162,6 +165,28 @@
       return () => clearInterval(id);
     }, [procesando]);
     useEffect(() => { if (activo) setOtraCarpeta(false); }, [activo]);
+    useEffect(() => {
+      if (!completado) { setDudas(null); return; }
+      pedirJSON("/api/dudas/estado").then(setDudas).catch(() => setDudas(null));
+    }, [completado]);
+
+    /** Lleva al formulario de dudas en esta misma pestaña; si se había cerrado, lo vuelve a abrir. */
+    async function revisarDudas() {
+      setErrorEnvio(null);
+      setAbriendoDudas(true);
+      try {
+        let dato = await enviarJSON("/api/dudas/abrir", {});
+        for (let intento = 0; intento < 20 && !dato.vivo; intento += 1) {   // arranca en unos segundos
+          await new Promise((listo) => setTimeout(listo, 700));
+          dato = await pedirJSON("/api/dudas/estado");
+        }
+        if (!dato.vivo || !dato.url) throw new Error(t("El formulario de dudas tardó demasiado en abrir. Inténtalo de nuevo."));
+        location.href = `${dato.url}/?volver=${encodeURIComponent(`${location.origin}/#/inicio`)}`;
+      } catch (e) {
+        setErrorEnvio(e.message);
+        setAbriendoDudas(false);
+      }
+    }
 
     function cambiarIdioma(codigo) {
       if (codigo === idioma) return;
@@ -322,12 +347,18 @@
           <h2>${t("¡Listo!")}</h2>
           <p class="sen-mensaje">${estado.procesadas || 0} ${t("carpetas procesadas")}${estado.transcurrido_segundos
             ? ` · ${fmtDuracion(estado.transcurrido_segundos)}` : ""}</p>
+          ${dudas?.disponible && html`<div class="sen-dudas">
+            <p><strong>${t("Falta un paso: revisar las dudas.")}</strong> ${t("El sistema te enseña la foto y sus opciones; tú eliges el texto correcto.")}</p>
+            <button class="boton boton-primario sen-boton sen-procesar sen-grande" onClick=${revisarDudas} disabled=${abriendoDudas}>
+              <span>${abriendoDudas ? t("Abriendo…") : t("Revisar dudas")}</span><${Ico} n="flecha" /></button>
+          </div>`}
           <div class="sen-acciones">
-            <a class="boton boton-primario sen-boton sen-procesar" href="#/resumen" onClick=${() => fijarModo("avanzado")}>
+            <a class=${`boton sen-boton ${dudas?.disponible ? "" : "boton-primario sen-procesar"}`} href="#/resumen" onClick=${() => fijarModo("avanzado")}>
               <span>${t("Ver resultados")}</span><${Ico} n="flecha" /></a>
             <button class="boton sen-boton" onClick=${() => setOtraCarpeta(true)}>
               <${Ico} n="carpeta" />${t("Procesar otra carpeta")}</button>
           </div>
+          ${errorEnvio && html`<p class="mensaje-error" role="alert">${errorEnvio}</p>`}
           <div class="sen-exportar"><${ExportadorExcel} /></div>
         </div>
       </section>`;

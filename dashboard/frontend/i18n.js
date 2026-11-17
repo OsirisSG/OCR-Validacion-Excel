@@ -971,6 +971,11 @@
   // P54 · modo sencillo (sencillo.js). Sólo se añaden las claves que aún no existían.
   const P54 = {
     en: {
+     "Falta un paso: revisar las dudas.": "One step left: review the doubts.",
+     "El sistema te enseña la foto y sus opciones; tú eliges el texto correcto.": "The system shows you the photo and its options; you pick the correct text.",
+     "Abriendo…": "Opening…",
+     "Revisar dudas": "Review doubts",
+     "El formulario de dudas tardó demasiado en abrir. Inténtalo de nuevo.": "The doubts form took too long to open. Please try again.",
      "Modo noche": "Night mode",
      "Modo sencillo": "Simple mode",
      "Análisis avanzado": "Advanced analysis",
@@ -1031,6 +1036,11 @@
      "La última ejecución terminó con error:": "The last run ended with an error:"
     },
     de: {
+     "Falta un paso: revisar las dudas.": "Ein Schritt fehlt noch: die Zweifelsfälle prüfen.",
+     "El sistema te enseña la foto y sus opciones; tú eliges el texto correcto.": "Das System zeigt Ihnen das Foto und seine Optionen; Sie wählen den richtigen Text.",
+     "Abriendo…": "Wird geöffnet…",
+     "Revisar dudas": "Zweifelsfälle prüfen",
+     "El formulario de dudas tardó demasiado en abrir. Inténtalo de nuevo.": "Das Formular hat zu lange zum Öffnen gebraucht. Bitte versuchen Sie es erneut.",
      "Modo noche": "Nachtmodus",
      "Modo sencillo": "Einfacher Modus",
      "Análisis avanzado": "Erweiterte Analyse",

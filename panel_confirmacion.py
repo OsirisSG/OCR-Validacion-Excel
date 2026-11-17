@@ -275,7 +275,7 @@ PAGINA = """<!doctype html>
  :root{--fondo:#0b1114;--sup:#131c21;--sup2:#1b272e;--borde:#2b3a43;
        --tinta:#f2f6f8;--tinta2:#c9d5db;--tenue:#8fa1ab;
        --acento:#2fb9d3;--sobre-acento:#03222b;--peligro:#ff5a4f;--exito:#2fc46b;--aviso:#e0a23a;
-       --exito-osc:#0c3a22;--radio:12px;
+       --exito-osc:#0c3a22;--radio:18px;
        --f-sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
        --f-mono:ui-monospace,"Cascadia Mono",Consolas,Menlo,monospace;
        --entra:cubic-bezier(.2,.8,.2,1);--rebote:cubic-bezier(.34,1.56,.64,1)}
@@ -311,14 +311,21 @@ PAGINA = """<!doctype html>
  .kpis{display:flex;gap:18px}
  .kpi{display:flex;flex-direction:column;min-width:52px}
  .kpi .cifra{font-size:22px;line-height:1.1}
- .tema-switch{position:relative;display:inline-flex;align-items:center;justify-content:center;
-              width:44px;height:44px;border-radius:50%;border:1px solid var(--borde);background:var(--sup);cursor:pointer}
+ /* interruptor día/noche: el mismo del modo sencillo del dashboard */
+ .tema-switch{position:relative;display:inline-flex;align-items:center;min-height:44px;cursor:pointer}
  .tema-switch input{position:absolute;inset:0;opacity:0;cursor:pointer;margin:0}
- .tema-switch svg{width:20px;height:20px;transition:transform .45s var(--rebote)}
- .tema-switch input:checked~svg{transform:rotate(-35deg)}
- .tema-switch .sol{display:none} html[data-theme=light] .tema-switch .sol{display:block}
- html[data-theme=light] .tema-switch .luna{display:none}
- .tema-switch:has(input:focus-visible){outline:2px solid var(--acento);outline-offset:2px}
+ .tema-pista{position:relative;display:block;width:62px;height:32px;border-radius:999px;overflow:hidden;
+             background:#bfe4ed;border:1px solid var(--borde);transition:background-color .35s}
+ .tema-astro{position:absolute;top:4px;left:4px;width:22px;height:22px;border-radius:50%;background:#f6c64b;
+             box-shadow:0 0 0 4px rgba(246,198,75,.28);
+             transition:transform .45s var(--rebote),background-color .35s,box-shadow .35s}
+ .tema-pista i{position:absolute;width:3px;height:3px;border-radius:50%;background:#fff;opacity:0;transform:scale(.2);
+               transition:opacity .3s,transform .45s var(--rebote)}
+ .tema-pista i:nth-child(1){left:12px;top:8px}.tema-pista i:nth-child(2){left:22px;top:18px}.tema-pista i:nth-child(3){left:30px;top:9px}
+ .tema-switch input:checked+.tema-pista{background:#0b1b2a}
+ .tema-switch input:checked+.tema-pista .tema-astro{transform:translateX(30px);background:#e8eef2;box-shadow:inset -6px -2px 0 0 #b9c7d1}
+ .tema-switch input:checked+.tema-pista i{opacity:1;transform:scale(1)}
+ .tema-switch:has(input:focus-visible) .tema-pista{outline:2px solid var(--acento);outline-offset:2px}
 
  main{max-width:1080px;margin:0 auto;padding:16px 16px 120px}
  .barra{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:14px}
@@ -339,7 +346,7 @@ PAGINA = """<!doctype html>
  .busca::placeholder{color:var(--tenue)}
 
  .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:46px;padding:0 16px;
-      border-radius:10px;border:1px solid var(--acento);background:var(--acento);color:var(--sobre-acento);
+      border-radius:999px;border:1px solid var(--acento);background:var(--acento);color:var(--sobre-acento);
       font-weight:700;cursor:pointer;transition:transform .2s var(--rebote),opacity .2s}
  .btn:active{transform:scale(.96)}
  .btn.sec{background:transparent;color:var(--acento)}
@@ -356,8 +363,12 @@ PAGINA = """<!doctype html>
 
  .lotes{background:var(--sup);border:1px solid var(--borde);border-left:3px solid var(--acento);
         border-radius:var(--radio);padding:12px 14px;margin-bottom:14px}
- .lotes h3{margin:0 0 2px;font-size:14px}
- .lotes p{margin:0 0 8px;color:var(--tenue);font-size:12.5px}
+ .lotes summary{cursor:pointer;min-height:44px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;list-style:none}
+ .lotes summary::-webkit-details-marker{display:none}
+ .lotes summary::before{content:'';width:8px;height:8px;border-right:2px solid var(--acento);border-bottom:2px solid var(--acento);
+                        transform:rotate(-45deg);transition:transform .25s var(--entra);margin-right:6px}
+ .lotes[open] summary::before{transform:rotate(45deg)}
+ .lotes p{margin:4px 0 8px;color:var(--tenue);font-size:12.5px}
  .lote{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 0;
        border-top:1px solid var(--borde);font-size:13.5px;flex-wrap:wrap}
  .lote>span:first-child{flex:1;min-width:200px;overflow-wrap:anywhere}
@@ -408,14 +419,40 @@ PAGINA = """<!doctype html>
  .minis img:hover,.minis img:focus-visible{transform:scale(1.06)}
  .minis .sinfoto{font-size:11px;color:var(--tenue);padding:0 4px;white-space:nowrap}
  .propio{font-size:12.5px;color:var(--acento);margin-top:6px}
- .otro{margin-top:4px;text-align:right}
- .otro a{display:inline-block;padding:14px 2px;font-size:12px;color:var(--tenue);cursor:pointer;text-decoration:underline dotted;
-         text-underline-offset:3px}
- .otro a:hover,.otro a:focus-visible{color:var(--acento)}
- .otro form{display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
  .otro input{font:inherit;font-size:14px;border:1px solid var(--borde);border-radius:9px;padding:0 10px;min-height:44px;
              width:220px;max-width:100%;background:var(--sup2);color:var(--tinta)}
  .otro .forma{display:block;font-size:12px;color:var(--aviso);margin-top:3px}
+ /* ---- vista guiada: una duda a la vez, con la foto grande ---- */
+ .vistas{display:inline-grid;grid-template-columns:1fr 1fr;gap:4px;padding:4px;border-radius:999px;background:var(--sup2)}
+ .vistas button{min-height:44px;padding:0 14px;border:0;border-radius:999px;background:none;color:var(--tinta2);
+                font-weight:600;font-size:13px;cursor:pointer}
+ .vistas button.sel{background:var(--sup);color:var(--tinta);box-shadow:0 1px 2px rgba(0,0,0,.2)}
+ .guia{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px;flex-wrap:wrap}
+ .guia .cuenta{font:600 12px var(--f-mono);letter-spacing:.06em;text-transform:uppercase;color:var(--tenue)}
+ .guia .cuenta b{color:var(--tinta);font-size:15px}
+ .guia .pasos{display:flex;gap:8px}
+ .duda.guiada{padding:20px}
+ .duda.guiada .cuerpo{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.05fr);gap:20px;align-items:start}
+ .duda.guiada .cuerpo.sin-foto{grid-template-columns:1fr}
+ .lienzo{position:relative;height:340px;border-radius:14px;border:1px solid var(--borde);background:#0a1014;
+         display:grid;place-items:center;overflow:hidden}
+ .lienzo img{max-width:100%;max-height:100%;cursor:zoom-in;transition:transform .35s var(--entra)}
+ .lienzo .sinimagen{color:#8fa1ab;font-size:13px;padding:20px;text-align:center}
+ .barra-foto{display:flex;align-items:center;gap:6px;margin-top:8px;flex-wrap:wrap}
+ .barra-foto .leyenda{flex:1;min-width:120px;font-size:12px;color:var(--tenue);overflow-wrap:anywhere}
+ .ico{display:inline-grid;place-items:center;width:44px;height:44px;border-radius:50%;border:1px solid var(--borde);
+      background:var(--sup);color:var(--tinta2);cursor:pointer;transition:transform .2s var(--rebote),border-color .2s,color .2s}
+ .ico svg{width:19px;height:19px}
+ .ico:hover{border-color:var(--acento);color:var(--acento)}
+ .ico:active{transform:scale(.92)}
+ .minis img.activa{outline:2px solid var(--acento);outline-offset:1px}
+ /* «Otro texto»: una opción más, a la vista */
+ .op.otra{border-style:dashed;background:none}
+ .op.otra .val{font-family:var(--f-sans);font-weight:600}
+ .otro{margin-top:6px}
+ .otro form{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px}
+ .otro form input{flex:1;min-width:180px}
+ #volver{text-decoration:none}
  .vacio{background:var(--sup);border:1px dashed var(--borde);border-radius:var(--radio);padding:30px 20px;
         text-align:center;color:var(--tenue)}
  .vacio b{display:block;color:var(--tinta);font-size:16px;margin-bottom:4px}
@@ -433,7 +470,12 @@ PAGINA = """<!doctype html>
  #visor{position:fixed;inset:0;background:rgba(4,9,12,.9);display:none;align-items:center;
         justify-content:center;flex-direction:column;z-index:20;cursor:zoom-out;padding:18px}
  #visor.abierto{display:flex;animation:subeEntra .3s var(--entra)}
- #visor img{max-width:96vw;max-height:82svh;border-radius:10px;background:#fff}
+ #visor img{max-width:92vw;max-height:74svh;border-radius:10px;background:#fff;cursor:grab;touch-action:none;
+            transition:transform .3s var(--entra)}
+ #visor img.arrastra{cursor:grabbing;transition:none}
+ #visor .herr{display:flex;gap:8px;margin-bottom:12px;cursor:default;position:relative;z-index:2}
+ #visor .pie-foto{position:relative;z-index:2}
+ #visor .herr .ico{background:rgba(20,30,36,.85);border-color:rgba(255,255,255,.25);color:#fff}
  #visor .pie-foto{color:#e6eef2;font-size:13px;margin-top:10px;text-align:center;max-width:90vw}
 
  .chispa{position:fixed;z-index:5000;pointer-events:none}
@@ -466,6 +508,10 @@ PAGINA = """<!doctype html>
    .op{grid-template-columns:auto minmax(0,1fr)}
    .reco,.conf{grid-column:2;grid-row:auto;justify-self:start}
    .atajos{display:none}
+   .duda.guiada .cuerpo{grid-template-columns:1fr}
+   .lienzo{height:240px}
+   .guia .pasos{width:100%}
+   .guia .pasos .btn{flex:1}
  }
  @media (prefers-reduced-motion:reduce){
    *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}
@@ -485,22 +531,33 @@ PAGINA = """<!doctype html>
     <div class="kpi"><span class="cifra" id="k-dudas">0</span><span class="etiqueta">dudas</span></div>
     <div class="kpi"><span class="cifra" id="k-hechas">0</span><span class="etiqueta">elegidas</span></div>
   </div>
-  <label class="tema-switch" title="Tema claro u oscuro"><input type="checkbox" aria-label="Tema oscuro">
-    <svg class="luna" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
-    <svg class="sol" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+  <a class="btn sec chico" id="volver" hidden>← Volver al programa</a>
+  <label class="tema-switch" title="Tema claro u oscuro"><input type="checkbox" role="switch" aria-label="Modo noche">
+    <span class="tema-pista" aria-hidden="true"><i></i><i></i><i></i><span class="tema-astro"></span></span>
   </label>
 </div></header>
 <main>
   <noscript><div class="vacio"><b>Esta página necesita JavaScript.</b>Actívalo en el navegador para ver y decidir las dudas.</div></noscript>
   <div class="barra">
     <div class="segmentos" id="filtros" role="tablist" aria-label="Filtro de dudas"></div>
+    <div class="vistas" role="tablist" aria-label="Forma de revisar">
+      <button role="tab" id="v-guiada" data-v="guiada">Una a una</button><button role="tab" id="v-lista" data-v="lista">Lista</button>
+    </div>
     <input class="busca" id="busca" type="search" placeholder="Buscar caso o campo" aria-label="Buscar caso o campo" autocomplete="off">
   </div>
   <div id="lotes"></div>
   <div id="lista" aria-live="polite"></div>
-  <p class="atajos">Atajos: <kbd>J</kbd>/<kbd>K</kbd> siguiente y anterior · <kbd>1</kbd>–<kbd>9</kbd> elegir opción · <kbd>Enter</kbd> usar la recomendada · <kbd>/</kbd> buscar · <kbd>Esc</kbd> cerrar foto</p>
+  <p class="atajos">Atajos: <kbd>J</kbd>/<kbd>K</kbd> siguiente y anterior · <kbd>1</kbd>–<kbd>9</kbd> elegir opción · <kbd>Enter</kbd> usar la recomendada · <kbd>O</kbd> otro texto · <kbd>R</kbd> girar la foto · <kbd>/</kbd> buscar · <kbd>Esc</kbd> cerrar foto</p>
 </main>
-<div id="visor" role="dialog" aria-label="Foto de la evidencia"><img id="visor-img" alt=""><div class="pie-foto" id="visor-pie"></div></div>
+<div id="visor" role="dialog" aria-label="Foto de la evidencia">
+  <div class="herr" id="visor-herr">
+    <button class="ico" data-a="izq" aria-label="Girar a la izquierda" title="Girar a la izquierda (Mayús + R)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 4v6h6"/><path d="M3.5 10a9 9 0 1 1 2.1 8.4"/></svg></button>
+    <button class="ico" data-a="der" aria-label="Girar a la derecha" title="Girar a la derecha (R)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 4v6h-6"/><path d="M20.5 10a9 9 0 1 0-2.1 8.4"/></svg></button>
+    <button class="ico" data-a="menos" aria-label="Alejar" title="Alejar (-)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 12h14"/></svg></button>
+    <button class="ico" data-a="mas" aria-label="Acercar" title="Acercar (+)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 12h14M12 5v14"/></svg></button>
+    <button class="ico" data-a="cerrar" aria-label="Cerrar la foto" title="Cerrar (Esc)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+  </div>
+  <img id="visor-img" alt="" draggable="false"><div class="pie-foto" id="visor-pie"></div></div>
 <div id="fiesta" role="status"><canvas id="confeti"></canvas>
   <svg viewBox="0 0 60 60" aria-hidden="true"><circle cx="30" cy="30" r="26"/><path d="M17 31l9 9 17-19"/></svg>
   <h2>Todo decidido</h2><p id="fiesta-txt"></p></div>
@@ -515,6 +572,37 @@ const $ = id => document.getElementById(id);
 let DATOS = {dudas: [], decisiones: {}, resumen: {}};
 let filtro = 'con', busca = '', animar = true, foco = -1, visibles = [];
 const ALTA = 0.9;
+// P54 · «una a una» (por defecto) o lista; giro de cada foto y foto activa de cada duda
+let vista = 'guiada'; try { vista = localStorage.getItem('dudas_vista') === 'lista' ? 'lista' : 'guiada'; } catch (e) {}
+const giros = {}, fotoActiva = {};
+const ICO_IZQ = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 4v6h6"/><path d="M3.5 10a9 9 0 1 1 2.1 8.4"/></svg>';
+const ICO_DER = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 4v6h-6"/><path d="M20.5 10a9 9 0 1 0-2.1 8.4"/></svg>';
+const ICO_AMP = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>';
+
+// Una foto girada 90° debe seguir cabiendo en su caja: se gira y se reduce lo justo.
+function aplicarGiro(img, grados, zoom = 1, dx = 0, dy = 0) {
+  const caja = img.parentElement.getBoundingClientRect(), w = img.offsetWidth || 1, h = img.offsetHeight || 1;
+  const tumbada = Math.abs(grados % 180) === 90;
+  const cabe = tumbada ? Math.min(1, caja.width / h, caja.height / w) : 1;
+  img.style.transform = `translate(${dx}px, ${dy}px) rotate(${grados}deg) scale(${(cabe * zoom).toFixed(3)})`;
+}
+function fotosDe(d) {
+  const vistas = [];
+  d.opciones.forEach(o => (o.fotos || []).forEach(f => { const tok = f.token || f.token_recorte;
+    if (tok && !vistas.some(v => v.tok === tok)) vistas.push({tok, foto: f.foto, fuente: f.fuente, texto: f.texto, con_caja: f.con_caja}); }));
+  return vistas;
+}
+function pieDe(d, f) {
+  return `${d.pieza ? d.pieza + ' · ' : ''}${f.foto} · ${f.fuente}${f.texto ? ' · leído: «' + f.texto + '»' : ''}${f.con_caja ? '' : ' · (sin recuadro: no se encontró la posición exacta)'}`;
+}
+(function volver() {      // enlace de regreso al dashboard: sólo se acepta una dirección de este equipo
+  let destino = ''; try { destino = new URLSearchParams(location.search).get('volver') || ''; } catch (e) {}
+  if (!/^http:[/][/](127[.]0[.]0[.]1|localhost)(:[0-9]+)?[/]/.test(destino)) return;
+  const a = $('volver'); a.href = destino; a.hidden = false;
+})();
+document.querySelectorAll('.vistas button').forEach(b => b.onclick = () => {
+  vista = b.dataset.v; try { localStorage.setItem('dudas_vista', vista); } catch (e) {}
+  animar = true; foco = -1; pintarLotes(); pintarLista(); });
 
 // ---- tema día/noche (se recuerda; avisa con el evento «tema») ----
 (function tema() {
@@ -602,11 +690,13 @@ function pintarLotes() {
       <span class="resp">· ${verif.completa.length} casos (cada uno con su serie)</span></span>
       <span class="acciones"><button class="btn chico" id="verifCompleta">Completa</button>
       <button class="btn chico sec" id="verifSin">Sin dígito de control</button></span></div>` : '';
-  $('lotes').innerHTML = (filas.length || htmlVerif || htmlAltas) ? `<div class="lotes spot ${animar ? 'entra' : ''}">
-    <h3>Aceptar de una vez</h3><p>La opción recomendada se repite en varios casos, o ya está verificada. Un clic decide todas; después puedes cambiar cualquiera.</p>${htmlAltas}${htmlVerif}${
+  const atajos = filas.length + (htmlVerif ? 1 : 0) + (htmlAltas ? 1 : 0);
+  // en «una a una» va plegado para que la duda quede arriba; en la lista, abierto
+  $('lotes').innerHTML = atajos ? `<details class="lotes ${animar ? 'entra' : ''}" ${vista === 'lista' ? 'open' : ''}>
+    <summary><b>Aceptar de una vez</b> <span class="resp">· ${atajos} ${atajos === 1 ? 'atajo' : 'atajos'} para decidir varias dudas con un clic</span></summary><p>La opción recomendada se repite en varios casos, o ya está verificada. Un clic decide todas; después puedes cambiar cualquiera.</p>${htmlAltas}${htmlVerif}${
     filas.map((g, i) => `<div class="lote"><span>${esc(g.pieza || g.campo)} · <b>${esc(g.valor)}</b>
       <span class="resp">(${legible(g.fuente)}) · ${g.ids.length} casos</span></span>
-      <span class="acciones"><button class="btn chico sec" data-i="${i}">Usar en los ${g.ids.length}</button></span></div>`).join('')}</div>` : '';
+      <span class="acciones"><button class="btn chico sec" data-i="${i}">Usar en los ${g.ids.length}</button></span></div>`).join('')}</details>` : '';
   const enviar = async lista => { await post('/api/decidir_varias', {decisiones: lista.map(x => ({id: x.id, valor: x.valor}))}); await cargar(); };
   if (htmlAltas) $('aceptarAltas').onclick = () => enviar(altas);
   if (htmlVerif) {
@@ -623,13 +713,28 @@ function pintarLista() {
       : filtro === 'sin' ? !conPropuesta(d) : d.motivo === filtro))
     .filter(d => !q || `${d.caso} ${d.campo} ${d.pieza || ''} ${d.columna || ''}`.toLowerCase().includes(q))
     .sort((a, b) => (a.campo + a.caso).localeCompare(b.campo + b.caso));
+  document.querySelectorAll('.vistas button').forEach(b => { b.classList.toggle('sel', b.dataset.v === vista);
+    b.setAttribute('aria-selected', b.dataset.v === vista); });
+  const guiada = vista === 'guiada';
+  if (guiada && visibles.length) {
+    if (foco < 0 || foco >= visibles.length) {
+      const pendiente = visibles.findIndex(d => !DATOS.decisiones[d.id]);
+      foco = pendiente < 0 ? 0 : pendiente;
+    }
+  }
   if (!visibles.length) {
     $('lista').innerHTML = `<div class="vacio ${animar ? 'entra' : ''}">${DATOS.dudas.length
       ? '<b>Nada con este filtro.</b>Cambia el filtro o borra la búsqueda para ver las demás dudas.'
       : '<b>No hay dudas pendientes.</b>Todo lo que el programa pudo leer está en el libro.'}</div>`;
     animar = false; return;
   }
-  $('lista').innerHTML = visibles.map((d, n) => {
+  const aPintar = guiada ? [[visibles[foco], foco]] : visibles.map((d, n) => [d, n]);
+  const hechasVisibles = visibles.filter(d => DATOS.decisiones[d.id]).length;
+  const cabeceraGuia = guiada ? `<div class="guia">
+      <span class="cuenta">Duda <b>${foco + 1}</b> de ${visibles.length} · ${hechasVisibles} ${hechasVisibles === 1 ? 'elegida' : 'elegidas'}</span>
+      <span class="pasos"><button class="btn chico sec" id="g-ant" ${foco <= 0 ? 'disabled' : ''}>← Anterior</button>
+      <button class="btn chico" id="g-sig" ${foco >= visibles.length - 1 ? 'disabled' : ''}>Siguiente →</button></span></div>` : '';
+  $('lista').innerHTML = cabeceraGuia + aPintar.map(([d, n]) => {
     const sel = DATOS.decisiones[d.id], reco = recomendada(d);
     const opciones = d.opciones.map((o, i) => {
       const valor = o.valor === null ? 'No lo tengo' : o.valor;
@@ -647,29 +752,79 @@ function pintarLista() {
     const propio = sel && !d.opciones.some(o => String(o.valor) === String(sel.valor))
       ? `<div class="propio">Elegiste un valor escrito por ti: <b>${esc(sel.valor)}</b></div>` : '';
     const otro = `<div class="otro" data-id="${esc(d.id)}" data-campo="${esc(d.campo)}">
-        <a class="otro-link" role="button" tabindex="0">+ otro valor</a>
-        <form hidden><input placeholder="escribe el valor correcto" aria-label="Otro valor" autocomplete="off">
-          <button class="btn chico sec" type="submit">Usar</button></form><span class="forma"></span></div>`;
+        <button type="button" class="op otra otro-link"><kbd>O</kbd><span class="val">Otro texto</span>
+          <span class="linea"><span class="resp">Ninguna opción es correcta: escribe tú el valor.</span></span></button>
+        <form hidden><input placeholder="escribe el texto correcto" aria-label="Otro texto" autocomplete="off">
+          <button class="btn chico" type="submit">Usar</button></form><span class="forma"></span></div>`;
     const descartadas = (d.opciones_descartadas || []).length
       ? `<div class="resp">Descartado por la serie: ${d.opciones_descartadas.map(o => esc(o.valor)).join(', ')}</div>` : '';
     const donde = (d.donde_mirar || []).length
       ? `<ul class="donde">${d.donde_mirar.map(t => `<li>${esc(t)}</li>`).join('')}</ul>` : '';
-    return `<section class="duda spot ${sel ? 'hecha' : ''} ${animar ? 'entra' : ''} ${n === foco ? 'foco' : ''}" style="--i:${Math.min(n, 12)}" tabindex="0" data-n="${n}" data-id="${esc(d.id)}">
+    const fotos = guiada ? fotosDe(d) : [];
+    const activa = fotos.find(f => f.tok === fotoActiva[d.id]) || fotos[0];
+    const panelFoto = !guiada ? '' : activa ? `<figure style="margin:0">
+        <div class="lienzo"><img id="foto-grande" src="/api/foto/${esc(activa.tok)}?tam=grande" data-grande="${esc(activa.tok)}"
+          data-pie="${esc(pieDe(d, activa))}" alt="Foto ${esc(activa.foto)}" tabindex="0" role="button" draggable="false"></div>
+        <figcaption class="barra-foto">
+          <button class="ico" id="f-izq" aria-label="Girar la foto a la izquierda" title="Girar a la izquierda (Mayús + R)">${ICO_IZQ}</button>
+          <button class="ico" id="f-der" aria-label="Girar la foto a la derecha" title="Girar a la derecha (R)">${ICO_DER}</button>
+          <button class="ico" id="f-amp" aria-label="Ampliar la foto" title="Ampliar">${ICO_AMP}</button>
+          <span class="leyenda">${esc(activa.foto)}${activa.texto ? ' · leído: «' + esc(activa.texto) + '»' : ''}${fotos.length > 1 ? ` · ${fotos.length} fotos: pulsa una miniatura para verla aquí` : ''}</span>
+        </figcaption></figure>` : '';
+    const cuerpoIni = guiada ? `<div class="cuerpo ${activa ? '' : 'sin-foto'}">${panelFoto}<div>` : '';
+    const cuerpoFin = guiada ? '</div></div>' : '';
+    return `<section class="duda spot ${guiada ? 'guiada' : ''} ${sel ? 'hecha' : ''} ${animar ? 'entra' : ''} ${n === foco ? 'foco' : ''}" style="--i:${guiada ? 0 : Math.min(n, 12)}" tabindex="0" data-n="${n}" data-id="${esc(d.id)}">
       <h2><span class="caso">${esc(d.caso)}</span><span>${esc(d.pieza || d.campo)}</span>
         <span class="motivo ${d.motivo === 'fuentes_en_conflicto' ? 'm-conflicto' : ''}">${legible(d.motivo)}</span>
         ${sel ? '<span class="listo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 13l4 4L19 7"/></svg>elegida</span>' : ''}</h2>
       <div class="pieza">Pieza: <b>${esc(d.pieza || 'sin identificar')}</b> · <span class="mono">${esc(d.campo)}</span>${d.columna ? ` · columna ${esc(d.columna)}` : ''}</div>
       <div class="detalle">${esc(d.detalle)}</div>
-      ${donde}${descartadas}
-      <div class="ops">${opciones}</div>${propio}${otro}
+      ${cuerpoIni}${donde}${descartadas}
+      <div class="ops">${opciones}</div>${propio}${otro}${cuerpoFin}
     </section>`;
   }).join('');
   animar = false;
-  $('lista').querySelectorAll('.op').forEach(b => b.onclick = () => elegir(b));
-  $('lista').querySelectorAll('.minis img').forEach(i => { i.onclick = () => abrirVisor(i);
-    i.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); abrirVisor(i); } }; });
+  $('lista').querySelectorAll('.op:not(.otra)').forEach(b => b.onclick = () => elegir(b));
+  // miniaturas: en «una a una» cambian la foto grande; en la lista abren el visor
+  const alMini = i => { if (!guiada) { abrirVisor(i); return; }
+    fotoActiva[visibles[foco].id] = i.dataset.grande; pintarLista(); };
+  $('lista').querySelectorAll('.minis img').forEach(i => {
+    const g = giros[i.dataset.grande] || 0; if (g) i.style.transform = `rotate(${g}deg)`;
+    if (guiada && activaTok() === i.dataset.grande) i.classList.add('activa');
+    i.onclick = () => alMini(i);
+    i.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); alMini(i); } }; });
+  const grande = $('foto-grande');
+  if (grande) {
+    const pintarGiro = () => aplicarGiro(grande, giros[grande.dataset.grande] || 0);
+    grande.onload = pintarGiro; if (grande.complete) pintarGiro();
+    grande.onclick = () => abrirVisor(grande);
+    grande.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); abrirVisor(grande); } };
+    $('f-izq').onclick = () => girarGrande(-90); $('f-der').onclick = () => girarGrande(90);
+    $('f-amp').onclick = () => abrirVisor(grande);
+  }
+  if (guiada) {
+    const ant = $('g-ant'), sig = $('g-sig');
+    if (ant) ant.onclick = () => irA(foco - 1);
+    if (sig) sig.onclick = () => irA(foco + 1);
+  }
   $('lista').querySelectorAll('.otro').forEach(prepararOtro);
-  $('lista').querySelectorAll('.duda').forEach(s => s.onfocus = () => marcarFoco(+s.dataset.n, false));
+  if (!guiada) $('lista').querySelectorAll('.duda').forEach(s => s.onfocus = () => marcarFoco(+s.dataset.n, false));
+}
+
+function activaTok() {
+  const d = visibles[foco]; if (!d) return null;
+  const fotos = fotosDe(d); return (fotos.find(f => f.tok === fotoActiva[d.id]) || fotos[0] || {}).tok || null;
+}
+function girarGrande(cuanto) {
+  const g = $('foto-grande'); if (!g) return;
+  giros[g.dataset.grande] = ((giros[g.dataset.grande] || 0) + cuanto) % 360;
+  aplicarGiro(g, giros[g.dataset.grande]);
+  $('lista').querySelectorAll('.minis img').forEach(i => { if (i.dataset.grande === g.dataset.grande) i.style.transform = `rotate(${giros[g.dataset.grande]}deg)`; });
+}
+function irA(n) {
+  if (!visibles.length) return;
+  foco = Math.max(0, Math.min(visibles.length - 1, n)); animar = true; pintarLista();
+  const t = $('lista').querySelector('.duda'); if (t) t.focus({preventScroll: true});
 }
 
 function miniaturas(o, d) {
@@ -679,18 +834,43 @@ function miniaturas(o, d) {
   return `<div class="minis">${fotos.map(f => {
     const tok = f.token_recorte || f.token;
     if (!tok) return `<span class="sinfoto" title="${esc(f.foto)}">${esc(f.fuente)}</span>`;
-    const pie = `${d.pieza ? d.pieza + ' · ' : ''}${f.foto} · ${f.fuente}${f.texto ? ' · leído: «' + f.texto + '»' : ''}${f.con_caja ? '' : ' · (sin recuadro: no se encontró la posición exacta)'}`;
+    const pie = pieDe(d, f);
     return `<img loading="lazy" tabindex="0" role="button" src="/api/foto/${esc(tok)}?tam=mini" data-grande="${esc(f.token || tok)}" data-pie="${esc(pie)}" alt="Foto ${esc(f.foto)}: ampliar" title="${esc(f.foto)}">`;
   }).join('')}</div>`;
 }
 
+const V = {tok: null, zoom: 1, x: 0, y: 0};
+const pintarVisor = () => aplicarGiro($('visor-img'), giros[V.tok] || 0, V.zoom, V.x, V.y);
 function abrirVisor(img) {
-  $('visor-img').src = `/api/foto/${img.dataset.grande}?tam=grande`;
+  V.tok = img.dataset.grande; V.zoom = 1; V.x = 0; V.y = 0;
+  const v = $('visor-img'); v.style.transform = ''; v.onload = pintarVisor;
+  v.src = `/api/foto/${V.tok}?tam=grande`;
   $('visor-pie').textContent = img.dataset.pie;
   $('visor').classList.add('abierto');
+  if (v.complete) pintarVisor();
 }
-const cerrarVisor = () => $('visor').classList.remove('abierto');
-$('visor').onclick = cerrarVisor;
+function cerrarVisor() {
+  if (!$('visor').classList.contains('abierto')) return;
+  $('visor').classList.remove('abierto');
+  if (vista === 'guiada') pintarLista();          // la foto grande conserva el giro elegido en el visor
+}
+function accionVisor(a) {
+  if (a === 'cerrar') { cerrarVisor(); return; }
+  if (a === 'izq' || a === 'der') giros[V.tok] = ((giros[V.tok] || 0) + (a === 'der' ? 90 : -90)) % 360;
+  if (a === 'mas') V.zoom = Math.min(4, V.zoom * 1.4);
+  if (a === 'menos') { V.zoom = Math.max(1, V.zoom / 1.4); if (V.zoom === 1) { V.x = 0; V.y = 0; } }
+  pintarVisor();
+}
+$('visor').onclick = e => { if (e.target === $('visor')) cerrarVisor(); };
+$('visor-herr').querySelectorAll('button').forEach(b => b.onclick = e => { e.stopPropagation(); accionVisor(b.dataset.a); });
+(function arrastre() {       // con zoom, la foto se mueve arrastrando (ratón o dedo)
+  const v = $('visor-img'); let ini = null;
+  v.onpointerdown = e => { if (V.zoom <= 1) return; ini = {x: e.clientX - V.x, y: e.clientY - V.y};
+    v.classList.add('arrastra'); try { v.setPointerCapture(e.pointerId); } catch (err) {} };
+  v.onpointermove = e => { if (!ini) return; V.x = e.clientX - ini.x; V.y = e.clientY - ini.y; pintarVisor(); };
+  v.onpointerup = v.onpointercancel = () => { ini = null; v.classList.remove('arrastra'); };
+  v.ondblclick = () => accionVisor(V.zoom > 1 ? 'menos' : 'mas');
+})();
 
 function prepararOtro(caja) {
   const enlace = caja.querySelector('.otro-link'), form = caja.querySelector('form');
@@ -698,7 +878,6 @@ function prepararOtro(caja) {
   let confirmado = null;
   const abrir = () => { enlace.hidden = true; form.hidden = false; entrada.focus(); };
   enlace.onclick = abrir;
-  enlace.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); abrir(); } };
   entrada.oninput = () => { confirmado = null; nota.textContent = ''; form.querySelector('button').textContent = 'Usar'; };
   form.onsubmit = async ev => {
     ev.preventDefault();
@@ -727,7 +906,14 @@ async function elegir(boton) {
 async function decidir(id, valor) {
   const r = await post('/api/decidir', {id, valor: valor === '' ? null : valor});
   if (!r.ok) { aviso('No se pudo registrar la decisión. Recarga la página e inténtalo de nuevo.', 'error'); return; }
+  const era = visibles[foco] && visibles[foco].id === id;
   await cargar();
+  if (vista === 'guiada' && era && valor !== '') {
+    // la tarjeta muestra un instante lo elegido y pasa a la siguiente que falte
+    const sig = visibles.findIndex((d, i) => i > foco && !DATOS.decisiones[d.id]);
+    const otra = sig >= 0 ? sig : visibles.findIndex(d => !DATOS.decisiones[d.id]);
+    if (otra >= 0 && otra !== foco) setTimeout(() => { if (visibles[foco] && visibles[foco].id === id) irA(otra); }, RM ? 0 : 450);
+  }
 }
 
 function marcarFoco(n, mover = true) {
@@ -743,17 +929,31 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Escape') { cerrarVisor(); cerrarFiesta(); return; }
   if (e.target.closest('input, textarea, select') || e.ctrlKey || e.metaKey || e.altKey) return;
   const k = e.key.toLowerCase();
+  if ($('visor').classList.contains('abierto')) {
+    if (k === 'r') accionVisor(e.shiftKey ? 'izq' : 'der');
+    if (k === '+' || k === '=') accionVisor('mas');
+    if (k === '-') accionVisor('menos');
+    return;
+  }
   if (k === '/') { e.preventDefault(); $('busca').focus(); return; }
-  if (k === 'j' || k === 'k') { e.preventDefault(); marcarFoco(foco + (k === 'j' ? 1 : -1)); return; }
-  const tarjeta = $('lista').querySelectorAll('.duda')[foco];
+  const guiada = vista === 'guiada';
+  if (k === 'j' || k === 'k' || (guiada && (k === 'arrowright' || k === 'arrowleft'))) {
+    e.preventDefault(); const paso = (k === 'j' || k === 'arrowright') ? 1 : -1;
+    if (guiada) irA(foco + paso); else marcarFoco(foco + paso); return; }
+  if (k === 'r' && guiada) { girarGrande(e.shiftKey ? -90 : 90); return; }
+  const tarjeta = guiada ? $('lista').querySelector('.duda') : $('lista').querySelectorAll('.duda')[foco];
   if (!tarjeta) return;
-  if (/^[1-9]$/.test(k)) { const b = tarjeta.querySelectorAll('.op')[+k - 1]; if (b) { e.preventDefault(); elegir(b).then(() => marcarFoco(foco)); } return; }
-  if (k === 'enter' && e.target === tarjeta) {
+  if (k === 'o') { const enlace = tarjeta.querySelector('.otro-link'); if (enlace) { e.preventDefault(); enlace.click(); } return; }
+  if (/^[1-9]$/.test(k)) { const b = tarjeta.querySelectorAll('.op:not(.otra)')[+k - 1];
+    if (b) { e.preventDefault(); elegir(b).then(() => { if (!guiada) marcarFoco(foco); }); } return; }
+  if (k === 'enter' && (e.target === tarjeta || e.target === document.body)) {
     const d = visibles[foco], reco = d && recomendada(d);
-    if (reco) { e.preventDefault(); decidir(d.id, String(reco.valor)).then(() => marcarFoco(foco + 1)); }
+    if (reco) { e.preventDefault(); decidir(d.id, String(reco.valor)).then(() => { if (!guiada) marcarFoco(foco + 1); }); }
   }
 });
 $('busca').oninput = e => { busca = e.target.value; foco = -1; pintarLista(); };
+window.addEventListener('resize', () => { const g = $('foto-grande'); if (g) aplicarGiro(g, giros[g.dataset.grande] || 0);
+  if ($('visor').classList.contains('abierto')) pintarVisor(); });
 
 async function cargar() {
   let e;

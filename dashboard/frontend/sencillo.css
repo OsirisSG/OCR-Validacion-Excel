@@ -238,6 +238,12 @@
 .sen-palomita circle { fill: none; stroke: color-mix(in srgb, var(--verde, #1c7d46) 30%, transparent); stroke-width: 5; }
 .sen-palomita path { fill: none; stroke: var(--verde, #1c7d46); stroke-width: 6; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 80; stroke-dashoffset: 80; animation: sen-palomita .7s .25s cubic-bezier(.2, .8, .2, 1) forwards; }
 @keyframes sen-palomita { to { stroke-dashoffset: 0; } }
+.sen-dudas {
+  width: 100%; max-width: 460px; margin: 8px 0 2px; padding: 16px; border-radius: 16px;
+  border: 1px solid var(--acento); background: var(--acento-suave);
+}
+.sen-dudas p { margin: 0 0 12px; color: var(--texto-2); font-size: 14px; }
+.sen-dudas strong { color: var(--texto); }
 .sen-exportar { width: 100%; margin-top: 10px; padding-top: 16px; border-top: 1px solid var(--borde); text-align: left; }
 
 /* ---------- Celular ---------- */

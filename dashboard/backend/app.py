@@ -3946,6 +3946,65 @@ def registrar_plantilla(solicitud: SolicitudPlantilla):
         raise HTTPException(400, str(exc)) from exc
 
 
+# P54 · Formulario de dudas enlazado desde el dashboard. La corrida ya lo lanza al terminar
+# (`utilidades/abrir_panel`); aquí sólo se informa dónde está y, si se cerró, se vuelve a
+# lanzar con el MISMO libro y la MISMA validación. No escribe nada ni toca el aprendizaje.
+_formulario_dudas_relanzado: dict = {}
+
+
+def _formulario_dudas_responde(url: str | None) -> bool:
+    """True sólo si en esa dirección contesta de verdad el formulario (no cualquier programa)."""
+    if not url or not str(url).startswith("http://127.0.0.1:"):
+        return False
+    import urllib.request
+    try:
+        with urllib.request.urlopen(f"{url}/api/estado", timeout=0.6) as respuesta:
+            return respuesta.status == 200 and "libro" in json.loads(respuesta.read().decode("utf-8"))
+    except Exception:                                             # noqa: BLE001
+        return False
+
+
+def _libro_de_dudas(datos: dict) -> str | None:
+    panel = datos.get("panel_dudas") or {}
+    candidatos = [panel.get("libro"), datos.get("archivo_excel"),
+                  *list((datos.get("archivos_excel") or {}).values())]
+    return next((str(c) for c in candidatos if c and Path(str(c)).is_file()), None)
+
+
+@app.get("/api/dudas/estado")
+def estado_formulario_dudas():
+    datos = _cargar_datos() or {}
+    panel = datos.get("panel_dudas") or {}
+    libro = _libro_de_dudas(datos)
+    for url in (_formulario_dudas_relanzado.get("url"), panel.get("url")):
+        if _formulario_dudas_responde(url):
+            return {"disponible": True, "vivo": True, "url": url, "motivo": None}
+    return {"disponible": bool(libro), "vivo": False, "url": None,
+            "motivo": None if libro else (panel.get("motivo") or "todavía no hay un Excel de la última corrida")}
+
+
+@app.post("/api/dudas/abrir")
+def abrir_formulario_dudas():
+    estado = estado_formulario_dudas()
+    if estado["vivo"]:
+        return estado
+    datos = _cargar_datos() or {}
+    libro = _libro_de_dudas(datos)
+    if not libro:
+        raise HTTPException(409, "No hay un Excel de la última corrida: procesa una carpeta primero.")
+    from utilidades.abrir_panel import abrir_panel_dudas
+    puerto = int((((cargar_config().get("empresarial") or {}).get("panel_dudas")) or {}).get("puerto", 8099))
+    resultado = abrir_panel_dudas(
+        libro, RUTA_VALIDACION,
+        {"empresarial": {"panel_dudas": {"abrir_al_terminar": True, "puerto": puerto}}},
+        abrir_navegador=lambda _url: None)            # el dashboard lleva al usuario; no otra pestaña
+    if not resultado.get("abierto"):
+        raise HTTPException(503, f"No se pudo abrir el formulario de dudas: {resultado.get('motivo')}")
+    _formulario_dudas_relanzado.clear()
+    _formulario_dudas_relanzado.update(resultado)
+    return {"disponible": True, "vivo": False, "iniciando": True, "url": resultado["url"], "motivo": None}
+
+
 @app.get("/api/pipeline/capacidad")
 def capacidad_pipeline():
     return _capacidad_pipeline()

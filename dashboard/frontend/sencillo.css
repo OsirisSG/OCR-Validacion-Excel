@@ -108,6 +108,14 @@
 }
 .sen-reciente:hover { border-color: var(--acento); color: var(--acento); }
 
+/* Etapa 1ST / 2ST (dentro del paso de la carpeta) */
+.sen-etapa { display: flex; align-items: center; gap: 12px; margin-top: 14px; flex-wrap: wrap; }
+.sen-etapa-nombre { font-weight: 600; font-size: 14px; color: var(--texto-2); }
+.sen-segmentos.sen-mini { flex: 0 1 300px; min-width: 240px; }
+.sen-segmentos.sen-mini button { font-size: 13.5px; }
+.sen-etapa.sen-falta .sen-segmentos { border-color: var(--ambar, #93610a); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ambar, #93610a) 25%, transparent); }
+.sen-etapa.sen-falta + .sen-ayuda { color: var(--texto); font-weight: 600; }
+
 /* Laboratorio */
 .sen-opciones { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .sen-opcion {

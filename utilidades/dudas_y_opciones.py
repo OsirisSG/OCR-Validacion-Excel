@@ -13,6 +13,8 @@ las otras filas del libro.
 """
 from __future__ import annotations
 
+import re
+
 import json
 from datetime import datetime
 from pathlib import Path
@@ -56,16 +58,50 @@ DONDE_BUSCAR: dict[str, list[str]] = {
 MOTIVOS = ("sin_lectura_valida", "fuentes_en_conflicto", "valor_no_coherente",
            "fuera_del_alcance_declarado")
 
-FUENTES = ("carpeta", "barra_video", "diagrama", "lectura_ocr", "serie",
+FUENTES = ("carpeta", "barra_video", "diagrama", "serie_verificada", "serie_verificada_sin_control",
+           "tablero_p42", "lectura_ocr", "serie",
            "otros_casos_del_libro", "no_lo_tengo")
 
 # Orden de preferencia cuando dos fuentes proponen el mismo valor.
-PRIORIDAD = {"barra_video": 0, "carpeta": 1, "diagrama": 2, "lectura_ocr": 3,
-             "serie": 4, "otros_casos_del_libro": 5, "no_lo_tengo": 9}
+PRIORIDAD = {"serie_verificada": 0, "serie_verificada_sin_control": 1, "barra_video": 0, "carpeta": 1, "diagrama": 2, "tablero_p42": 3, "lectura_ocr": 3,
+             "serie": 4, "otros_casos_del_libro": 5, "variante_sin_ultimo_caracter": 6,
+             "vocabulario_libro": 7, "no_lo_tengo": 9}
 
 
 def _id(caso: str, campo: str) -> str:
     return f"{caso}::{campo}"
+
+
+# P48 · a qué pieza física se refiere cada campo (lo que se le muestra a la persona)
+PIEZAS: dict[str, str] = {
+    "dashboard_part_number": "Tablero · etiqueta / sticker", "dashboard_serial_number": "Tablero · etiqueta (serie)",
+    "dashboard_date": "Tablero · sticker de fecha", "dashboard_engineering_level": "Tablero · etiqueta (nivel)",
+    "dashboard_supplier": "Tablero · proveedor (no suele estar en fotos)",
+    "module_part_number": "Módulo de bolsa de aire · etiqueta", "module_serial_number": "Módulo de bolsa de aire · etiqueta (serie)",
+    "module_date": "Módulo de bolsa de aire · etiqueta (fecha)", "engineering_level": "Módulo de bolsa de aire · etiqueta (nivel ZRZ)",
+    "inflator_supplier": "Módulo de bolsa de aire · etiqueta (proveedor)", "inflator_type": "Generador · carpeta, pie del vídeo o etiqueta",
+    "module_version": "Carpeta del caso / pie del vídeo", "temperature_condition": "Carpeta del caso / pie del vídeo",
+    "test_number": "Carpeta del caso / pie del vídeo", "test_date": "Pie del vídeo", "test_place": "Cabecera del vídeo",
+    "test_reason": "Pie del vídeo", "week": "Número de prueba + fecha", "delay_ms": "Programa de pruebas (no está en fotos)",
+    "laser_opening": "Programa de pruebas (no está en fotos)",
+}
+
+
+def _clave_valor(valor) -> str:
+    return re.sub(r"[^0-9A-Z]", "", str(valor or "").upper())
+
+
+def evidencia_de_opcion(evidencia: dict[str, list[dict]] | None, valor) -> list[dict]:
+    """Fotos que respaldan un valor; para la variante sin último carácter, las de la lectura completa."""
+    if not evidencia or valor in (None, ""):
+        return []
+    clave = _clave_valor(valor)
+    exacta = evidencia.get(clave) or []
+    if exacta:
+        return exacta[:4]
+    parecidas = [e for k, es in evidencia.items() if k.startswith(clave) and len(k) - len(clave) <= 1
+                 for e in es]
+    return parecidas[:4]
 
 
 def _opcion(valor, fuente: str, respaldo: str, confianza: float, donde: list[str]) -> dict:
@@ -153,6 +189,30 @@ def _filtrar_por_serie(caso: str, campo: str, opciones: list[dict]) -> tuple[lis
     return conservadas, descartadas
 
 
+def _marcar_control(campo: str, opciones: list[dict]) -> list[dict]:
+    """P52 · series con dígito de control Code 39 (mod 43): la que lo cumple sube, la que no baja."""
+    if campo not in {"module_serial_number", "dashboard_serial_number"}:
+        return opciones
+    try:
+        from tablero_integracion import valida_code39
+    except Exception:                                     # pragma: no cover
+        return opciones
+    salida = []
+    for op in opciones:
+        valor = op.get("valor")
+        if valor in (None, "") or op["fuente"].startswith("serie_verificada"):
+            salida.append(op)
+        elif valida_code39(str(valor)):
+            salida.append(dict(op, confianza=max(op["confianza"], 0.9),
+                               respaldo=op["respaldo"] + " · dígito de control válido"))
+        elif campo == "module_serial_number":
+            salida.append(dict(op, confianza=min(op["confianza"], 0.2),
+                               respaldo=op["respaldo"] + " · NO cumple el dígito de control"))
+        else:
+            salida.append(op)        # tablero: puede ser la forma sin dígito de control
+    return salida
+
+
 def _fusionar(opciones: list[dict]) -> list[dict]:
     """Un valor por opción: se juntan los respaldos y se queda la mejor confianza."""
     por_valor: dict[str, dict] = {}
@@ -213,6 +273,40 @@ def construir_dudas(libro_filas: dict[str, dict], lecturas: dict[str, dict],
                 opciones.append(_opcion(constante, "libro_constante",
                                         "el libro lo repite igual en todos los casos",
                                         0.75, DONDE_BUSCAR.get(campo, [])))
+            # P52 · serie del tablero VERIFICADA con su dígito de control Code 39 (mod 43): las dos
+            # formas posibles, la completa recomendada (es lo que trae la etiqueta).
+            verificada = (fuentes_caso.get("verificadas") or {}).get(campo)
+            if verificada:
+                # P53 · la serie verificada puede venir del texto impreso (sin DataMatrix)
+                origen = (f"DataMatrix con dígito de control válido ({verificada['datamatrix']})"
+                          if verificada.get("datamatrix") else
+                          f"serie impresa con dígito de control válido ({verificada.get('impreso', '')})")
+                opciones.append(_opcion(verificada["completa"], "serie_verificada", origen,
+                                        0.95 if verificada.get("datamatrix") else 0.92,
+                                        DONDE_BUSCAR.get(campo, [])))
+                opciones.append(_opcion(verificada["sin_control"], "serie_verificada_sin_control",
+                                        "la misma serie verificada, sin el dígito de control",
+                                        0.9, DONDE_BUSCAR.get(campo, [])))
+            # P43 · lecturas P42 del tablero de ESTA corrida (cada valor con sus votos). Son
+            # opciones, nunca la respuesta: el motivo de la duda viaja en el detalle.
+            for valor, n in sorted(((fuentes_caso.get("tablero_p42") or {}).get(campo) or {}).items(),
+                                   key=lambda p: -p[1])[:3]:
+                if valor:
+                    opciones.append(_opcion(valor, "tablero_p42",
+                                            f"{n} lectura(s) P42 del tablero en este caso",
+                                            min(0.7, 0.3 + 0.15 * n), DONDE_BUSCAR.get(campo, [])))
+            # P45 · la variante de la serie sin el último carácter (regla del usuario: el último
+            # carácter a veces se imprime mal) y el vocabulario del libro histórico, como opciones.
+            for variante in ((fuentes_caso.get("variantes") or {}).get(campo) or [])[1:]:
+                if variante:
+                    opciones.append(_opcion(variante, "variante_sin_ultimo_caracter",
+                                            "la lectura sin su último carácter (puede ser de control)",
+                                            0.35, DONDE_BUSCAR.get(campo, [])))
+            for valor, n in sorted(((fuentes_caso.get("vocabulario") or {}).get(campo) or {}).items(),
+                                   key=lambda p: -p[1])[:4]:
+                opciones.append(_opcion(valor, "vocabulario_libro",
+                                        f"aparece {n} vez/veces en el libro histórico (no es lectura)",
+                                        0.3, DONDE_BUSCAR.get(campo, [])))
             votos = (fuentes_caso.get("ocr") or {}).get(campo) or {}
             total_imagenes = sum(votos.values()) if votos else 0
             # una sola imagen diciendo algo no es una lectura: es una coincidencia
@@ -226,6 +320,7 @@ def construir_dudas(libro_filas: dict[str, dict], lecturas: dict[str, dict],
                                         DONDE_BUSCAR.get(campo, [])))
             opciones.extend(_opciones_de_serie(campo, caso))
             opciones.extend(_opciones_de_otros_casos(campo, caso, libro_filas))
+            opciones = _marcar_control(campo, opciones)
             opciones = _fusionar(opciones)
             opciones, descartadas = _filtrar_por_serie(caso, campo, opciones)
             opciones.append(_opcion(None, "no_lo_tengo", "dejar la celda vacía a propósito",
@@ -247,8 +342,20 @@ def construir_dudas(libro_filas: dict[str, dict], lecturas: dict[str, dict],
             else:
                 motivo, detalle = "sin_lectura_valida", ("hay propuestas, pero ninguna es una "
                                                          "lectura directa del campo")
+            # P50 · nomenclatura del usuario: prototipo → ##K, serie → ##S (nivel del módulo)
+            tipo = fuentes_caso.get("tipo_pieza")
+            if campo == "engineering_level" and tipo in {"prototipo", "serie"}:
+                letra = "K" if tipo == "prototipo" else "S"
+                fuera = [o for o in opciones if o["valor"] not in (None, "") and not str(o["valor"]).upper().endswith(letra)]
+                opciones = [o for o in opciones if o not in fuera]
+                descartadas = descartadas + [{**o, "motivo_descarte": f"la etiqueta es de {tipo}: el nivel termina en {letra}"}
+                                             for o in fuera]
+                detalle = f"{detalle} · etiqueta de {tipo}: nivel ##{letra}"
+            evidencia_campo = (fuentes_caso.get("evidencia") or {}).get(campo) or {}
+            for opcion in opciones:
+                opcion["evidencia"] = evidencia_de_opcion(evidencia_campo, opcion["valor"])
             dudas.append({
-                "id": _id(caso, campo), "caso": caso, "campo": campo,
+                "id": _id(caso, campo), "caso": caso, "campo": campo, "pieza": PIEZAS.get(campo, ""),
                 "columna": columnas.get(campo), "motivo": motivo, "detalle": detalle,
                 "donde_mirar": DONDE_BUSCAR.get(campo, []),
                 "opciones": opciones,
@@ -369,3 +476,113 @@ def lecturas_desde_base(ruta_base: str | Path, casos: list[str],
             campo = lecturas[caso]["ocr"].setdefault(candidato["clave"], {})
             campo[valor] = campo.get(valor, 0) + 1
     return lecturas
+
+
+def _linea_que_contiene(resultado_ocr: dict, texto) -> list | None:
+    """Caja [x, y, w, h] de la línea OCR que contiene el texto leído (en la foto tal como la
+    vio el OCR: decodificada y girada `rotacion_manual_aplicada_grados`)."""
+    buscado = _clave_valor(texto)
+    if len(buscado) < 3:
+        return None
+    for unidad in list(resultado_ocr.get("lineas_texto") or []) + list(resultado_ocr.get("tokens") or []):
+        caja = unidad.get("bbox") if isinstance(unidad, dict) else None
+        if (caja and len(caja) == 4 and float(caja[2]) > 0 and float(caja[3]) > 0
+                and buscado in _clave_valor(unidad.get("texto"))):
+            return [int(round(float(v))) for v in caja]
+    return None
+
+
+def _evidencia_de_fila(fila: dict, maximo: int = 4) -> dict[str, dict[str, list[dict]]]:
+    """P48 · {campo: {VALOR: [{foto, ruta, caja, giro, recorte, fuente, texto}]}} para el panel.
+
+    Solo rutas que ya están en la corrida (las fotos no salen de la computadora). La caja se
+    busca en las líneas del OCR de esa foto; si no se encuentra, la foto va sin recuadro.
+    """
+    fotos = {str(i.get("ruta_relativa")): i for i in fila.get("imagenes") or [] if i.get("ruta_relativa")}
+    salida: dict[str, dict[str, list[dict]]] = {}
+
+    def anotar(campo, valor, dato):
+        lista = salida.setdefault(campo, {}).setdefault(_clave_valor(valor), [])
+        if len(lista) < maximo and not any(d["foto"] == dato["foto"] and d["fuente"] == dato["fuente"]
+                                           for d in lista):
+            lista.append(dato)
+
+    for candidato in fila.get("candidatos") or []:
+        campo, valor = candidato.get("clave"), candidato.get("valor_normalizado")
+        if campo not in CAMPOS_RELLENABLES or valor in (None, ""):
+            continue
+        fuente = str(candidato.get("fuente") or "")
+        rel = str(candidato.get("imagen") or "")
+        foto = fotos.get(rel) or {}
+        resultado = foto.get("resultado_ocr") or {}
+        if fuente in {"barra_video", "video"}:
+            anotar(campo, valor, {"foto": rel, "ruta": "", "caja": None, "giro": 0, "recorte": "",
+                                  "fuente": "pie del vídeo", "texto": str(candidato.get("valor_original") or "")[:120]})
+            continue
+        if fuente not in {"ocr", "qr", "manual", "etiqueta_modulo"}:
+            continue
+        anotar(campo, valor, {
+            "foto": rel, "ruta": str(candidato.get("imagen_absoluta") or foto.get("ruta") or ""),
+            "caja": (list(candidato["bbox_original"]) if candidato.get("bbox_original")
+                     else _linea_que_contiene(resultado, candidato.get("valor_original"))
+                     or _linea_que_contiene(resultado, valor)),
+            "giro": float(resultado.get("rotacion_manual_aplicada_grados") or 0),
+            "recorte": "", "fuente": {"ocr": "lectura OCR", "qr": "código", "manual": "corrección manual",
+                                      "etiqueta_modulo": "lector de la etiqueta del módulo"}[fuente],
+            "texto": str(candidato.get("valor_original") or "")[:120]})
+    tablero = fila.get("tablero_p42") or {}
+    for campo, lecturas in (tablero.get("lecturas") or {}).items():
+        for lectura in lecturas or []:
+            valor, rel = lectura.get("valor"), str(lectura.get("ruta_relativa") or "")
+            if campo not in CAMPOS_RELLENABLES or valor in (None, "") or lectura.get("descartada"):
+                continue
+            foto = fotos.get(rel) or {}
+            anotar(campo, valor, {"foto": rel, "ruta": str(foto.get("ruta") or ""), "caja": None, "giro": 0,
+                                  "recorte": str(lectura.get("recorte") or ""),
+                                  "fuente": "lector del tablero" + (" (impreso)" if lectura.get("origen") == "impreso_junto_a_datamatrix" else ""),
+                                  "texto": str(lectura.get("texto") or "")[:120]})
+    return salida
+
+
+def lecturas_desde_validacion(validacion: dict, vocabulario: dict | None = None
+                              ) -> tuple[dict[str, dict], list[str]]:
+    """P43 · `{numero: {"tablero_p42": {campo: {valor: votos}}}}` desde la corrida normal.
+
+    El panel de dudas identifica los casos por el número de la fila del libro. Si un mismo
+    número aparece en dos casos de la corrida (p. ej. 1ST y 2ST), NO se mezclan: el número se
+    devuelve en la segunda lista y sus lecturas no se ofrecen (identidad ambigua).
+    """
+    por_numero: dict[str, list[dict]] = {}
+    for fila in validacion.get("resultados") or []:
+        numero = str(fila.get("test_number") or "").strip()
+        if numero:
+            por_numero.setdefault(numero, []).append(fila)
+    lecturas: dict[str, dict] = {}
+    ambiguos: list[str] = []
+    for numero, filas in sorted(por_numero.items()):
+        if len({f.get("case_key") for f in filas}) > 1:
+            ambiguos.append(numero)
+            continue
+        fila = filas[0]
+        tablero = (fila.get("tablero_p42") or {}).get("campos") or {}
+        ocr: dict[str, dict[str, set]] = {}
+        for candidato in fila.get("candidatos") or []:
+            valor = candidato.get("valor_normalizado")
+            clave = candidato.get("clave")
+            if (clave in CAMPOS_RELLENABLES and valor not in (None, "")
+                    and candidato.get("fuente") in {"ocr", "qr", "barra_video", "video", "etiqueta_modulo"}):
+                ocr.setdefault(clave, {}).setdefault(str(valor), set()).add(
+                    str(candidato.get("imagen") or candidato.get("fuente")))
+        lecturas[numero] = {
+            "tipo_pieza": fila.get("tipo_pieza"),
+            "evidencia": _evidencia_de_fila(fila),
+            "tablero_p42": {campo: dict(dato.get("votos") or {}) for campo, dato in tablero.items()
+                            if dato.get("votos")},
+            "variantes": {campo: list(dato.get("variantes") or []) for campo, dato in tablero.items()
+                          if dato.get("variantes")},
+            "verificadas": {campo: dict(dato["verificada_control"]) for campo, dato in tablero.items()
+                            if isinstance(dato.get("verificada_control"), dict)},
+            "ocr": {campo: {v: len(imgs) for v, imgs in valores.items()}
+                    for campo, valores in ocr.items()},
+            "vocabulario": dict(vocabulario or {})}
+    return lecturas, ambiguos

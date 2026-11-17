@@ -332,8 +332,15 @@ def motor_compartido():
     """
     global _MOTOR
     if _MOTOR is None:
-        from rapidocr_onnxruntime import RapidOCR
-        _MOTOR = RapidOCR()
+        try:
+            from rapidocr_onnxruntime import RapidOCR
+        except ImportError:
+            # P47 · sin RapidOCR se usa el motor del proyecto (EasyOCR/Paddle) con la misma
+            # interfaz; si tampoco existe, la excepción sube («OCR no disponible»).
+            from utilidades.motor_ocr_local import MotorProyectoComoRapid
+            _MOTOR = MotorProyectoComoRapid.crear()
+        else:
+            _MOTOR = RapidOCR()
     return _MOTOR
 
 

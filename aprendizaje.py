@@ -1548,6 +1548,24 @@ class GestorAprendizaje:
                 "SELECT * FROM imagenes_sin_datos WHERE imagen_hash=?", (imagen_hash,)).fetchone()
         return dict(fila) if fila else None
 
+    def sin_datos_que_salta_ocr(self, ruta_imagen: str | Path) -> dict | None:
+        """P47 · la marca «sin datos» que SÍ debe saltar el OCR de la foto en una corrida.
+
+        `imagen_sin_datos` sigue diciendo si existe la marca (el dashboard la usa para restaurar).
+        Aquí se aplica `aprendizaje.imagenes_sin_datos`: las marcas sin motivo (93 en la base del
+        cliente, 59 de ellas en un solo caso) no dicen por qué, así que por defecto ya no saltan
+        el OCR. La marca no se borra; `respetar` vuelve al comportamiento anterior e `ignorar`
+        relee todas las fotos.
+        """
+        marca = self.imagen_sin_datos(ruta_imagen)
+        if not marca:
+            return None
+        politica = str(self.cfg.get("imagenes_sin_datos", "solo_con_motivo")).strip().lower()
+        if politica == "ignorar" or (politica == "solo_con_motivo"
+                                     and not str(marca.get("motivo") or "").strip()):
+            return None
+        return marca
+
     def listar_anotaciones(self, rutas_imagen: list[str | Path] | None = None,
                            carpeta_id: str | None = None) -> list[dict]:
         """Devuelve regiones humanas; filtra por hash para tolerar rutas reubicadas."""
@@ -1763,6 +1781,14 @@ class GestorAprendizaje:
             vigentes.setdefault(fila["bbox_json"], dict(fila))
         descartes = [{**fila, "bbox": json.loads(fila["bbox_json"])}
                      for fila in vigentes.values() if fila["activo"]]
+        # P47 · un descarte «no es texto» cuyo propio texto parece un dato del libro (fecha,
+        # ZRZ, 2GJ, N/P…) tapa justo lo que buscamos. Por defecto no se aplica; queda en la base.
+        politica_regiones = str(self.cfg.get("regiones_no_texto", "sin_datos_probables")).strip().lower()
+        if politica_regiones == "ignorar":
+            descartes = []
+        elif politica_regiones == "sin_datos_probables":
+            from utilidades.contaminacion_aprendizaje import parece_dato
+            descartes = [d for d in descartes if not parece_dato(d.get("texto_ocr"))]
         salida["regiones_no_texto"] = descartes
         if not descartes:
             from utilidades.correcciones_ocr import aplicar_correcciones

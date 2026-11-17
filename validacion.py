@@ -215,8 +215,13 @@ def validar_lote(ruta_estructura: str | Path | None = None,
                  al_imagen: Callable[[int, int, str, float | None], None] | None = None,
                  control: Callable[[], None] | None = None,
                  casos_omitidos: set[str] | None = None,
-                 ejecucion_id_aprendizaje: str | None = None) -> dict:
+                 ejecucion_id_aprendizaje: str | None = None,
+                 contenido: str = "todo") -> dict:
     """
+    P43: ``contenido`` faltaba en la firma y la línea siguiente lo usaba → UnboundLocalError
+    en TODA corrida legacy (pyflakes: undefined name). Ahora es un parámetro con el mismo valor
+    por defecto que el perfil empresarial.
+
     Recorre las carpetas hoja de la estructura detectada, valida cada una y
     serializa validacion_resultados.json. Retorna la estructura completa
     (no imprime; el CLI se encarga de eso).
@@ -394,9 +399,37 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
                              zoom_forzado: float | None = None,
                              al_caso: Callable[[dict], None] | None = None,
                              ejecucion_id_aprendizaje: str | None = None,
-                             contenido: str = "todo") -> dict:
-    """Procesa todos los casos empresariales y consolida una sola salida por ID."""
+                             contenido: str = "todo",
+                             dir_corrida: str | Path | None = None,
+                             fabrica_lector_tablero: Callable[[], object] | None = None,
+                             lector_overlay: Callable[[str], dict] | None = None,
+                             lector_modulo: object | None = None) -> dict:
+    """Procesa todos los casos empresariales y consolida una sola salida por ID.
+
+    P43: ``dir_corrida`` es el directorio ÚNICO de artefactos de esta ejecución (recortes del
+    tablero, informes). Si no se da y el tablero P42 está activo, se crea uno nuevo con
+    ``tempfile.mkdtemp`` bajo ``.cache_ocr/corridas``; nunca se reutiliza el de otra corrida.
+    ``fabrica_lector_tablero`` sólo existe para inyectar un lector sintético en pruebas.
+    """
     config = config or cargar_config()
+    from tablero_integracion import CacheLecturasP42, OpcionesTablero
+    opciones_tablero = OpcionesTablero.desde_config(config)
+    cfg_emp_ini = config.get("empresarial", {}) or {}
+    cache_tablero = None
+    # la caché sólo vale para el lector REAL: un lector inyectado (pruebas/simulación) no se cachea
+    if ((opciones_tablero.activar or (cfg_emp_ini.get("overlay_video") or {}).get("activar"))
+            and opciones_tablero.cache and fabrica_lector_tablero is None):
+        try:
+            cache_tablero = CacheLecturasP42(opciones_tablero.ruta_cache or
+                                             RAIZ_PROYECTO / ".cache_ocr" / "tablero_p42.sqlite3")
+        except Exception:                                  # noqa: BLE001
+            cache_tablero = None                           # sin caché: sólo más lento
+    if opciones_tablero.activar and dir_corrida is None:
+        import tempfile
+        base_corridas = RAIZ_PROYECTO / ".cache_ocr" / "corridas"
+        base_corridas.mkdir(parents=True, exist_ok=True)
+        dir_corrida = tempfile.mkdtemp(prefix=f"corrida_{str(ejecucion_id_aprendizaje or 'manual')[:12]}_",
+                                       dir=str(base_corridas))
     if roi_manual:
         config = deepcopy(config)
         config.setdefault("ocr", {}).setdefault("roi_manual", {})
@@ -579,7 +612,7 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
 
     def resolver_preexistente(ruta: str) -> tuple[dict | None, dict | None, bool]:
         """Resuelve revisión/caché antes de gastar CPU en decodificar una imagen."""
-        revision_sin_datos = gestor_aprendizaje.imagen_sin_datos(ruta)
+        revision_sin_datos = gestor_aprendizaje.sin_datos_que_salta_ocr(ruta)  # P47
         if revision_sin_datos:
             return ({"imagen": ruta, "tokens": [], "lineas_texto": [],
                      "texto_completo": "", "estado_imagen": "revisada_sin_datos",
@@ -920,6 +953,100 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
                                 f"{video_consenso.get('total_validos', 0)}."),
                 })
 
+        # P43 · el TABLERO entra en la corrida normal ANTES de consolidar. Hasta V16.0.52 ningún
+        # candidato `dashboard_*` especializado llegaba aquí: la lectura P42 vivía sólo en
+        # herramientas sueltas y su JSON no volvía al flujo (Trazabilidad FE.z: 0 filas dashboard).
+        resultado_tablero = None
+        if opciones_tablero.activar and contenido != "videos":
+            from tablero_integracion import ejecutar_seguro, lecturas_desde_ocr_generico, CAMPOS as CAMPOS_TABLERO
+            # P44 · lo que el OCR genérico ya leyó de la etiqueta del tablero entra al cierre P42
+            # (una sola autoridad para dashboard_*); el candidato genérico queda como traza.
+            textos_por_foto = {str(t.get("ruta_relativa")): str(t.get("texto_crudo") or "")
+                               for t in trazabilidad}
+            genericos = [e for e in evidencias if e.get("clave") in CAMPOS_TABLERO
+                         and e.get("fuente") == "ocr" and not e.get("confirmacion_manual")]
+            for evidencia in genericos:
+                evidencia["requiere_confirmacion_manual"] = True
+                evidencia["absorbida_por_tablero_p42"] = True
+            prioridad = {ruta: (2 if re.search(r"N\s*/\s*P\s*[:.]|\d{1,2}[/.]\d{1,2}[/.]\d{2,4}", texto)
+                                else 1 if re.search(r"\d", texto) else 0)
+                         for ruta, texto in textos_por_foto.items()}
+            resultado_tablero = ejecutar_seguro(
+                caso, fotos, opciones_tablero, dir_corrida=dir_corrida,
+                fabrica_lector=fabrica_lector_tablero, control=control,
+                lecturas_genericas=lecturas_desde_ocr_generico(genericos, textos_por_foto),
+                prioridad_segunda=prioridad, cache=cache_tablero, textos_por_foto=textos_por_foto)
+            evidencias.extend(resultado_tablero["candidatos"])
+            alertas.extend(resultado_tablero.get("alertas") or [])
+        elif opciones_tablero.activar and contenido == "videos" and previo:
+            # modo sólo-vídeos: los candidatos del tablero de la corrida anterior se conservan
+            # (regla de los modos selectivos) pero NO en silencio: quedan marcados y avisados.
+            reutilizados = [e for e in evidencias if e.get("fuente") == "tablero_p42"]
+            for evidencia in reutilizados:
+                evidencia["reutilizado_de_ejecucion_anterior"] = True
+            if reutilizados:
+                alertas.append({"codigo": "TABLERO_P42_REUTILIZADO", "nivel": "warning",
+                                "mensaje": (f"Modo sólo vídeos: {len(reutilizados)} lectura(s) del "
+                                            "tablero vienen de la ejecución anterior; no se "
+                                            "volvieron a leer.")})
+
+        # P49 · etiqueta del MÓDULO con su lector dedicado (RapidOCR por líneas + estampa), sólo
+        # en las fotos cuyo texto genérico ya muestra ganchos de esa etiqueta (VW AG, Airbag
+        # Module, Autoliv/Dachau, ZRZ, 2GJ 880…). Sus valores entran como evidencia normal.
+        cfg_modulo = cfg_emp.get("etiqueta_modulo") or {}
+        resultado_modulo = None
+        if cfg_modulo.get("activar", False) and contenido != "videos":
+            from modulo_integracion import procesar_caso_modulo
+            textos_modulo = {str(t.get("ruta_relativa")): str(t.get("texto_crudo") or "")
+                             for t in trazabilidad}
+            # sin try: los errores por foto ya los recoge `procesar_caso_modulo`; pausa y
+            # cancelación (`control`) deben subir tal cual
+            resultado_modulo = procesar_caso_modulo(
+                caso, fotos, textos_modulo, maximo_fotos=int(cfg_modulo.get("maximo_fotos", 6)),
+                maximo_rescate=int(cfg_modulo.get("maximo_fotos_rescate", 6)),
+                lector=lector_modulo, cache=cache_tablero if lector_modulo is None else None,
+                control=control)
+            evidencias.extend(resultado_modulo["candidatos"])
+            alertas.extend(resultado_modulo["alertas"])
+
+        # P46 · el overlay de los vídeos (pie «… EDAG Mex BMG 19 JUN 25 …» y cabecera «EDAG
+        # Testlab») entra a la corrida normal: fecha de prueba, lugar, número y motivo propuesto.
+        cfg_overlay = cfg_emp.get("overlay_video") or {}
+        if videos and cfg_overlay.get("activar", False):
+            from video_overlay import candidatos_overlay, leer_overlay
+            lectura_video = lector_overlay
+            if lectura_video is None:
+                try:
+                    from utilidades import codigos_modulo as _CM
+                    _motor_overlay = _CM.motor_compartido()
+                    lectura_video = lambda ruta_video: leer_overlay(  # noqa: E731
+                        ruta_video, _motor_overlay, int(cfg_overlay.get("muestras", 3)))
+                except Exception as exc:                      # noqa: BLE001
+                    alertas.append({"codigo": "OVERLAY_OCR_NO_DISPONIBLE", "nivel": "warning",
+                                    "mensaje": f"Overlay del vídeo sin leer: {type(exc).__name__}: {exc}"[:240]})
+            if lectura_video is not None:
+                lecturas_overlay = []
+                for video in videos[:int(cfg_overlay.get("maximo_videos", 4))]:
+                    if control:
+                        control()
+                    try:
+                        clave_cache = (CacheLecturasP42.huella_archivo(video["ruta"])
+                                       if cache_tablero is not None and lector_overlay is None else None)
+                        lectura = cache_tablero.obtener(clave_cache, "overlay2") if clave_cache else None
+                        if lectura is None:
+                            lectura = lectura_video(video["ruta"])
+                            if clave_cache:
+                                cache_tablero.guardar(clave_cache, "overlay2", lectura)
+                    except Exception as exc:                  # noqa: BLE001
+                        alertas.append({"codigo": "OVERLAY_ERROR", "nivel": "warning",
+                                        "imagen": Path(str(video.get("ruta"))).name,
+                                        "mensaje": f"{type(exc).__name__}: {exc}"[:240]})
+                        continue
+                    lecturas_overlay.append({"video": video.get("ruta_relativa") or video.get("ruta"),
+                                             **{k: lectura.get(k) for k in ("votos", "fotogramas", "textos")}})
+                    evidencias.extend(candidatos_overlay(caso, video, lectura))
+                caso["overlay_video"] = lecturas_overlay
+
         recuperacion_cache = cache.recuperar_pendientes()
         fallos_cache = [item for item in recuperacion_cache
                         if item.get("estado") == "error_cache"]
@@ -932,7 +1059,8 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
             caso, evidencias,
             requeridos=set(cfg_emp.get("campos_requeridos") or CAMPOS_REQUERIDOS_DEFAULT),
             reglas_confirmadas=conocimiento.confirmadas(),
-            claves=cfg_emp.get("claves_plantilla") or CLAVES_PLANTILLA)
+            claves=cfg_emp.get("claves_plantilla") or CLAVES_PLANTILLA,
+            perfil=cfg_emp.get("perfil_extraccion") or {})
         correcciones_manual_campos = deepcopy(previo.get("correcciones_manual_campos", {}))
         for clave, correccion in correcciones_manual_campos.items():
             if clave not in consolidado["campos"] or not correccion.get("valor"):
@@ -955,6 +1083,29 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
             elif not conflicto_ruta:
                 consolidado["conflictos"] = [
                     campo for campo in consolidado["conflictos"] if campo != clave]
+        # P49 · CONSTANTES DEL PROYECTO (decisión del usuario 12/11: FORVIA y apertura láser).
+        # Sólo en celdas sin lectura; quedan marcadas «constante_proyecto · pendiente» en la
+        # Trazabilidad. PENDIENTE: sustituir por una lectura real (no se infieren del Book).
+        for clave_constante, valor_constante in (cfg_emp.get("constantes_proyecto") or {}).items():
+            campo_constante = consolidado["campos"].get(clave_constante)
+            if valor_constante in (None, "") or (campo_constante or {}).get("valor") not in (None, ""):
+                continue
+            consolidado["campos"][clave_constante] = {
+                "valor": valor_constante, "estado": "constante_proyecto", "fuente": "constante_proyecto",
+                "confianza": None, "inferido": True, "requiere_revision": False,
+                "pendiente": "constante fijada en config.yaml; sustituir por lectura real"}
+            consolidado["campos_faltantes"] = [c for c in consolidado["campos_faltantes"] if c != clave_constante]
+            consolidado["candidatos"].append({
+                "proyecto": caso.get("project_id"), "etapa": caso.get("tipo_st"), "caso": caso.get("case_key"),
+                "componente": "por_identificar", "clave": clave_constante,
+                "valor_original": valor_constante, "valor_normalizado": valor_constante,
+                "fuente": "constante_proyecto", "imagen": None, "regla_aplicada": "constante_config_pendiente",
+                "confirmacion_manual": False, "estado_p42": "constante_pendiente",
+                "motivo_p42": "PENDIENTE: valor fijo de config.yaml (empresarial.constantes_proyecto), no leído"})
+        if resultado_tablero is not None:
+            from tablero_integracion import anotar_consolidado, dudas_finales
+            anotar_consolidado(consolidado["campos"], resultado_tablero)
+            resultado_tablero["dudas"] = dudas_finales(caso, resultado_tablero, consolidado["campos"])
         consolidado["requiere_revision"] = bool(
             any(a.get("codigo") == "ORIENTACION_DUDOSA" for a in alertas) or
             consolidado["conflictos"] or any(
@@ -1031,6 +1182,14 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
             }],
             "historial_acciones": deepcopy(previo.get("historial_acciones") or []),
         }
+        if caso.get("overlay_video") is not None:
+            fila["overlay_video"] = caso["overlay_video"]
+        if resultado_modulo is not None:
+            fila["etiqueta_modulo"] = {k: v for k, v in resultado_modulo.items() if k != "candidatos"}
+        if resultado_tablero is not None:
+            # lecturas completas (con recortes) para auditoría; los candidatos ya están arriba
+            fila["tablero_p42"] = {k: v for k, v in resultado_tablero.items() if k != "candidatos"}
+            fila["dir_corrida"] = str(dir_corrida) if dir_corrida else None
         from maximos_video import incorporar_maximos
         incorporar_maximos(fila)
         resultados.append(fila)
@@ -1050,6 +1209,15 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
         preparador.cerrar(cancelar=False)
     propuestas = conocimiento.proponer([*resultados_previos, *resultados])
     salida = persistir(parcial=False)
+    if cache_tablero is not None:
+        cache_tablero.cerrar()
+    if opciones_tablero.activar and dir_corrida:
+        from tablero_integracion import escribir_informe
+        try:
+            salida["informe_tablero_p42"] = escribir_informe(dir_corrida, resultados)
+        except OSError as exc:
+            advertencias_persistencia.append(f"informe del tablero no escrito: {exc}")
+        salida["dir_corrida"] = str(dir_corrida)
     salida.update({
         "archivo_salida": str(destino), "base_conocimiento": str(conocimiento.ruta),
         "reglas_propuestas": propuestas,
@@ -1068,6 +1236,23 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
             "reglas_propuestas": len(propuestas),
         },
     })
+    # P50 · decisiones con evidencia de varias fuentes / varios casos (nivel por estampa y
+    # nomenclatura ##S/##K, consenso de lote del tablero, proveedor por N/P, motivo pie+libro).
+    if (cfg_emp_ini.get("decisiones_lote") or {}).get("activar", True):
+        try:
+            from decisiones_lote import aplicar as aplicar_decisiones_lote
+            from utilidades.vocabulario_libro import rutas_configuradas, vocabulario
+            salida["decisiones_lote"] = aplicar_decisiones_lote(
+                salida.get("resultados") or resultados,
+                vocabulario(rutas_configuradas(config, RAIZ_PROYECTO)),
+                (cfg_emp_ini.get("decisiones_lote") or {}).get("mapa_motivos"),
+                unanime_lote=int((cfg_emp_ini.get("decisiones_lote") or {}).get("unanime_lote", 6)))
+            # P53 · un protocolo que falló no tumba a los demás, pero se avisa
+            for fallo in salida["decisiones_lote"].get("errores") or []:
+                advertencias_persistencia.append(
+                    f"decisiones de lote: el protocolo {fallo.get('protocolo')} no se aplicó ({fallo.get('error')})")
+        except Exception as exc:                                  # noqa: BLE001
+            advertencias_persistencia.append(f"decisiones de lote no aplicadas: {type(exc).__name__}: {exc}")
     if ejecucion_id_aprendizaje:
         try:
             salida["aprendizaje"] = gestor_aprendizaje.finalizar_ejecucion_incremental(
@@ -1121,7 +1306,7 @@ def _validar_carpeta(carpeta: dict, config: dict, f2: dict,
         clave = str(img)
         if clave not in cache_ocr:
             try:
-                sin_datos = (gestor_aprendizaje.imagen_sin_datos(clave)
+                sin_datos = (gestor_aprendizaje.sin_datos_que_salta_ocr(clave)  # P47
                              if gestor_aprendizaje else None)
                 cache_ocr[clave] = ({"imagen": clave, "tokens": [], "lineas_texto": [],
                                      "texto_completo": "",

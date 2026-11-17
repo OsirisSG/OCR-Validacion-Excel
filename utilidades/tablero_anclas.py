@@ -167,6 +167,56 @@ def _sobre_fondo_claro(gris, x: int, y: int, w: int, h: int, margen: int = 12,
     return float(np.median(marco)) > minimo
 
 
+# P43 · `tablero_campos.pista_de_tablero` (P40) llama a `pestanas_azules`, pero la función no
+# existía en este módulo (ni en main, ocr-gpu-produccion ni actualizacion-v16.0.52-p42-r3):
+# cada llamada lanzaba AttributeError y la primera pasada P42 no podía examinar NINGUNA foto.
+RELACION_PESTANA = (0.6, 6.0)      # alto/ancho: vertical o casi cuadrada; un hilo es mucho más
+RELLENO_MINIMO_PESTANA = 0.55      # área del blob / área de su caja: un hilo diagonal no llega
+CLARO_MINIMO_ETIQUETA = 0.35       # fracción de píxeles claros a la izquierda (etiqueta blanca)
+
+
+def _fraccion_clara(imagen, x0: int, y0: int, x1: int, y1: int, umbral: int = 165) -> float:
+    alto, ancho = imagen.shape[:2]
+    x0, x1 = max(0, x0), min(ancho, x1)
+    y0, y1 = max(0, y0), min(alto, y1)
+    if x1 <= x0 or y1 <= y0:
+        return 0.0
+    gris = cv2.cvtColor(imagen[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY)
+    return float((gris >= umbral).mean())
+
+
+def pestanas_azules(imagen, maximo: int = 2) -> list[Ancla]:
+    """Pestañas/pegatinas AZULES pegadas a una etiqueta BLANCA (ancla de `dashboard_date`). Pura.
+
+    Mismo color que `detectar()` y, además, tres filtros medidos con las fotos de referencia:
+    proporción (un hilo de costura es demasiado alargado), relleno de la caja (un hilo o el borde
+    de la tela no la llenan) y etiqueta clara a la izquierda O a la derecha (la tela azul del
+    airbag no está pegada a una etiqueta blanca). Es una PISTA para recortar: no decide el campo.
+    """
+    if imagen is None or getattr(imagen, "size", 0) == 0:
+        return []
+    mascara = _mascara_color(imagen, "azul")
+    salida: list[Ancla] = []
+    for area, caja in _blobs(mascara)[:6]:
+        x, y, w, h = caja
+        if not w or not h:
+            continue
+        relacion = h / float(w)
+        if not RELACION_PESTANA[0] <= relacion <= RELACION_PESTANA[1]:
+            continue
+        if area / float(w * h) < RELLENO_MINIMO_PESTANA:
+            continue
+        izquierda = _fraccion_clara(imagen, x - int(w * 4), y, x - 2, y + h)
+        derecha = _fraccion_clara(imagen, x + w + 2, y, x + w + int(w * 4), y + h)
+        if max(izquierda, derecha) < CLARO_MINIMO_ETIQUETA:
+            continue
+        salida.append(Ancla("pestana_azul", caja, int(area), color="azul",
+                            nota=f"etiqueta clara {'izquierda' if izquierda >= derecha else 'derecha'}"))
+        if len(salida) >= maximo:
+            break
+    return salida
+
+
 def detectar(imagen) -> list[Ancla]:
     """Devuelve las anclas encontradas, ya clasificadas. La primera es la más fiable."""
     anclas: list[Ancla] = []

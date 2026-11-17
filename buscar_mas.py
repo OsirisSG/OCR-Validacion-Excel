@@ -46,6 +46,46 @@ def fotos_del_caso(carpeta: Path) -> list[Path]:
     return list(vistas.values())
 
 
+def clave_de_foto(ruta: Path, carpeta: Path) -> str:
+    """Ruta relativa al caso, en minúsculas y con `/`. Pura.
+
+    P43 · antes se usaba sólo el nombre (`IMG_0001.JPG`): una foto mirada en NACH tapaba a la
+    del mismo nombre en VOR y ésa no se examinaba nunca.
+    """
+    try:
+        relativa = Path(ruta).relative_to(carpeta)
+    except ValueError:
+        relativa = Path(Path(ruta).name)
+    return relativa.as_posix().lower()
+
+
+def fotos_ya_miradas(parcial: Path | None, caso: str, carpeta: Path) -> set[str]:
+    """Claves `clave_de_foto` de lo ya leído en el parcial. Las lecturas antiguas sólo traen
+    `carpeta` (nombre del padre) y `foto`: se reconstruye la ruta relativa SOLO si existe en
+    disco una única foto que case; si no, no se da por mirada (mejor mirar dos veces)."""
+    vistas: set[str] = set()
+    if not parcial or not Path(parcial).exists():
+        return vistas
+    datos = json.loads(Path(parcial).read_text(encoding="utf-8"))
+    registro = datos.get(caso) or {}
+    por_nombre: dict[tuple[str, str], list[str]] = {}
+    for ruta in fotos_del_caso(carpeta):
+        por_nombre.setdefault((ruta.parent.name.lower(), ruta.name.lower()), []).append(
+            clave_de_foto(ruta, carpeta))
+    for lecturas in (registro.get("lecturas") or {}).values():
+        for lectura in lecturas:
+            if lectura.get("ruta_relativa"):
+                vistas.add(str(lectura["ruta_relativa"]).replace("\\", "/").lower())
+                continue
+            if not lectura.get("foto"):
+                continue
+            posibles = por_nombre.get((str(lectura.get("carpeta", "")).lower(),
+                                       str(lectura["foto"]).lower()), [])
+            if len(posibles) == 1:
+                vistas.add(posibles[0])
+    return vistas
+
+
 def etiquetas_blancas(imagen, maximo: int = 2) -> list[tuple]:
     """Cajas de las manchas blancas grandes con pinta de etiqueta. Pura.
 
@@ -72,11 +112,23 @@ def etiquetas_blancas(imagen, maximo: int = 2) -> list[tuple]:
     return [(x, y, w, h) for _, x, y, w, h in cajas[:maximo]]
 
 
-RESTOS_DEL_MODULO = ("2GJ", "880 204", "880204", "ZRZ", "INFLADOR", "AIRBAG")
+RESTOS_DEL_MODULO = ("2GJ880", "2GJ 880", "880 204", "880204", "ZRZ", "INFLADOR", "AIRBAG",
+                     "AUTOLIV")
 # P42 · 2026-10-29: no todas las fechas de una foto son la fecha del tablero. En 232564 ganó el
 # voto una etiqueta de proveedor («Lieferant : Farbe:») frente a la del tablero, que decía bien
-# 17/05/2025. Antes de votar hay que saber de qué pegatina viene cada fecha.
-RESTOS_DEL_PROVEEDOR = ("LIEFERANT", "FARBE", "MAT", "QTY", "MENGE", "CHARGE", "LOT")
+# la fecha. Antes de votar hay que saber de qué pegatina viene cada fecha.
+# P43 · medido con las fotos de la guía (11/11/2026):
+#  - «2GJ» solo NO es del módulo: el N/P del TABLERO también empieza por 2GJ (2GJ.857.003…) y su
+#    DataMatrix lo imprime; ahora el módulo exige 2GJ+880 (o ZRZ/AIRBAG/AUTOLIV).
+#  - «MAT», «QTY», «LOT» como SUBCADENA marcaban «proveedor» el sticker real del tablero porque
+#    alguien escribió a mano «MAT OK». Las marcas cortas ahora sólo cuentan como palabra suelta.
+RESTOS_DEL_PROVEEDOR = ("LIEFERANT", "FARBE", "MENGE", "CHARGE")
+PROVEEDOR_PALABRAS = __import__("re").compile(r"(?<![A-Z0-9])(?:MAT|QTY|LOT)(?:\s*[:.#]|\s+NO\b|(?![A-Z0-9]))",
+                                              __import__("re").I)
+# firma del sticker del tablero en el lote: «N/P:» + «IP Part» (instrument panel) + hora
+MARCAS_TABLERO = __import__("re").compile(r"N\s*/\s*P\s*[:.]|IP\s*PART|INT\s*316\s*IP", __import__("re").I)
+INSPECCION = __import__("re").compile(r"MAT\s*O\s*K|\b1\s*(?:ER|ST)?\s*TUR(?:NO)?\b|\bTURNO\b",
+                                      __import__("re").I)
 RELOJ = __import__("re").compile(r"\b\d{1,2}:\d{2}(:\d{2})?\s*(AM|PM|A\.M\.|P\.M\.)?\b", __import__("re").I)
 
 
@@ -84,18 +136,27 @@ def clase_de_pegatina(texto: str) -> str:
     """De qué pegatina sale esta fecha. Pura.
 
     `tablero`     · la buena: lleva hora y un código de parte largo (es el sticker del tablero)
-    `modulo`      · la del módulo (2GJ…, ZRZ…), que lleva su propia fecha
+    `modulo`      · la del módulo (2GJ 880…, ZRZ…, Autoliv), que lleva su propia fecha
     `proveedor`   · etiquetas de suministro: Lieferant, Farbe, MAT, número de lote…
+    `inspeccion`  · liberación de calidad «MAT OK 1er TUR» con su fecha (no es la del tablero)
     `desconocida` · sin marcas: no se usa para votar contra las demás
     """
-    crudo = "".join(str(texto or "").upper().split())
+    original = str(texto or "")
+    crudo = "".join(original.upper().split())
     if not crudo:
         return "desconocida"
     if any(resto.replace(" ", "") in crudo for resto in RESTOS_DEL_MODULO):
         return "modulo"
-    if any(resto in crudo for resto in RESTOS_DEL_PROVEEDOR):
+    tablero = bool(RELOJ.search(original)) and any(ch.isdigit() for ch in crudo)
+    if tablero and MARCAS_TABLERO.search(original):
+        return "tablero"           # firma completa del sticker: manda sobre marcas sueltas
+    if INSPECCION.search(original):
+        # P45 · etiqueta pequeña de liberación de calidad («LILI 307 / MAT OK 1er TUR / 15/MAY/2025»,
+        # IMG_4406 de 232564, pegada al housing): su fecha es de inspección, NO del tablero.
+        return "inspeccion"
+    if any(resto in crudo for resto in RESTOS_DEL_PROVEEDOR) or PROVEEDOR_PALABRAS.search(original):
         return "proveedor"
-    if RELOJ.search(str(texto or "")) and any(ch.isdigit() for ch in crudo):
+    if tablero:
         return "tablero"
     return "desconocida"
 
@@ -110,11 +171,28 @@ def parece_del_modulo(texto: str) -> bool:
     return any(resto.replace(" ", "") in crudo for resto in RESTOS_DEL_MODULO)
 
 
+def cargar_foto(ruta: Path):
+    """Imagen BGR o None. P43 · `np.fromfile` + `imdecode`: `cv2.imread` falla en Windows con
+    rutas que no son ASCII y devolvía None en silencio, que aquí parecía «foto sin fecha»."""
+    try:
+        datos = np.fromfile(str(ruta), dtype=np.uint8)
+    except OSError:
+        return None
+    if datos.size == 0:
+        return None
+    return cv2.imdecode(datos, cv2.IMREAD_COLOR)
+
+
 def fechas_de_una_foto(ruta: Path, motor=None) -> list[dict]:
     """Todas las fechas plausibles de una foto, con la evidencia de dónde salieron. Pura salvo OCR."""
-    imagen = cv2.imread(str(ruta))
+    imagen = cargar_foto(ruta)
     if imagen is None:
         return []
+    return fechas_de_una_imagen(imagen, motor)
+
+
+def fechas_de_una_imagen(imagen, motor=None) -> list[dict]:
+    """Igual que `fechas_de_una_foto` pero sobre una imagen ya cargada (P43, sin cambiar reglas)."""
     alto, ancho = imagen.shape[:2]
     if max(alto, ancho) > 1600:
         factor = 1600 / max(alto, ancho)
@@ -235,22 +313,16 @@ def main() -> int:
 
     carpeta = Path(args.caso)
     caso = carpeta.name.split()[0]
-    ya_miradas = set()
-    if args.parcial and Path(args.parcial).exists():
-        parcial = json.loads(Path(args.parcial).read_text(encoding="utf-8"))
-        registro = parcial.get(caso) or {}
-        for lecturas in (registro.get("lecturas") or {}).values():
-            for lectura in lecturas:
-                if lectura.get("foto"):
-                    ya_miradas.add(str(lectura["foto"]))
     todas = fotos_del_caso(carpeta)
-    pendientes = [r for r in todas if r.name not in ya_miradas]
+    ya_miradas = fotos_ya_miradas(Path(args.parcial) if args.parcial else None, caso, carpeta)
+    pendientes = [r for r in todas if clave_de_foto(r, carpeta) not in ya_miradas]
     print(f"{caso}: {len(todas)} fotos · {len(ya_miradas)} ya miradas · "
           f"{len(pendientes)} por mirar (se miran como mucho {args.maximo_fotos})")
 
     lecturas = []
     inicio = time.time()
     examinadas = 0
+    examinadas_rutas: list[str] = []
     for ruta in pendientes[:args.maximo_fotos]:
         if time.time() - inicio > args.presupuesto_s:
             print(f"  presupuesto agotado tras {examinadas} fotos ({args.presupuesto_s:.0f} s)")
@@ -258,9 +330,11 @@ def main() -> int:
         datos = fechas_de_una_foto(ruta)
         dato = datos[0] if datos else None
         examinadas += 1
+        examinadas_rutas.append(clave_de_foto(ruta, carpeta))
         if dato:
             lecturas.append({"valor": dato["valor"], "confianza": 0.8,
                              "foto": ruta.name, "carpeta": ruta.parent.name,
+                             "ruta_relativa": clave_de_foto(ruta, carpeta),
                              "origen": "busqueda_exhaustiva", "giro": dato["giro"],
                              "ancla": dato.get("ancla", ""), "clase": dato.get("clase", ""),
                              "texto": dato["texto"]})
@@ -286,6 +360,10 @@ def main() -> int:
     if args.salida:
         Path(args.salida).write_text(json.dumps(
             {"caso": caso, "campo": args.campo, "examinadas": examinadas, "segundos": round(segundos, 1),
+             # P43 · también las fotos examinadas SIN lectura: «mirada» no es «produjo dato»
+             "examinadas_rutas": examinadas_rutas,
+             "pendientes_rutas": [clave_de_foto(r, carpeta) for r in pendientes
+                                  if clave_de_foto(r, carpeta) not in set(examinadas_rutas)],
              "lecturas": lecturas}, ensure_ascii=False, indent=1), encoding="utf-8")
         print(f"escrito {args.salida}")
     return 0 if lecturas else 3

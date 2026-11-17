@@ -44,7 +44,11 @@ def manifiesto(carpeta: Path, con_huella: bool = False) -> dict[str, dict]:
 
 
 def por_caso(base: Path) -> dict[str, dict[str, dict]]:
-    """Caso -> {foto: registro}. El nombre de la foto es lo que nos importa, no la carpeta."""
+    """Caso -> {ruta relativa al caso en minúsculas: registro}.
+
+    P43 · antes la clave era sólo el nombre de la foto: `NACH/IMG_0001.JPG` y `VOR/IMG_0001.JPG`
+    colapsaban en una y la segunda desaparecía del recuento (ni presente ni pendiente).
+    """
     casos: dict[str, dict[str, dict]] = {}
     # las carpetas de caso pueden estar a cualquier profundidad (`HT/<caso>/PHOTOS/NACH`, etc.)
     candidatas = [d for d in sorted(base.rglob("*")) if d.is_dir()
@@ -54,21 +58,58 @@ def por_caso(base: Path) -> dict[str, dict[str, dict]]:
         registro = casos.setdefault(caso, {})
         for ruta in sorted(carpeta.rglob("*")):
             if ruta.is_file() and ruta.suffix.lower() in SUFIJOS:
-                registro.setdefault(ruta.name.lower(),
+                registro.setdefault(ruta.relative_to(carpeta).as_posix().lower(),
                                     {"bytes": ruta.stat().st_size,
-                                     "ruta": str(ruta.relative_to(base))})
+                                     "ruta": str(ruta.relative_to(base)),
+                                     "nombre": ruta.name.lower(),
+                                     "carpeta": ruta.parent.name.lower()})
     return casos
 
 
-def miradas(parcial: dict, caso: str) -> set[str]:
-    """Nombres de foto que produjeron al menos una lectura en ese caso. Pura."""
+def _clave_lectura(lectura: dict, presentes: dict[str, dict]) -> str | None:
+    """Ruta relativa de la foto de una lectura, o None si no se puede saber sin adivinar. Pura.
+
+    Las lecturas nuevas traen `ruta_relativa`. Las antiguas sólo `carpeta` (padre) + `foto`: se
+    aceptan si identifican UNA sola foto presente; si hay dos candidatas, no se da por mirada.
+    """
+    if lectura.get("ruta_relativa"):
+        return str(lectura["ruta_relativa"]).replace("\\", "/").lower()
+    if not lectura.get("foto"):
+        return None
+    nombre = str(lectura["foto"]).lower()
+    carpeta = str(lectura.get("carpeta") or "").lower()
+    posibles = [clave for clave, reg in presentes.items()
+                if reg.get("nombre") == nombre and (not carpeta or reg.get("carpeta") == carpeta)]
+    return posibles[0] if len(posibles) == 1 else None
+
+
+def miradas(parcial: dict, caso: str, presentes: dict[str, dict] | None = None) -> set[str]:
+    """Fotos que produjeron al menos una lectura en ese caso (claves relativas). Pura."""
     registro = parcial.get(caso) or {}
     vistas: set[str] = set()
     for lecturas in (registro.get("lecturas") or {}).values():
         for lectura in lecturas:
-            if lectura.get("foto"):
-                vistas.add(str(lectura["foto"]).lower())
+            clave = _clave_lectura(lectura, presentes or {})
+            if clave:
+                vistas.add(clave)
     return vistas
+
+
+def examinadas_de_parcial(parcial: dict, caso: str) -> set[str]:
+    """P43 · fotos que la primera pasada pasó por OCR, con o sin lectura. Pura."""
+    return {str(r).lower() for r in ((parcial.get(caso) or {}).get("examinadas") or [])}
+
+
+def examinadas_de_segunda(datos: dict, presentes: dict[str, dict]) -> tuple[set[str], set[str]]:
+    """(examinadas, con_lectura) de un JSON de `buscar_mas.py`. Pura.
+
+    P43 · `examinadas_rutas` lista también las fotos examinadas que NO dieron fecha; los JSON
+    antiguos no la traen y entonces sólo cuentan las que produjeron lectura.
+    """
+    con_lectura = {c for c in (_clave_lectura(l, presentes) for l in datos.get("lecturas") or [])
+                   if c}
+    examinadas = {str(r).lower() for r in datos.get("examinadas_rutas") or []} | con_lectura
+    return examinadas, con_lectura
 
 
 def main() -> int:
@@ -85,23 +126,28 @@ def main() -> int:
     local = por_caso(Path(args.local))
     parcial = (json.loads(Path(args.parcial).read_text(encoding="utf-8"))
                if args.parcial and Path(args.parcial).exists() else {})
-    extra: dict[str, set[str]] = {}
+    segundas = []
     for ruta in args.segunda:
-        if not Path(ruta).exists():
-            continue
-        datos = json.loads(Path(ruta).read_text(encoding="utf-8"))
-        caso = str(datos.get("caso") or "")
-        for lectura in datos.get("lecturas") or []:
-            extra.setdefault(caso, set()).add(str(lectura.get("foto", "")).lower())
+        if Path(ruta).exists():
+            segundas.append(json.loads(Path(ruta).read_text(encoding="utf-8")))
 
     lineas = []
     total_repo = total_local = total_miradas = total_fotos = 0
     faltan_en_local = {}
     sin_mirar = {}
+    sin_lectura = {}
     for caso in sorted(set(repo) | set(local)):
         en_repo = repo.get(caso, {})
         en_local = local.get(caso, {})
-        vistas = miradas(parcial, caso) | extra.get(caso, set())
+        con_lectura = miradas(parcial, caso, en_local)
+        examinadas = set(con_lectura) | examinadas_de_parcial(parcial, caso)
+        for datos in segundas:
+            if str(datos.get("caso") or "") != caso:
+                continue
+            ex, cl = examinadas_de_segunda(datos, en_local)
+            examinadas |= ex
+            con_lectura |= cl
+        vistas = examinadas
         total_repo += len(en_repo)
         total_local += len(en_local)
         total_miradas += len(vistas & set(en_local))
@@ -112,10 +158,13 @@ def main() -> int:
         pendientes = sorted(set(en_local) - vistas)
         if pendientes:
             sin_mirar[caso] = pendientes
+        vacias = sorted((vistas - con_lectura) & set(en_local))
+        if vacias:
+            sin_lectura[caso] = vacias
         marca = "OK " if not ausentes and not pendientes else ("~  " if not ausentes else "XX ")
         lineas.append(f"  {marca}{caso}  repo {len(en_repo):4d} · local {len(en_local):4d} · "
-                      f"miradas {len(vistas & set(en_local)):4d} · "
-                      f"sin mirar {len(pendientes):4d}"
+                      f"miradas {len(vistas & set(en_local)):4d} "
+                      f"(sin lectura {len(vacias):4d}) · sin mirar {len(pendientes):4d}"
                       + (f" · FALTAN {len(ausentes)}" if ausentes else ""))
 
     cabecera = [
@@ -136,6 +185,10 @@ def main() -> int:
         texto += ("\n\nFOTOS EN DISCO QUE NINGUNA PASADA MIRÓ (aquí estaba el fallo de 232564):")
         for caso, nombres in sin_mirar.items():
             texto += f"\n  {caso}: {len(nombres)} foto(s) · p. ej. {', '.join(nombres[:5])}"
+        if sin_lectura:
+            texto += "\n\nFOTOS EXAMINADAS SIN LECTURA (miradas; no confundir con «sin mirar»):"
+            for caso, nombres in sin_lectura.items():
+                texto += f"\n  {caso}: {len(nombres)} foto(s) · p. ej. {', '.join(nombres[:5])}"
         texto += ("\n  REGLA: un campo no se cierra como «sin dato» mientras este número no sea 0\n"
                   "  en un caso que tenga ese campo en duda.")
     print(texto)

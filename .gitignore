@@ -83,3 +83,6 @@ errores/*_dashboard_pipeline.md
 *.tmp
 *.temp
 ~$*.xlsx
+
+# Inventario que la corrida genera en la raíz (P54: no se versiona)
+inventario_proyecto.json

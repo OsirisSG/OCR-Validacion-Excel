@@ -971,6 +971,10 @@
   // P54 · modo sencillo (sencillo.js). Sólo se añaden las claves que aún no existían.
   const P54 = {
     en: {
+     "Etapa": "Stage",
+     "Detectar": "Detect",
+     "La carpeta no dice si es 1ST o 2ST. Elige la etapa y vuelve a pulsar Procesar.": "The folder does not say whether it is 1ST or 2ST. Choose the stage and press Process again.",
+     "Se detecta del nombre de la carpeta. Elígela sólo si el nombre no dice 1ST ni 2ST.": "Detected from the folder name. Choose it only if the name says neither 1ST nor 2ST.",
      "Falta un paso: revisar las dudas.": "One step left: review the doubts.",
      "El sistema te enseña la foto y sus opciones; tú eliges el texto correcto.": "The system shows you the photo and its options; you pick the correct text.",
      "Abriendo…": "Opening…",
@@ -1036,6 +1040,10 @@
      "La última ejecución terminó con error:": "The last run ended with an error:"
     },
     de: {
+     "Etapa": "Stufe",
+     "Detectar": "Erkennen",
+     "La carpeta no dice si es 1ST o 2ST. Elige la etapa y vuelve a pulsar Procesar.": "Der Ordner gibt nicht an, ob es 1ST oder 2ST ist. Wählen Sie die Stufe und klicken Sie erneut auf Verarbeiten.",
+     "Se detecta del nombre de la carpeta. Elígela sólo si el nombre no dice 1ST ni 2ST.": "Wird aus dem Ordnernamen erkannt. Nur wählen, wenn der Name weder 1ST noch 2ST enthält.",
      "Falta un paso: revisar las dudas.": "Ein Schritt fehlt noch: die Zweifelsfälle prüfen.",
      "El sistema te enseña la foto y sus opciones; tú eliges el texto correcto.": "Das System zeigt Ihnen das Foto und seine Optionen; Sie wählen den richtigen Text.",
      "Abriendo…": "Wird geöffnet…",

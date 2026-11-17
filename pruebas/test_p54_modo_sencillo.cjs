@@ -24,7 +24,7 @@ assert(app.includes(': "#/resumen");'), 'sin sencillo.js la app debe seguir abri
 // 3. Mismo contrato que «Procesar carpeta»: diálogo de rangos + proyecto, y el mismo POST.
 for (const pieza of ['DialogoRangosApertura', 'enviarJSON("/api/pipeline"', 'rango_apertura', 'proyecto:',
   'sin_asignar', 'RedSegura.crearSondeoSerial', '/api/pipeline/cancelar', 'ExportadorExcel',
-  'contenido: conVideo ? "todo" : "fotos"', 'idiomas_exportacion: [idioma]'])
+  'contenido: conVideo ? "todo" : "fotos"', 'idiomas_exportacion: [idioma]', 'tipo_st: etapa || null'])
   assert(sencillo.includes(pieza), `sencillo.js no reutiliza: ${pieza}`);
 assert(sencillo.includes('if (!proyecto)'), 'sin proyecto elegido no se inicia nada (C7)');
 
@@ -32,6 +32,10 @@ assert(sencillo.includes('if (!proyecto)'), 'sin proyecto elegido no se inicia n
 for (const texto of ['"Carpeta"', '"Laboratorio"', '"Idioma"', '"Vídeos"', '"Análisis avanzado"', '"Procesar"'])
   assert(sencillo.includes(`t(${texto})`), `falta en la pantalla sencilla: ${texto}`);
 assert(/id: "EDAG"[^}]*disponible: true/.test(sencillo), 'EDAG debe ser el laboratorio disponible');
+// 1ST/2ST: «Detectar» por defecto; si la corrida no supo la etapa, se pide (mismo texto que pipeline.py).
+assert(sencillo.includes('["1ST", "1ST"], ["2ST", "2ST"]') && sencillo.includes('/1ST o 2ST/i'), 'falta el selector de etapa');
+assert(fs.readFileSync(path.join(root, 'pipeline.py'), 'utf8').includes('corresponde a 1ST o 2ST'),
+  'el aviso de etapa del modo sencillo depende de este mensaje de pipeline.py');
 
 // 5. Todo texto t("…") de sencillo.js tiene traducción al inglés y al alemán.
 const D = { en: {}, de: {} };

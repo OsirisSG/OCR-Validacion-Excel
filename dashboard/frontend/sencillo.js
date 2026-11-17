@@ -23,6 +23,10 @@
     { id: "otro", nombre: "Otro laboratorio", detalle: "Próximamente", disponible: false },
   ];
   const IDIOMAS = [["es", "Español"], ["en", "English"], ["de", "Deutsch"]];
+  // Etapa del lote. «Detectar» = lo que hace el programa: busca 1ST/2ST en el nombre de la
+  // carpeta, de las superiores y de las subcarpetas. Si no lo encuentra, hay que elegirla.
+  const ETAPAS = [["", "Detectar"], ["1ST", "1ST"], ["2ST", "2ST"]];
+  const FALTA_ETAPA = /1ST o 2ST/i;
 
   function leerBorrador() {
     try {
@@ -112,6 +116,7 @@
     const [laboratorio, setLaboratorio] = useState(() =>
       LABORATORIOS.some((l) => l.id === borrador.laboratorio && l.disponible) ? borrador.laboratorio : "EDAG");
     const [conVideo, setConVideo] = useState(() => borrador.conVideo !== false);
+    const [etapa, setEtapa] = useState(() => (["1ST", "2ST"].includes(borrador.etapa) ? borrador.etapa : ""));
     const idioma = window.OCR_I18N?.get?.() || "es";
     const [estado, setEstado] = useState(undefined);
     const [errorEstado, setErrorEstado] = useState(null);
@@ -129,7 +134,7 @@
     const [dudas, setDudas] = useState(null);
     const [abriendoDudas, setAbriendoDudas] = useState(false);
 
-    useEffect(() => { guardarBorrador({ ruta, laboratorio, conVideo }); }, [ruta, laboratorio, conVideo]);
+    useEffect(() => { guardarBorrador({ ruta, laboratorio, conVideo, etapa }); }, [ruta, laboratorio, conVideo, etapa]);
 
     const refrescarProyectos = useCallback(() => {
       pedirJSON("/api/proyectos")
@@ -190,7 +195,7 @@
 
     function cambiarIdioma(codigo) {
       if (codigo === idioma) return;
-      guardarBorrador({ ruta, laboratorio, conVideo });   // `set` recarga la página
+      guardarBorrador({ ruta, laboratorio, conVideo, etapa });   // `set` recarga la página
       window.OCR_I18N?.set?.(codigo);
     }
     async function pegar() {
@@ -225,7 +230,7 @@
       try {
         await enviarJSON("/api/pipeline", {
           ruta: ruta.trim(), nombre_excel: null, sobrescribir_excel: false,
-          tipo_st: null, ruta_plantilla: null, plantilla_id: null,
+          tipo_st: etapa || null, ruta_plantilla: null, plantilla_id: null,
           modo_ejecucion: "completo", perfil_rendimiento: "alto",
           contenido: conVideo ? "todo" : "fotos",
           idiomas_exportacion: [idioma],
@@ -366,6 +371,8 @@
 
     // --------------------------------------------------------------- formulario
     const listaRecientes = recientes.filter((item) => item.ruta !== ruta).slice(0, 3);
+    // La última corrida se paró porque no supo si era 1ST o 2ST: se pide la etapa.
+    const pideEtapa = !etapa && FALTA_ETAPA.test(String(estado.error || ""));
     return html`<section class="sen-escena">
       <div class="sen-hero">
         <h1>${t("¿Qué carpeta procesamos?")}</h1>
@@ -398,6 +405,18 @@
             ${listaRecientes.map((item) => html`<button type="button" key=${item.ruta} class="sen-reciente"
               title=${item.ruta} onClick=${() => setRuta(item.ruta)}>${item.ruta}</button>`)}
           </div>`}
+          <div class=${`sen-etapa ${pideEtapa ? "sen-falta" : ""}`}>
+            <span class="sen-etapa-nombre" id="sen-etapa">${t("Etapa")}</span>
+            <div class="sen-segmentos sen-mini" role="radiogroup" aria-labelledby="sen-etapa"
+              data-sel=${ETAPAS.findIndex(([v]) => v === etapa)}>
+              ${ETAPAS.map(([valor, nombre]) => html`<button type="button" key=${nombre} role="radio"
+                aria-checked=${etapa === valor} class=${etapa === valor ? "sel" : ""}
+                onClick=${() => setEtapa(valor)}>${t(nombre)}</button>`)}
+            </div>
+          </div>
+          <p class="sen-ayuda">${pideEtapa
+            ? t("La carpeta no dice si es 1ST o 2ST. Elige la etapa y vuelve a pulsar Procesar.")
+            : t("Se detecta del nombre de la carpeta. Elígela sólo si el nombre no dice 1ST ni 2ST.")}</p>
         </div>
 
         <div class="sen-paso">
@@ -441,7 +460,7 @@
         </button>
         <p class="sen-nota">${t("Antes de empezar te pediremos el proyecto y los rangos de apertura.")}</p>
         ${errorEnvio && html`<p class="mensaje-error" role="alert">${errorEnvio}</p>`}
-        ${estado.error && html`<p class="mensaje-error" role="alert"><strong>${t("La última ejecución terminó con error:")}</strong> ${estado.error}</p>`}
+        ${estado.error && !pideEtapa && html`<p class="mensaje-error" role="alert"><strong>${t("La última ejecución terminó con error:")}</strong> ${estado.error}</p>`}
       </form>
       ${dialogos}
     </section>`;

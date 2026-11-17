@@ -1,0 +1,47 @@
+/* =============================================================================
+   monerias.css — P53 · movimiento y microinteracciones del dashboard.
+   Capa ADITIVA sobre estilos.css: no redefine colores, tamaños ni el semáforo
+   (que llega del backend). Sólo anima `transform` y `opacity`. Sin red.
+   Quitar esta hoja (y monerias.js) de index.html deja el dashboard como estaba.
+   ============================================================================= */
+
+/* Entrada estándar: cada tarjeta sube y aparece al montarse (cambio de pestaña). */
+@keyframes p53-sube-entra { from { opacity: 0; transform: translateY(16px) scale(.985); } }
+.tarjeta { animation: p53-sube-entra .5s cubic-bezier(.2, .8, .2, 1) both; }
+
+/* Las cifras grandes entran con un pequeño rebote. */
+@keyframes p53-cifra { from { opacity: 0; transform: translateY(8px) scale(.94); } }
+.kpi-valor { animation: p53-cifra .6s cubic-bezier(.34, 1.56, .64, 1) both; font-variant-numeric: tabular-nums; }
+
+/* Luz que sigue al cursor en las tarjetas (monerias.js escribe --mx / --my).
+   Va como imagen de fondo: no recorta menús ni tooltips que salen de la tarjeta. */
+.tarjeta.p53-luz {
+  background-image: radial-gradient(260px circle at var(--mx, 50%) var(--my, 50%),
+    color-mix(in srgb, var(--acento) 9%, transparent), transparent 70%);
+}
+
+/* Botones y pestañas: respuesta al pulsar. */
+.boton:active:not(:disabled), .tab:active, .btn-tema:active { transform: scale(.96); }
+.boton, .tab { transition-timing-function: cubic-bezier(.34, 1.56, .64, 1); }
+
+/* Chispas al tocar (las crea monerias.js; se quitan solas). */
+.p53-chispa { position: fixed; z-index: 5000; pointer-events: none; }
+.p53-chispa i {
+  position: absolute; left: -1.5px; top: -6px; width: 3px; height: 12px; border-radius: 3px;
+  background: var(--acento); transform-origin: 1.5px 6px;
+  transform: rotate(calc(var(--k) * 45deg)) translateY(-10px);
+  animation: p53-chispa .55s cubic-bezier(.2, .8, .2, 1) forwards;
+}
+.p53-chispa i:nth-child(1) { --k: 0 } .p53-chispa i:nth-child(2) { --k: 1 }
+.p53-chispa i:nth-child(3) { --k: 2 } .p53-chispa i:nth-child(4) { --k: 3 }
+.p53-chispa i:nth-child(5) { --k: 4 } .p53-chispa i:nth-child(6) { --k: 5 }
+.p53-chispa i:nth-child(7) { --k: 6 } .p53-chispa i:nth-child(8) { --k: 7 }
+@keyframes p53-chispa {
+  to { transform: rotate(calc(var(--k) * 45deg)) translateY(-34px) scaleY(.2); opacity: 0; }
+}
+
+/* «Reducir movimiento»: nada de lo anterior se mueve. */
+@media (prefers-reduced-motion: reduce) {
+  .tarjeta, .kpi-valor, .p53-chispa i { animation: none !important; }
+  .boton:active:not(:disabled), .tab:active, .btn-tema:active { transform: none; }
+}

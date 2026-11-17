@@ -277,9 +277,13 @@ def construir_dudas(libro_filas: dict[str, dict], lecturas: dict[str, dict],
             # formas posibles, la completa recomendada (es lo que trae la etiqueta).
             verificada = (fuentes_caso.get("verificadas") or {}).get(campo)
             if verificada:
-                opciones.append(_opcion(verificada["completa"], "serie_verificada",
-                                        f"DataMatrix con dígito de control válido ({verificada['datamatrix']})",
-                                        0.95, DONDE_BUSCAR.get(campo, [])))
+                # P53 · la serie verificada puede venir del texto impreso (sin DataMatrix)
+                origen = (f"DataMatrix con dígito de control válido ({verificada['datamatrix']})"
+                          if verificada.get("datamatrix") else
+                          f"serie impresa con dígito de control válido ({verificada.get('impreso', '')})")
+                opciones.append(_opcion(verificada["completa"], "serie_verificada", origen,
+                                        0.95 if verificada.get("datamatrix") else 0.92,
+                                        DONDE_BUSCAR.get(campo, [])))
                 opciones.append(_opcion(verificada["sin_control"], "serie_verificada_sin_control",
                                         "la misma serie verificada, sin el dígito de control",
                                         0.9, DONDE_BUSCAR.get(campo, [])))

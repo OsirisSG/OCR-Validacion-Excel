@@ -428,6 +428,52 @@ def _ordenar_variantes(variantes: list[str]) -> list[str]:
     return salida
 
 
+def _regla_impreso_con_control(estado: dict, propias: list[dict], es_dm, politica: str) -> bool:
+    """P53 · sin DataMatrix: la serie IMPRESA también termina en el dígito de control Code 39.
+
+    El control verifica justo lo que la regla del usuario pone en duda (el último carácter). Para
+    no fiarse de una lectura suelta, se exige además que el CUERPO (todo menos el último carácter)
+    esté leído igual en ≥2 fotos y que ninguna lectura impresa traiga otro cuerpo:
+
+    - UNA sola serie impresa cumple el control, cuerpo en ≥2 fotos, sin cuerpo contrario
+      → se publica según la política (`completa` / `sin_control`), regla `impreso_control_mod43`;
+    - cumple el control pero el cuerpo sólo está en 1 foto, o hay otro cuerpo → duda con esa
+      serie como propuesta verificada (★ en el formulario);
+    - ninguna o varias cumplen el control → no se toca nada (sigue la regla anterior).
+    Si hay CUALQUIER lectura DataMatrix (aquí ya se sabe que no cumple el control) tampoco se
+    decide: dos tecnologías en desacuerdo se resuelven en el formulario. Devuelve True si actuó.
+    """
+    if any(es_dm(l) for l in propias):
+        return False
+    impresas = [(str(l["valor"]).upper().strip(), str(l.get("ruta_relativa") or l.get("foto") or ""))
+                for l in propias if not l.get("descartada")]
+    validas = list(dict.fromkeys(v for v, _ in impresas if valida_code39(v)))
+    if len(validas) != 1:
+        return False
+    serie = validas[0]
+    cuerpo = serie[:-1].rstrip()
+    mismo_cuerpo = lambda v: v == cuerpo or (len(v) == len(serie) and v[:-1].rstrip() == cuerpo)  # noqa: E731
+    fotos_cuerpo = {f for v, f in impresas if mismo_cuerpo(v)}
+    contrarias = sorted({v for v, _ in impresas if not mismo_cuerpo(v)})
+    completa = sin_simbolo_final(serie)
+    estado["verificada_control"] = {"impreso": serie, "completa": completa, "sin_control": cuerpo,
+                                    "fotos_cuerpo": len(fotos_cuerpo)}
+    if politica in {"completa", "sin_control"} and len(fotos_cuerpo) >= 2 and not contrarias:
+        estado.update(estado="consenso", valor=completa if politica == "completa" else cuerpo,
+                      valor_propuesto=None, variantes=[], regla="impreso_control_mod43",
+                      motivo=(f"serie impresa con dígito de control Code 39 válido ({serie}); cuerpo "
+                              f"leído igual en {len(fotos_cuerpo)} fotos; política «{politica}»"))
+        return True
+    porque = ("falta decidir si se escribe completa o sin el dígito de control"
+              if politica not in {"completa", "sin_control"} else
+              f"otra lectura impresa trae otro cuerpo ({', '.join(contrarias[:3])})" if contrarias else
+              "el cuerpo sólo se leyó en 1 foto")
+    estado.update(estado="en_duda", valor=None, valor_propuesto=completa,
+                  variantes=list(dict.fromkeys([completa, cuerpo] + list(estado.get("variantes") or []))),
+                  motivo=f"serie impresa verificada por dígito de control ({serie}); {porque}")
+    return True
+
+
 def aplicar_regla_ultimo_caracter(estados: dict, lecturas: dict,
                                   campo: str = "dashboard_serial_number", politica: str = "preguntar") -> None:
     """P45 · REGLA DEL USUARIO (11/11/2026): «el último dígito o carácter a veces no se imprime
@@ -462,6 +508,8 @@ def aplicar_regla_ultimo_caracter(estados: dict, lecturas: dict,
                       variantes=list(dict.fromkeys([completa, base] + list(estado.get("variantes") or []))),
                       motivo=(f"serie verificada por dígito de control ({dm}); falta decidir si se escribe "
                               "completa o sin el dígito de control"))
+        return
+    if not verificadas and _regla_impreso_con_control(estado, propias, es_dm, politica):
         return
     if estado.get("estado") == "en_duda":
         # ya es duda (p. ej. DataMatrix «…R6E1» frente a impreso «…R6ET»): se añade como opción
@@ -524,13 +572,16 @@ def candidatos_desde_cierre(caso: dict, estados: dict[str, dict], lecturas: dict
                            "fotos_con_error": estado["fotos_con_error"]})
             continue
         ganador = str(estado["valor"]) if estado["estado"] == "consenso" else None
-        verificada = (estado.get("verificada_control") or {}) if estado.get("regla") == "datamatrix_control_mod43" else {}
+        verificada = ((estado.get("verificada_control") or {})
+                      if estado.get("regla") in {"datamatrix_control_mod43", "impreso_control_mod43"} else {})
         usadas_por_foto: set[str] = set()
         for lectura in propias:
             valor = lectura.get("valor")
-            if (verificada and ganador is not None and str(lectura.get("origen", "")).lower().startswith("datamatrix")
-                    and str(valor or "").upper() == verificada.get("datamatrix")):
-                valor = ganador           # P52 · DataMatrix verificado → la forma elegida por la política
+            es_codigo = str(lectura.get("origen", "")).lower().startswith("datamatrix")
+            if verificada and ganador is not None and (
+                    (es_codigo and str(valor or "").upper() == verificada.get("datamatrix")) or
+                    (not es_codigo and str(valor or "").upper().strip() == verificada.get("impreso"))):
+                valor = ganador           # P52/P53 · serie verificada → la forma elegida por la política
             foto = fotos_por_clave.get(str(lectura.get("ruta_relativa") or ""), {})
             sostiene = (ganador is not None and valor not in (None, "")
                         and str(valor) == ganador and not lectura.get("descartada"))

@@ -26,13 +26,23 @@ Protocolos, en orden:
 6. **P52 · Unánime en el lote** (fecha y N/P del módulo): ≥6 casos de la corrida con el mismo valor
    publicado, ninguna lectura en toda la corrida que diga otro, y la etiqueta del módulo vista en
    las fotos del caso. Queda marcado con su regla para revisarlo en la Trazabilidad.
+
+P53 · robustez (ningún protocolo nuevo inventa valores; sólo hacen más segura la decisión):
+
+- **Cada protocolo va aislado.** Si uno falla con un dato raro, se anota en `errores` y los demás
+  siguen: antes un fallo en cualquiera dejaba la corrida sin NINGUNA decisión de lote.
+- **Freno de coherencia.** Una fecha del módulo o del tablero posterior a la fecha de la prueba
+  es imposible (la pieza existe antes de ensayarse): no se publica y queda en `rechazadas`.
+- **Serie del módulo: la lectura exacta manda sobre la corregida.** Si UNA serie cumple el control
+  tal como se leyó, se publica aunque otra lo cumpla sólo cambiando su último carácter.
+- **Resumen por regla** en la salida (`por_regla`), para ver de un vistazo qué decidió la corrida.
 """
 from __future__ import annotations
 
 import re
 from collections import Counter, defaultdict
 
-VERSION = "p52-lote-3"
+VERSION = "p53-lote-4"
 PROTOTIPO = re.compile(r"PROTOTYP", re.I)
 
 
@@ -47,7 +57,51 @@ def _vacio(fila: dict, clave: str) -> bool:
             and dato.get("estado") not in {"extraido_manual", "confirmado_manual"})
 
 
+class _Informe(list):
+    """La lista de decisiones, con lo que el freno de coherencia rechazó y los protocolos que fallaron."""
+
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.rechazadas: list[dict] = []
+        self.errores: list[dict] = []
+
+
+FECHAS_DE_PIEZA = {"module_date", "dashboard_date"}
+
+
+def _fecha(valor):
+    from datetime import date, datetime
+    if isinstance(valor, datetime):
+        return valor.date()
+    if isinstance(valor, date):
+        return valor
+    try:
+        return date.fromisoformat(str(valor).strip()[:10])
+    except (TypeError, ValueError):
+        return None
+
+
+def incoherencia(fila: dict, clave: str, valor) -> str | None:
+    """P53 · por qué `valor` no puede ser, o None. Sólo comprueba lo que es físicamente imposible."""
+    if clave in FECHAS_DE_PIEZA:
+        pieza, prueba = _fecha(valor), _fecha(_valor(fila, "test_date"))
+        if pieza and prueba and pieza > prueba:
+            return (f"la fecha de la pieza ({pieza.isoformat()}) es posterior a la fecha de la "
+                    f"prueba ({prueba.isoformat()})")
+    return None
+
+
 def _publicar(fila: dict, clave: str, valor, regla: str, motivo: str, informe: list) -> None:
+    porque = incoherencia(fila, clave, valor)
+    if porque:
+        rechazo = {"caso": fila.get("test_number") or fila.get("case_key"), "campo": clave,
+                   "valor": valor, "regla": regla, "motivo": porque}
+        if isinstance(informe, _Informe):
+            informe.rechazadas.append(rechazo)
+        campo = fila.setdefault("campos", {}).setdefault(clave, {})
+        if isinstance(campo, dict):
+            campo["decision_lote_rechazada"] = rechazo
+        return
     anterior = dict((fila.get("campos") or {}).get(clave) or {})
     fila.setdefault("campos", {})[clave] = {
         **{k: v for k, v in anterior.items() if k in ("candidatos", "fuentes", "opciones_consenso")},
@@ -321,12 +375,21 @@ def _protocolo_control_serie_modulo(resultados: list[dict], informe: list) -> No
                     if c.get("clave") == clave and c.get("fuente") not in {"decision_lote"}]
         # texto completo de las fotos: el lector de campos pudo no reconocer la serie
         lecturas += [t.get("texto_crudo") for t in fila.get("trazabilidad") or [] if t.get("texto_crudo")]
-        validas = sorted({v for texto in lecturas for f in formas_serie_modulo(texto)
-                          if (v := con_control_valido(f, valida_code39))})
+        formas = [f for texto in lecturas for f in formas_serie_modulo(texto)]
+        validas = sorted({v for f in formas if (v := con_control_valido(f, valida_code39))})
         if len(validas) == 1:
             _publicar(fila, clave, validas[0], "control_code39_serie_modulo",
                       f"la lectura cumple el dígito de control Code 39 (mod 43) y es la única que lo cumple",
                       informe)
+            continue
+        # P53 · varias candidatas: manda la que cumple el control TAL COMO SE LEYÓ; las que sólo lo
+        # cumplen cambiando su último carácter por uno parecido son evidencia más débil.
+        exactas = sorted({f for f in formas if valida_code39(f)})
+        if len(validas) > 1 and len(exactas) == 1:
+            _publicar(fila, clave, exactas[0], "control_code39_serie_modulo_exacta",
+                      f"es la única lectura que cumple el dígito de control sin corregir nada; las otras "
+                      f"({', '.join(v for v in validas if v != exactas[0])}) sólo lo cumplen cambiando el "
+                      "último carácter", informe)
 
 
 def _modulo_visto(fila: dict) -> bool:
@@ -355,19 +418,30 @@ def _unanime_lote(resultados: list[dict], clave: str, informe: list, minimo: int
 
 def aplicar(resultados: list[dict], vocabulario: dict | None = None, mapa_motivos: dict | None = None,
             unanime_lote: int = 6) -> dict:
-    informe: list[dict] = []
-    _protocolo_control_serie_modulo(resultados, informe)
-    _protocolo_nivel_modulo(resultados, informe)
+    informe = _Informe()
+
+    def paso(nombre: str, funcion, *args, **kwargs) -> None:
+        """P53 · un protocolo que falla no arrastra a los demás: se anota y se sigue."""
+        try:
+            funcion(*args, **kwargs)
+        except Exception as exc:                                  # noqa: BLE001
+            informe.errores.append({"protocolo": nombre, "error": f"{type(exc).__name__}: {exc}"[:300]})
+
+    paso("control_serie_modulo", _protocolo_control_serie_modulo, resultados, informe)
+    paso("nivel_modulo", _protocolo_nivel_modulo, resultados, informe)
     for clave in ("module_date", "module_part_number", "dashboard_date"):
-        _desempate_por_lote(resultados, clave, informe)
+        paso(f"desempate_por_lote:{clave}", _desempate_por_lote, resultados, clave, informe)
     for clave in ("dashboard_engineering_level", "dashboard_date"):
-        _protocolo_lote(resultados, clave, "dashboard_part_number", informe,
-                        "consenso_lote_tablero", _lecturas_tablero)
-    _protocolo_lote(resultados, "inflator_supplier", "module_part_number", informe,
-                    "proveedor_por_numero_de_parte", _lecturas_proveedor)
-    _proveedor_unanime(resultados, informe)
-    _protocolo_motivo(resultados, vocabulario or {}, informe, mapa_motivos)
+        paso(f"lote_tablero:{clave}", _protocolo_lote, resultados, clave, "dashboard_part_number", informe,
+             "consenso_lote_tablero", _lecturas_tablero)
+    paso("proveedor_por_numero_de_parte", _protocolo_lote, resultados, "inflator_supplier",
+         "module_part_number", informe, "proveedor_por_numero_de_parte", _lecturas_proveedor)
+    paso("proveedor_unanime", _proveedor_unanime, resultados, informe)
+    paso("motivo", _protocolo_motivo, resultados, vocabulario or {}, informe, mapa_motivos)
     if unanime_lote and unanime_lote > 0:
         for clave in ("module_part_number", "module_date"):
-            _unanime_lote(resultados, clave, informe, unanime_lote)
-    return {"version": VERSION, "decisiones": informe, "total": len(informe)}
+            paso(f"unanime_lote:{clave}", _unanime_lote, resultados, clave, informe, unanime_lote)
+    por_regla = Counter(d["regla"] for d in informe)
+    return {"version": VERSION, "decisiones": list(informe), "total": len(informe),
+            "por_regla": dict(sorted(por_regla.items())), "rechazadas": informe.rechazadas,
+            "errores": informe.errores}

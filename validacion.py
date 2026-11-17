@@ -1247,6 +1247,10 @@ def validar_lote_empresarial(ruta_estructura: str | Path, config: dict | None = 
                 vocabulario(rutas_configuradas(config, RAIZ_PROYECTO)),
                 (cfg_emp_ini.get("decisiones_lote") or {}).get("mapa_motivos"),
                 unanime_lote=int((cfg_emp_ini.get("decisiones_lote") or {}).get("unanime_lote", 6)))
+            # P53 · un protocolo que falló no tumba a los demás, pero se avisa
+            for fallo in salida["decisiones_lote"].get("errores") or []:
+                advertencias_persistencia.append(
+                    f"decisiones de lote: el protocolo {fallo.get('protocolo')} no se aplicó ({fallo.get('error')})")
         except Exception as exc:                                  # noqa: BLE001
             advertencias_persistencia.append(f"decisiones de lote no aplicadas: {type(exc).__name__}: {exc}")
     if ejecucion_id_aprendizaje:
